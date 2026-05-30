@@ -12,6 +12,10 @@ export const config = {
     process.env.DATABASE_URL ?? 'postgres://jtm:jtm@127.0.0.1:5432/jtm',
   currency: process.env.DEFAULT_CURRENCY ?? 'KES',
   taxRegion: process.env.DEFAULT_TAX_REGION ?? 'KE',
+  brandName: process.env.BRAND_NAME ?? 'JTM Networks',
+  storage: {
+    dir: process.env.STORAGE_DIR ?? './storage',
+  },
   auth: {
     // When false, the API runs open (demo mode) and requireAuth injects a
     // synthetic admin. Set AUTH_ENABLED=true to enforce JWT + RBAC.

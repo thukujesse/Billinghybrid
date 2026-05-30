@@ -14,6 +14,7 @@ import * as resellers from '../domains/resellers/service.js';
 import * as usage from '../domains/usage/service.js';
 import * as wallet from '../domains/wallet/service.js';
 import * as reports from '../domains/reports/service.js';
+import { getInvoicePdf } from '../domains/billing/invoicePdf.js';
 import * as purchases from '../domains/purchases/service.js';
 import * as planchanges from '../domains/planchanges/service.js';
 import * as credits from '../domains/credits/service.js';
@@ -139,6 +140,12 @@ api.post('/subscribers/:id/change-plan', ah(async (req, res) => {
 // ----------------------------- Billing ------------------------------
 api.get('/invoices', ah(async (_req, res) => res.json(await billing.listInvoices())));
 api.get('/invoices/:id', ah(async (req, res) => res.json(await billing.getInvoice(req.params.id))));
+api.get('/invoices/:id/pdf', ah(async (req, res) => {
+  const { buffer, filename } = await getInvoicePdf(req.params.id);
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+  res.send(buffer);
+}));
 api.post('/invoices', ah(async (req, res) => {
   const body = parse(z.object({
     subscriber_id: z.string().uuid(),

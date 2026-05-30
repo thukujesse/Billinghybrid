@@ -2,6 +2,8 @@
 import { useEffect, useState } from 'react';
 import { api, money } from '@/lib/api';
 
+const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
+
 export default function Invoices() {
   const [list, setList] = useState<any[]>([]);
   const [toast, setToast] = useState<{ ok: boolean; msg: string } | null>(null);
@@ -67,6 +69,7 @@ export default function Invoices() {
               <td style={{ display: 'flex', gap: 6 }}>
                 {i.status !== 'paid' && <button className="ghost" onClick={() => charge(i.id)}>Charge</button>}
                 <button className="ghost" onClick={() => creditNote(i)}>Credit</button>
+                <a className="btn ghost" href={`${API}/api/invoices/${i.id}/pdf`} target="_blank" rel="noreferrer" style={{ textDecoration: 'none' }}>PDF</a>
               </td>
             </tr>
           ))}
