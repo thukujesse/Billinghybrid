@@ -69,7 +69,7 @@ portal** at http://localhost:3000/portal (look up the seeded number
 | `subscriptions` | Activating & extending a subscriber on a plan ("Plan Extend")                      |
 | `wallet`        | User Balance / Wallet — **immutable ledger** with row-locked, atomic postings      |
 | `tax`           | Per-region VAT (Kenya 16% = 1600 bps) applied to invoices                          |
-| `billing`       | Invoices, the **monthly billing cycle**, and the **dunning engine** (3 strikes → suspend) |
+| `billing`       | Invoices, **branded PDF invoices**, the **monthly billing cycle**, and the **dunning engine** (3 strikes → suspend) |
 | `purchases`     | **Buy a plan** from wallet, incl. **buy-for-a-friend** gifting                     |
 | `planchanges`   | **Upgrade/downgrade with proration** — net difference charged or credited mid-cycle |
 | `credits`       | **Credit notes & adjustments** (NET-NEW) — applied to the wallet                   |
@@ -78,10 +78,13 @@ portal** at http://localhost:3000/portal (look up the seeded number
 | `vouchers`      | Batch generation (debits reseller float) + redemption + commission                 |
 | `resellers`     | Sub-dealer float wallets and commission rates                                      |
 | `usage`         | Metering & **FUP enforcement** (alert at threshold, throttle at 100%)              |
-| `provisioning`  | Network Integration stub — records intent; swap for Mikrotik RouterOS / RADIUS     |
+| `routers`       | **Router registry** (multi-router fleet); homes subscribers on a device           |
+| `network`       | **Pluggable provisioning adapters** — `log` (default) or `mikrotik` (RouterOS)     |
+| `provisioning`  | Drives the selected network adapter and audits every action                       |
+| `storage`       | Object-storage stand-in (S3/MinIO) for PDFs, exports, backups                      |
 | `notifications` | SMS / WhatsApp / Telegram / Email stubs, driven by events                          |
 | `events`        | In-process event bus (Kafka stand-in) + `events` audit table                       |
-| `reports`       | Dashboard & revenue analytics                                                      |
+| `reports`       | Dashboard, **revenue analytics** (MRR, churn, top plans, CSV export)               |
 
 ## Data flows implemented (from the architecture doc)
 
@@ -101,9 +104,11 @@ with Kafka and the producers/consumers stay identical.
 npm test
 ```
 
-Covers money/VAT math (pure) plus DB-backed flows: ledger integrity, invoice +
-tax + wallet settlement, reseller batch float debit + commission, M-Pesa
-idempotency, FUP throttling, and dunning-driven suspension.
+**31 tests** covering money/VAT math, ledger integrity, invoice + tax + wallet
+settlement, reseller float + commission, M-Pesa idempotency, FUP throttling,
+dunning suspension, plan purchase/gifting, credit notes, refunds, proration,
+JWT/password/OTP auth + RBAC, the router registry + Mikrotik adapter, rate
+limiting, PDF generation, and revenue reports.
 
 ## API reference (selected)
 
@@ -125,6 +130,10 @@ idempotency, FUP throttling, and dunning-driven suspension.
 | `POST /api/usage`                      | Ingest usage & enforce FUP (Flow 03)     |
 | `POST /api/subscribers/:id/buy-plan`   | Buy/gift a plan from wallet              |
 | `POST /api/subscribers/:id/change-plan`| Upgrade/downgrade with proration         |
+| `GET  /api/invoices/:id/pdf`           | Branded PDF invoice (cached to storage)  |
+| `POST /api/routers`                    | Register a Mikrotik/RADIUS router        |
+| `GET  /api/reports/churn`              | MRR + churn snapshot                      |
+| `GET  /api/reports/payments.csv`       | Finance CSV export                        |
 | `POST /api/credit-notes`               | Issue a credit note (credits wallet)     |
 | `POST /api/refunds`                    | Refund a payment (full/partial)          |
 
