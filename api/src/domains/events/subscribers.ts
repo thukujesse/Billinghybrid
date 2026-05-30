@@ -37,3 +37,20 @@ on('usage.fup.threshold', async (p) => {
 on('usage.fup.exceeded', async (p) => {
   await notifications.sms(String(p.subscriberId), `Data cap reached — speed is now reduced. Top up to restore full speed.`);
 });
+
+on('plan.purchased', async (p) => {
+  if (p.gifted) {
+    await notifications.sms(String(p.recipientId), `You've received a gift plan — it's now active. Enjoy!`);
+    await notifications.whatsapp(String(p.buyerId), `Your gift plan was delivered successfully.`);
+  } else {
+    await notifications.whatsapp(String(p.buyerId), `Your plan is active. Thank you!`);
+  }
+});
+
+on('credit_note.issued', async (p) => {
+  await notifications.sms(String(p.subscriberId), `A credit has been added to your account.`);
+});
+
+on('payment.refunded', async (p) => {
+  await notifications.whatsapp('customer', `A refund of ${p.amount} (${p.method}) has been processed.`);
+});

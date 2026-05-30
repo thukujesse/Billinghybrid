@@ -11,6 +11,8 @@ export default function Portal() {
   const [usage, setUsage] = useState<any>(null);
   const [plans, setPlans] = useState<any[]>([]);
   const [code, setCode] = useState('');
+  const [buyPlanId, setBuyPlanId] = useState('');
+  const [giftPhone, setGiftPhone] = useState('');
   const [toast, setToast] = useState<{ ok: boolean; msg: string } | null>(null);
 
   const refresh = async (id: string) => {
@@ -38,6 +40,25 @@ export default function Portal() {
       setToast({ ok: true, msg: 'Voucher redeemed — you are connected!' });
       setCode('');
       refresh(sub.id);
+    } catch (e: any) { setToast({ ok: false, msg: e.message }); }
+  };
+
+  const buy = async () => {
+    try {
+      const body: any = { plan_id: buyPlanId };
+      if (giftPhone.trim()) {
+        const matches = await api(`/subscribers?phone=${encodeURIComponent(giftPhone.trim())}`);
+        if (!matches.length) { setToast({ ok: false, msg: 'No account for that gift number' }); return; }
+        body.recipient_id = matches[0].id;
+      }
+      const r = await api(`/subscribers/${sub.id}/buy-plan`, { method: 'POST', body: JSON.stringify(body) });
+      if (r.paid) {
+        setToast({ ok: true, msg: r.gifted ? 'Gift plan delivered!' : 'Plan purchased and activated!' });
+        setBuyPlanId(''); setGiftPhone('');
+        refresh(sub.id);
+      } else {
+        setToast({ ok: false, msg: r.reason === 'insufficient_balance' ? 'Insufficient balance — top up first' : 'Payment failed' });
+      }
     } catch (e: any) { setToast({ ok: false, msg: e.message }); }
   };
 
@@ -90,6 +111,21 @@ export default function Portal() {
               {(!sub.subscriptions || sub.subscriptions.length === 0) && <tr><td colSpan={3} style={{ color: 'var(--muted)' }}>No active plan</td></tr>}
             </tbody>
           </table>
+
+          <h2>Buy a plan</h2>
+          <div className="card">
+            <div className="row">
+              <div><label>Plan</label>
+                <select value={buyPlanId} onChange={(e) => setBuyPlanId(e.target.value)}>
+                  <option value="">Select plan…</option>
+                  {plans.map((p) => <option key={p.id} value={p.id}>{p.name} — {money(p.price_cents)}</option>)}
+                </select>
+              </div>
+              <div><label>Gift to phone (optional)</label><input value={giftPhone} onChange={(e) => setGiftPhone(e.target.value)} placeholder="leave blank to buy for yourself" /></div>
+              <div style={{ flex: '0 0 auto' }}><button onClick={buy} disabled={!buyPlanId}>Pay from wallet</button></div>
+            </div>
+            <p className="sub" style={{ margin: '10px 0 0' }}>Paid from your wallet balance (price + VAT). Top up via M-Pesa above if needed.</p>
+          </div>
 
           <h2>Redeem a voucher</h2>
           <div className="card">

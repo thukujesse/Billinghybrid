@@ -30,6 +30,16 @@ export default function Invoices() {
       load();
     } catch (e: any) { setToast({ ok: false, msg: e.message }); }
   };
+  const creditNote = async (inv: any) => {
+    const amt = prompt(`Credit note amount (KES). Invoice total: ${(inv.total_cents / 100).toFixed(2)}`, (inv.total_cents / 100).toString());
+    if (!amt) return;
+    const reason = prompt('Reason', 'adjustment') ?? 'adjustment';
+    try {
+      await api('/credit-notes', { method: 'POST', body: JSON.stringify({ subscriber_id: inv.subscriber_id, invoice_id: inv.id, amount_cents: Math.round(Number(amt) * 100), reason }) });
+      setToast({ ok: true, msg: 'Credit note issued (wallet credited)' });
+      load();
+    } catch (e: any) { setToast({ ok: false, msg: e.message }); }
+  };
 
   return (
     <div className="container">
@@ -54,7 +64,10 @@ export default function Invoices() {
               <td><span className={`badge ${i.status}`}>{i.status}</span></td>
               <td>{i.dunning_attempts}</td>
               <td style={{ color: 'var(--muted)' }}>{new Date(i.due_date).toLocaleDateString()}</td>
-              <td>{i.status !== 'paid' && <button className="ghost" onClick={() => charge(i.id)}>Charge</button>}</td>
+              <td style={{ display: 'flex', gap: 6 }}>
+                {i.status !== 'paid' && <button className="ghost" onClick={() => charge(i.id)}>Charge</button>}
+                <button className="ghost" onClick={() => creditNote(i)}>Credit</button>
+              </td>
             </tr>
           ))}
           {list.length === 0 && <tr><td colSpan={8} style={{ color: 'var(--muted)' }}>No invoices yet — run the billing cycle</td></tr>}

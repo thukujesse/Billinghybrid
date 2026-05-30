@@ -23,3 +23,10 @@ export function invoiceNumber(date = new Date()): string {
   const rand = randomBytes(3).toString('hex').toUpperCase();
   return `INV-${ym}-${rand}`;
 }
+
+/** Credit-note number: CN-YYYYMM-XXXXXX */
+export function creditNoteNumber(date = new Date()): string {
+  const ym = `${date.getUTCFullYear()}${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
+  const rand = randomBytes(3).toString('hex').toUpperCase();
+  return `CN-${ym}-${rand}`;
+}

@@ -69,6 +69,9 @@ portal** at http://localhost:3000/portal (look up the seeded number
 | `wallet`        | User Balance / Wallet — **immutable ledger** with row-locked, atomic postings      |
 | `tax`           | Per-region VAT (Kenya 16% = 1600 bps) applied to invoices                          |
 | `billing`       | Invoices, the **monthly billing cycle**, and the **dunning engine** (3 strikes → suspend) |
+| `purchases`     | **Buy a plan** from wallet, incl. **buy-for-a-friend** gifting                     |
+| `credits`       | **Credit notes & adjustments** (NET-NEW) — applied to the wallet                   |
+| `refunds`       | **Refund workflows** (NET-NEW) — full/partial, wallet / M-Pesa / manual            |
 | `payments`      | M-Pesa STK Push + Stripe, **idempotent** confirmation, wallet credit               |
 | `vouchers`      | Batch generation (debits reseller float) + redemption + commission                 |
 | `resellers`     | Sub-dealer float wallets and commission rates                                      |
@@ -116,6 +119,9 @@ idempotency, FUP throttling, and dunning-driven suspension.
 | `POST /api/vouchers/batch`             | Generate a voucher batch (Flow 04)       |
 | `POST /api/vouchers/redeem`            | Redeem a voucher (Flow 01)               |
 | `POST /api/usage`                      | Ingest usage & enforce FUP (Flow 03)     |
+| `POST /api/subscribers/:id/buy-plan`   | Buy/gift a plan from wallet              |
+| `POST /api/credit-notes`               | Issue a credit note (credits wallet)     |
+| `POST /api/refunds`                    | Refund a payment (full/partial)          |
 
 ## Roadmap (next slices)
 

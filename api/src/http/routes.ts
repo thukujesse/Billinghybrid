@@ -12,6 +12,9 @@ import * as resellers from '../domains/resellers/service.js';
 import * as usage from '../domains/usage/service.js';
 import * as wallet from '../domains/wallet/service.js';
 import * as reports from '../domains/reports/service.js';
+import * as purchases from '../domains/purchases/service.js';
+import * as credits from '../domains/credits/service.js';
+import * as refunds from '../domains/refunds/service.js';
 
 export const api = Router();
 
@@ -87,6 +90,15 @@ api.post('/subscribers/:id/subscribe', ah(async (req, res) => {
   res.status(201).json(await subscriptions.activateForPlan(req.params.id, body.plan_id));
 }));
 
+// Buy a plan from wallet (optionally gift it to another subscriber).
+api.post('/subscribers/:id/buy-plan', ah(async (req, res) => {
+  const body = parse(z.object({
+    plan_id: z.string().uuid(),
+    recipient_id: z.string().uuid().optional(),
+  }), req.body);
+  res.json(await purchases.buyPlan({ buyerId: req.params.id, planId: body.plan_id, recipientId: body.recipient_id }));
+}));
+
 // ----------------------------- Billing ------------------------------
 api.get('/invoices', ah(async (_req, res) => res.json(await billing.listInvoices())));
 api.get('/invoices/:id', ah(async (req, res) => res.json(await billing.getInvoice(req.params.id))));
@@ -141,6 +153,44 @@ api.post('/payments/:ref/confirm', ah(async (req, res) => {
 }));
 api.get('/payments', ah(async (req, res) => {
   res.json(await payments.listPayments(req.query.subscriber_id as string | undefined));
+}));
+
+// -------------------------- Credit notes ----------------------------
+api.get('/credit-notes', ah(async (req, res) => {
+  res.json(await credits.listCreditNotes(req.query.subscriber_id as string | undefined));
+}));
+api.post('/credit-notes', ah(async (req, res) => {
+  const body = parse(z.object({
+    subscriber_id: z.string().uuid(),
+    amount_cents: z.number().int().positive(),
+    reason: z.string().min(1),
+    invoice_id: z.string().uuid().optional(),
+  }), req.body);
+  res.status(201).json(await credits.issueCreditNote({
+    subscriberId: body.subscriber_id,
+    amountCents: body.amount_cents,
+    reason: body.reason,
+    invoiceId: body.invoice_id,
+  }));
+}));
+
+// ----------------------------- Refunds ------------------------------
+api.get('/refunds', ah(async (req, res) => {
+  res.json(await refunds.listRefunds(req.query.payment_id as string | undefined));
+}));
+api.post('/refunds', ah(async (req, res) => {
+  const body = parse(z.object({
+    payment_id: z.string().uuid(),
+    amount_cents: z.number().int().positive().optional(),
+    reason: z.string().optional(),
+    method: z.enum(['wallet', 'mpesa', 'manual']).optional(),
+  }), req.body);
+  res.status(201).json(await refunds.createRefund({
+    paymentId: body.payment_id,
+    amountCents: body.amount_cents,
+    reason: body.reason,
+    method: body.method,
+  }));
 }));
 
 // ----------------------------- Vouchers -----------------------------
