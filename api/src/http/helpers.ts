@@ -33,6 +33,8 @@ export function errorHandler(
     res.status(409).json({ error: 'conflict', message: 'resource already exists' });
     return;
   }
-  console.error(err);
-  res.status(500).json({ error: 'internal_error', message: 'something went wrong' });
+  // Log the failure with the request id so a reported error maps to a log line.
+  const id = (_req as any).id;
+  console.error(JSON.stringify({ level: 'error', msg: 'unhandled_error', id, error: String((err as any)?.message ?? err) }));
+  res.status(500).json({ error: 'internal_error', message: 'something went wrong', request_id: id });
 }

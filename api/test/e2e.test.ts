@@ -64,6 +64,16 @@ describe('e2e: health, metrics, plugins', () => {
     expect(Array.isArray(plugins.json)).toBe(true);
     expect(plugins.json.some((p: any) => p.manifest.id === 'loyalty-points')).toBe(true);
   });
+
+  it('assigns a request id and echoes an inbound one', async () => {
+    // No inbound id -> one is generated and returned.
+    const gen = await fetch(`${base}/api/plans`);
+    expect(gen.headers.get('x-request-id')).toBeTruthy();
+
+    // Inbound id is honored end to end.
+    const echoed = await fetch(`${base}/api/plans`, { headers: { 'X-Request-Id': 'trace-abc-123' } });
+    expect(echoed.headers.get('x-request-id')).toBe('trace-abc-123');
+  });
 });
 
 describe('e2e: full subscriber journey', () => {

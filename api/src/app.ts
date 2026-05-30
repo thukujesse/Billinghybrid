@@ -3,6 +3,7 @@ import cors from 'cors';
 import { api } from './http/routes.js';
 import { errorHandler } from './http/helpers.js';
 import { metricsMiddleware } from './http/middleware/metrics.js';
+import { requestLog } from './http/middleware/requestLog.js';
 import { registry } from './lib/metrics.js';
 import { query } from './db/pool.js';
 import { registerBuiltinPlugins, loadPlugins } from './plugins/index.js';
@@ -13,6 +14,7 @@ export async function createApp() {
   const app = express();
   app.use(cors());
   app.use(express.json({ limit: '12mb' })); // headroom for base64 KYC uploads
+  app.use(requestLog);
   app.use(metricsMiddleware);
 
   // Liveness: the process is up. Cheap, never touches dependencies — a failing
