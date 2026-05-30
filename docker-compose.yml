@@ -16,5 +16,40 @@ services:
       timeout: 5s
       retries: 10
 
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://jtm:jtm@db:5432/jtm
+      PORT: "4000"
+      NODE_ENV: production
+      DEFAULT_CURRENCY: KES
+      DEFAULT_TAX_REGION: KE
+      AUTH_ENABLED: "false"
+      STORAGE_DIR: /data/storage
+      NETWORK_DRIVER: log
+    volumes:
+      - jtm_storage:/data/storage
+    ports:
+      - "4000:4000"
+
+  web:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:4000
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "3000:3000"
+
 volumes:
   jtm_pgdata:
+  jtm_storage:
