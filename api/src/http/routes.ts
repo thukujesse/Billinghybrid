@@ -109,8 +109,13 @@ api.post('/subscribers', ah(async (req, res) => {
     reseller_id: z.string().uuid().optional(),
     pppoe_username: z.string().optional(),
     pppoe_password: z.string().optional(),
+    language: z.enum(['en', 'sw']).optional(),
   }), req.body);
   res.status(201).json(await subscribers.createSubscriber(body));
+}));
+api.post('/subscribers/:id/language', ah(async (req, res) => {
+  const body = parse(z.object({ language: z.enum(['en', 'sw']) }), req.body);
+  res.json(await subscribers.setLanguage(req.params.id, body.language));
 }));
 api.get('/subscribers/:id', ah(async (req, res) => {
   const sub = await subscribers.getSubscriber(req.params.id);

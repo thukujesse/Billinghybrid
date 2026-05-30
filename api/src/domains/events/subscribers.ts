@@ -1,63 +1,87 @@
 import { on } from './bus.js';
 import { notifications } from '../notifications/service.js';
+import { languageOf } from '../subscribers/service.js';
+import { t } from '../../lib/i18n.js';
 
 /**
  * Cross-cutting reactions to domain events. This is where the data-flow
  * diagrams' "→ Notification" / "→ Telegram admin alert" steps live. Adding a
  * new reaction means subscribing here, with no change to the publisher.
+ *
+ * Customer-facing copy is localized to the subscriber's language (en/sw) via
+ * t(); admin alerts stay in English.
  */
 
 const ADMIN_CHANNEL = 'telegram-admin';
 
 on('payment.paid', async (p) => {
-  await notifications.whatsapp(String(p.subscriberId ?? 'customer'), `Payment received. Thank you!`);
+  const id = String(p.subscriberId ?? '');
+  const lang = id ? await languageOf(id) : 'en';
+  await notifications.whatsapp(id || 'customer', t(lang, 'payment.received'));
 });
 
 on('voucher.redeemed', async (p) => {
-  await notifications.sms(String(p.subscriberId), `Your voucher is active. Enjoy your connection!`);
+  const id = String(p.subscriberId);
+  await notifications.sms(id, t(await languageOf(id), 'voucher.active'));
 });
 
 on('invoice.dunning', async (p) => {
-  await notifications.whatsapp('customer', `Payment for invoice ${p.invoiceId} failed (attempt ${p.attempt}). Please top up.`);
+  const id = String(p.subscriberId ?? '');
+  const lang = id ? await languageOf(id) : 'en';
+  await notifications.whatsapp(id || 'customer', t(lang, 'invoice.dunning', { invoice: p.invoiceId, attempt: p.attempt }));
 });
 
 on('subscriber.suspended', async (p) => {
-  await notifications.sms(String(p.subscriberId), `Your service has been suspended (${p.reason}). Please clear your balance to restore.`);
-  await notifications.telegram(ADMIN_CHANNEL, `Subscriber ${p.subscriberId} suspended: ${p.reason}`);
+  const id = String(p.subscriberId);
+  await notifications.sms(id, t(await languageOf(id), 'subscriber.suspended', { reason: p.reason }));
+  await notifications.telegram(ADMIN_CHANNEL, `Subscriber ${id} suspended: ${p.reason}`);
 });
 
 on('subscriber.restored', async (p) => {
-  await notifications.sms(String(p.subscriberId), `Welcome back! Your service has been restored.`);
+  const id = String(p.subscriberId);
+  await notifications.sms(id, t(await languageOf(id), 'subscriber.restored'));
 });
 
 on('usage.fup.threshold', async (p) => {
-  await notifications.whatsapp(String(p.subscriberId), `You've used ${p.usedPct}% of your data. Top up to avoid throttling.`);
+  const id = String(p.subscriberId);
+  await notifications.whatsapp(id, t(await languageOf(id), 'fup.threshold', { pct: p.usedPct }));
 });
 
 on('usage.fup.exceeded', async (p) => {
-  await notifications.sms(String(p.subscriberId), `Data cap reached — speed is now reduced. Top up to restore full speed.`);
+  const id = String(p.subscriberId);
+  await notifications.sms(id, t(await languageOf(id), 'fup.exceeded'));
 });
 
 on('plan.purchased', async (p) => {
   if (p.gifted) {
-    await notifications.sms(String(p.recipientId), `You've received a gift plan — it's now active. Enjoy!`);
-    await notifications.whatsapp(String(p.buyerId), `Your gift plan was delivered successfully.`);
+    const rid = String(p.recipientId);
+    const bid = String(p.buyerId);
+    await notifications.sms(rid, t(await languageOf(rid), 'plan.gift.received'));
+    await notifications.whatsapp(bid, t(await languageOf(bid), 'plan.gift.sent'));
   } else {
-    await notifications.whatsapp(String(p.buyerId), `Your plan is active. Thank you!`);
+    const bid = String(p.buyerId);
+    await notifications.whatsapp(bid, t(await languageOf(bid), 'plan.active'));
   }
 });
 
 on('plan.changed', async (p) => {
-  const verb = p.direction === 'upgrade' ? 'upgraded' : p.direction === 'downgrade' ? 'downgraded' : 'changed';
-  await notifications.sms(String(p.subscriberId), `Your plan has been ${verb}. It takes effect immediately.`);
+  const id = String(p.subscriberId);
+  const lang = await languageOf(id);
+  // Localize the verb too (en: upgraded/downgraded; sw uses a single phrasing).
+  const verbEn = p.direction === 'upgrade' ? 'upgraded' : p.direction === 'downgrade' ? 'downgraded' : 'changed';
+  const verb = lang === 'sw'
+    ? (p.direction === 'upgrade' ? 'kupandishwa' : p.direction === 'downgrade' ? 'kushushwa' : 'badilishwa')
+    : verbEn;
+  await notifications.sms(id, t(lang, 'plan.changed', { verb }));
 });
 
 on('credit_note.issued', async (p) => {
-  await notifications.sms(String(p.subscriberId), `A credit has been added to your account.`);
+  const id = String(p.subscriberId);
+  await notifications.sms(id, t(await languageOf(id), 'credit.added'));
 });
 
 on('payment.refunded', async (p) => {
-  await notifications.whatsapp('customer', `A refund of ${p.amount} (${p.method}) has been processed.`);
+  await notifications.whatsapp('customer', t('en', 'refund.processed', { amount: p.amount, method: p.method }));
 });
 
 on('kyc.submitted', async (p) => {
@@ -65,5 +89,10 @@ on('kyc.submitted', async (p) => {
 });
 
 on('kyc.reviewed', async (p) => {
-  await notifications.sms(String(p.subscriberId), `Your KYC has been ${p.decision}.`);
+  const id = String(p.subscriberId);
+  const lang = await languageOf(id);
+  const decision = lang === 'sw'
+    ? (p.decision === 'verified' ? 'thibitishwa' : 'kataliwa')
+    : p.decision;
+  await notifications.sms(id, t(lang, 'kyc.reviewed', { decision }));
 });

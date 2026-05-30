@@ -1,10 +1,12 @@
 'use client';
 import { useState } from 'react';
 import { api, money } from '@/lib/api';
+import { useLang, tr } from '@/lib/i18n';
 
 const GB = 1024 * 1024 * 1024;
 
 export default function Portal() {
+  const [lang, setLang] = useLang();
   const [phone, setPhone] = useState('');
   const [sub, setSub] = useState<any>(null);
   const [wallet, setWallet] = useState<any>(null);
@@ -25,6 +27,15 @@ export default function Portal() {
     ]);
     setSub(full); setWallet(w); setUsage(u);
     setPlans(await api('/plans'));
+  };
+
+  // Switch UI language; if an account is loaded, persist it so notifications
+  // (SMS/WhatsApp) come in the same language.
+  const changeLang = async (l: 'en' | 'sw') => {
+    setLang(l);
+    if (sub?.id) {
+      try { await api(`/subscribers/${sub.id}/language`, { method: 'POST', body: JSON.stringify({ language: l }) }); } catch {}
+    }
   };
 
   const lookup = async () => {
@@ -110,26 +121,32 @@ export default function Portal() {
 
   return (
     <div className="container" style={{ maxWidth: 720 }}>
-      <h1>Customer Portal</h1>
-      <p className="sub">Self-service: check your balance &amp; usage, redeem a voucher, or top up via M-Pesa.</p>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <h1>{tr(lang, 'portal_title')}</h1>
+        <div style={{ display: 'flex', gap: 4 }}>
+          <button className={lang === 'en' ? '' : 'ghost'} onClick={() => changeLang('en')}>EN</button>
+          <button className={lang === 'sw' ? '' : 'ghost'} onClick={() => changeLang('sw')}>SW</button>
+        </div>
+      </div>
+      <p className="sub">{tr(lang, 'portal_sub')}</p>
       {toast && <div className={`toast ${toast.ok ? 'ok' : 'err'}`}>{toast.msg}</div>}
 
       <div className="card">
         <div className="row">
-          <div><label>Your phone number</label><input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="2547..." /></div>
-          <div style={{ flex: '0 0 auto' }}><button onClick={lookup} disabled={!phone}>Look up</button></div>
+          <div><label>{tr(lang, 'phone_label')}</label><input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="2547..." /></div>
+          <div style={{ flex: '0 0 auto' }}><button onClick={lookup} disabled={!phone}>{tr(lang, 'lookup')}</button></div>
         </div>
       </div>
 
       {sub && (
         <>
           <div className="grid" style={{ marginTop: 16 }}>
-            <div className="card stat"><div className="label">Account</div><div className="value" style={{ fontSize: 18 }}>{sub.full_name}</div><div className="sub" style={{ margin: 0 }}>{sub.type} · <span className={`badge ${sub.status}`}>{sub.status}</span></div></div>
-            <div className="card stat"><div className="label">Wallet balance</div><div className="value">{money(wallet?.balance_cents ?? 0)}</div><button className="ghost" style={{ marginTop: 10 }} onClick={topup}>M-Pesa top-up</button></div>
-            <div className="card stat"><div className="label">Data used</div><div className="value">{(((Number(usage?.bytes_in ?? 0) + Number(usage?.bytes_out ?? 0))) / GB).toFixed(2)} GB</div></div>
+            <div className="card stat"><div className="label">{tr(lang, 'account')}</div><div className="value" style={{ fontSize: 18 }}>{sub.full_name}</div><div className="sub" style={{ margin: 0 }}>{sub.type} · <span className={`badge ${sub.status}`}>{sub.status}</span></div></div>
+            <div className="card stat"><div className="label">{tr(lang, 'wallet_balance')}</div><div className="value">{money(wallet?.balance_cents ?? 0)}</div><button className="ghost" style={{ marginTop: 10 }} onClick={topup}>{tr(lang, 'mpesa_topup')}</button></div>
+            <div className="card stat"><div className="label">{tr(lang, 'data_used')}</div><div className="value">{(((Number(usage?.bytes_in ?? 0) + Number(usage?.bytes_out ?? 0))) / GB).toFixed(2)} GB</div></div>
           </div>
 
-          <h2>Verify your identity (KYC) — <span className={`badge ${sub.kyc_status === 'verified' ? 'active' : sub.kyc_status === 'rejected' ? 'suspended' : 'pending'}`}>{sub.kyc_status}</span></h2>
+          <h2>{tr(lang, 'kyc_title')} — <span className={`badge ${sub.kyc_status === 'verified' ? 'active' : sub.kyc_status === 'rejected' ? 'suspended' : 'pending'}`}>{sub.kyc_status}</span></h2>
           <div className="card">
             <div className="row">
               <div><label>Document type</label>
@@ -144,7 +161,7 @@ export default function Portal() {
             </div>
           </div>
 
-          <h2>Active subscriptions</h2>
+          <h2>{tr(lang, 'active_subs')}</h2>
           <table>
             <thead><tr><th>Plan</th><th>Status</th><th>Expires</th></tr></thead>
             <tbody>
@@ -164,7 +181,7 @@ export default function Portal() {
 
           {(sub.subscriptions ?? []).some((s: any) => s.status === 'active') && (
             <>
-              <h2>Change plan (prorated)</h2>
+              <h2>{tr(lang, 'change_plan')}</h2>
               <div className="card">
                 <div className="row">
                   <div><label>Switch to</label>
@@ -180,7 +197,7 @@ export default function Portal() {
             </>
           )}
 
-          <h2>Buy a plan</h2>
+          <h2>{tr(lang, 'buy_plan')}</h2>
           <div className="card">
             <div className="row">
               <div><label>Plan</label>
@@ -195,7 +212,7 @@ export default function Portal() {
             <p className="sub" style={{ margin: '10px 0 0' }}>Paid from your wallet balance (price + VAT). Top up via M-Pesa above if needed.</p>
           </div>
 
-          <h2>Redeem a voucher</h2>
+          <h2>{tr(lang, 'redeem_voucher')}</h2>
           <div className="card">
             <div className="row">
               <div><label>Voucher code</label><input value={code} onChange={(e) => setCode(e.target.value)} placeholder="ABCD-2345-WXYZ" /></div>

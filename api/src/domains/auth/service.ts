@@ -5,6 +5,7 @@ import { hashPassword, verifyPassword, generateOtp } from '../../lib/password.js
 import { signJwt } from '../../lib/jwt.js';
 import { notifications } from '../notifications/service.js';
 import { listSubscribers } from '../subscribers/service.js';
+import { t } from '../../lib/i18n.js';
 
 export type Role = 'admin' | 'staff' | 'reseller' | 'subscriber';
 
@@ -71,7 +72,10 @@ export async function requestOtp(phone: string): Promise<{ sent: boolean; devCod
     `INSERT INTO otp_codes (phone, code_hash, expires_at) VALUES ($1, $2, $3)`,
     [phone, hashPassword(code), expires.toISOString()]
   );
-  await notifications.sms(phone, `Your login code is ${code}. It expires in ${config.auth.otpTtlMinutes} minutes.`);
+  // Localize the OTP message to the subscriber's language if we know them.
+  const match = (await listSubscribers()).find((s) => s.phone === phone);
+  const lang = match?.language ?? 'en';
+  await notifications.sms(phone, t(lang, 'otp.code', { code, minutes: config.auth.otpTtlMinutes }));
   // In dev (auth disabled) we surface the code to make the flow testable.
   return { sent: true, ...(config.auth.enabled ? {} : { devCode: code }) };
 }

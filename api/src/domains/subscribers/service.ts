@@ -14,6 +14,7 @@ export interface Subscriber {
   kyc_status: string;
   pppoe_username: string | null;
   reseller_id: string | null;
+  language: 'en' | 'sw';
   created_at: string;
 }
 
@@ -25,6 +26,7 @@ export interface CreateSubscriberInput {
   reseller_id?: string;
   pppoe_username?: string;
   pppoe_password?: string;
+  language?: 'en' | 'sw';
 }
 
 export async function listSubscribers(): Promise<Subscriber[]> {
@@ -41,8 +43,8 @@ export async function getSubscriber(id: string): Promise<Subscriber> {
 export async function createSubscriber(input: CreateSubscriberInput): Promise<Subscriber> {
   const r = await query<Subscriber>(
     `INSERT INTO subscribers
-       (full_name, phone, email, type, reseller_id, pppoe_username, pppoe_password)
-     VALUES ($1,$2,$3,$4,$5,$6,$7)
+       (full_name, phone, email, type, reseller_id, pppoe_username, pppoe_password, language)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
      RETURNING *`,
     [
       input.full_name,
@@ -52,6 +54,7 @@ export async function createSubscriber(input: CreateSubscriberInput): Promise<Su
       input.reseller_id ?? null,
       input.pppoe_username ?? null,
       input.pppoe_password ?? null,
+      input.language ?? 'en',
     ]
   );
   const sub = r.rows[0];
@@ -89,4 +92,20 @@ export async function restoreSubscriber(id: string): Promise<Subscriber> {
   await provisioning.restore(id);
   await emit('subscriber.restored', { subscriberId: id });
   return r.rows[0];
+}
+
+/** Set a subscriber's preferred language (drives notification copy). */
+export async function setLanguage(id: string, language: 'en' | 'sw'): Promise<Subscriber> {
+  const r = await query<Subscriber>(
+    `UPDATE subscribers SET language = $2 WHERE id = $1 RETURNING *`,
+    [id, language]
+  );
+  if (!r.rows[0]) throw notFound('subscriber');
+  return r.rows[0];
+}
+
+/** Look up a subscriber's language (defaults to 'en'); never throws. */
+export async function languageOf(id: string): Promise<'en' | 'sw'> {
+  const r = await query<{ language: 'en' | 'sw' }>('SELECT language FROM subscribers WHERE id = $1', [id]);
+  return r.rows[0]?.language ?? 'en';
 }
