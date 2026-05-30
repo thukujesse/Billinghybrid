@@ -25,6 +25,10 @@ spec:
     metadata:
       labels:
         app: jtm-api
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "4000"
+        prometheus.io/path: "/metrics"
     spec:
       # Run DB migrations once before the API starts (idempotent — safe to
       # run on every rollout; already-applied migrations are skipped).

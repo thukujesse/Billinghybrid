@@ -86,6 +86,7 @@ portal** at http://localhost:3000/portal (look up the seeded number
 | `notifications` | SMS (Africa's Talking) / WhatsApp / Telegram / Email, driven by events             |
 | i18n            | **Swahili/English** notification copy (per-subscriber) + portal language toggle    |
 | `events`        | In-process event bus (Kafka stand-in) + `events` audit table                       |
+| metrics         | **Prometheus** `/metrics` — HTTP + business counters/histograms (no deps)          |
 | `reports`       | Dashboard, **revenue analytics** (MRR, churn, top plans, CSV export)               |
 
 ## Data flows implemented (from the architecture doc)
