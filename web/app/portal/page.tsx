@@ -1,0 +1,105 @@
+'use client';
+import { useState } from 'react';
+import { api, money } from '@/lib/api';
+
+const GB = 1024 * 1024 * 1024;
+
+export default function Portal() {
+  const [phone, setPhone] = useState('');
+  const [sub, setSub] = useState<any>(null);
+  const [wallet, setWallet] = useState<any>(null);
+  const [usage, setUsage] = useState<any>(null);
+  const [plans, setPlans] = useState<any[]>([]);
+  const [code, setCode] = useState('');
+  const [toast, setToast] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  const refresh = async (id: string) => {
+    const [full, w, u] = await Promise.all([
+      api(`/subscribers/${id}`),
+      api(`/subscribers/${id}/wallet`),
+      api(`/subscribers/${id}/usage`),
+    ]);
+    setSub(full); setWallet(w); setUsage(u);
+    setPlans(await api('/plans'));
+  };
+
+  const lookup = async () => {
+    setToast(null);
+    try {
+      const matches = await api(`/subscribers?phone=${encodeURIComponent(phone)}`);
+      if (!matches.length) { setToast({ ok: false, msg: 'No account for that number' }); setSub(null); return; }
+      await refresh(matches[0].id);
+    } catch (e: any) { setToast({ ok: false, msg: e.message }); }
+  };
+
+  const redeem = async () => {
+    try {
+      await api('/vouchers/redeem', { method: 'POST', body: JSON.stringify({ code, subscriber_id: sub.id }) });
+      setToast({ ok: true, msg: 'Voucher redeemed — you are connected!' });
+      setCode('');
+      refresh(sub.id);
+    } catch (e: any) { setToast({ ok: false, msg: e.message }); }
+  };
+
+  const topup = async () => {
+    const amt = prompt('Top-up via M-Pesa (KES):', '500');
+    if (!amt) return;
+    try {
+      const { checkoutRequestId } = await api('/payments/mpesa/stk', { method: 'POST', body: JSON.stringify({ subscriber_id: sub.id, amount_cents: Math.round(Number(amt) * 100) }) });
+      await api('/payments/mpesa/callback', { method: 'POST', body: JSON.stringify({ checkout_request_id: checkoutRequestId, outcome: 'success' }) });
+      setToast({ ok: true, msg: 'Top-up confirmed' });
+      refresh(sub.id);
+    } catch (e: any) { setToast({ ok: false, msg: e.message }); }
+  };
+
+  return (
+    <div className="container" style={{ maxWidth: 720 }}>
+      <h1>Customer Portal</h1>
+      <p className="sub">Self-service: check your balance &amp; usage, redeem a voucher, or top up via M-Pesa.</p>
+      {toast && <div className={`toast ${toast.ok ? 'ok' : 'err'}`}>{toast.msg}</div>}
+
+      <div className="card">
+        <div className="row">
+          <div><label>Your phone number</label><input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="2547..." /></div>
+          <div style={{ flex: '0 0 auto' }}><button onClick={lookup} disabled={!phone}>Look up</button></div>
+        </div>
+      </div>
+
+      {sub && (
+        <>
+          <div className="grid" style={{ marginTop: 16 }}>
+            <div className="card stat"><div className="label">Account</div><div className="value" style={{ fontSize: 18 }}>{sub.full_name}</div><div className="sub" style={{ margin: 0 }}>{sub.type} · <span className={`badge ${sub.status}`}>{sub.status}</span></div></div>
+            <div className="card stat"><div className="label">Wallet balance</div><div className="value">{money(wallet?.balance_cents ?? 0)}</div><button className="ghost" style={{ marginTop: 10 }} onClick={topup}>M-Pesa top-up</button></div>
+            <div className="card stat"><div className="label">Data used</div><div className="value">{(((Number(usage?.bytes_in ?? 0) + Number(usage?.bytes_out ?? 0))) / GB).toFixed(2)} GB</div></div>
+          </div>
+
+          <h2>Active subscriptions</h2>
+          <table>
+            <thead><tr><th>Plan</th><th>Status</th><th>Expires</th></tr></thead>
+            <tbody>
+              {(sub.subscriptions ?? []).map((s: any) => {
+                const plan = plans.find((p) => p.id === s.plan_id);
+                return (
+                  <tr key={s.id}>
+                    <td>{plan?.name ?? s.plan_id.slice(0, 8)}</td>
+                    <td><span className={`badge ${s.status}`}>{s.status}</span></td>
+                    <td style={{ color: 'var(--muted)' }}>{s.end_at ? new Date(s.end_at).toLocaleString() : '—'}</td>
+                  </tr>
+                );
+              })}
+              {(!sub.subscriptions || sub.subscriptions.length === 0) && <tr><td colSpan={3} style={{ color: 'var(--muted)' }}>No active plan</td></tr>}
+            </tbody>
+          </table>
+
+          <h2>Redeem a voucher</h2>
+          <div className="card">
+            <div className="row">
+              <div><label>Voucher code</label><input value={code} onChange={(e) => setCode(e.target.value)} placeholder="ABCD-2345-WXYZ" /></div>
+              <div style={{ flex: '0 0 auto' }}><button onClick={redeem} disabled={!code}>Redeem</button></div>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}

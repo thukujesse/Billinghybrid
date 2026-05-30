@@ -1,0 +1,215 @@
+import { Router } from 'express';
+import { z } from 'zod';
+import { ah, parse } from './helpers.js';
+
+import * as plans from '../domains/plans/service.js';
+import * as subscribers from '../domains/subscribers/service.js';
+import * as subscriptions from '../domains/subscriptions/service.js';
+import * as billing from '../domains/billing/service.js';
+import * as payments from '../domains/payments/service.js';
+import * as vouchers from '../domains/vouchers/service.js';
+import * as resellers from '../domains/resellers/service.js';
+import * as usage from '../domains/usage/service.js';
+import * as wallet from '../domains/wallet/service.js';
+import * as reports from '../domains/reports/service.js';
+
+export const api = Router();
+
+// ---------------------------- Dashboard -----------------------------
+api.get('/dashboard', ah(async (_req, res) => res.json(await reports.dashboard())));
+api.get('/reports/revenue', ah(async (_req, res) => res.json(await reports.revenueByMonth())));
+
+// ----------------------------- Plans --------------------------------
+api.get('/plans', ah(async (req, res) => {
+  res.json(await plans.listPlans(req.query.all === 'true'));
+}));
+api.post('/plans', ah(async (req, res) => {
+  const body = parse(z.object({
+    name: z.string().min(1),
+    type: z.enum(['prepaid', 'postpaid', 'hotspot']),
+    price_cents: z.number().int().nonnegative(),
+    billing_cycle: z.enum(['none', 'daily', 'weekly', 'monthly']).optional(),
+    validity_days: z.number().int().positive().optional(),
+    data_cap_mb: z.number().int().positive().nullable().optional(),
+    speed_down_kbps: z.number().int().positive().nullable().optional(),
+    speed_up_kbps: z.number().int().positive().nullable().optional(),
+    fup_threshold_pct: z.number().int().min(1).max(100).optional(),
+  }), req.body);
+  res.status(201).json(await plans.createPlan(body));
+}));
+api.get('/plans/:id', ah(async (req, res) => res.json(await plans.getPlan(req.params.id))));
+
+// --------------------------- Subscribers ----------------------------
+api.get('/subscribers', ah(async (req, res) => {
+  const phone = req.query.phone as string | undefined;
+  if (phone) {
+    const all = await subscribers.listSubscribers();
+    return res.json(all.filter((s) => s.phone === phone));
+  }
+  res.json(await subscribers.listSubscribers());
+}));
+api.post('/subscribers', ah(async (req, res) => {
+  const body = parse(z.object({
+    full_name: z.string().min(1),
+    phone: z.string().min(7),
+    email: z.string().email().optional(),
+    type: z.enum(['hotspot', 'pppoe']).optional(),
+    reseller_id: z.string().uuid().optional(),
+    pppoe_username: z.string().optional(),
+    pppoe_password: z.string().optional(),
+  }), req.body);
+  res.status(201).json(await subscribers.createSubscriber(body));
+}));
+api.get('/subscribers/:id', ah(async (req, res) => {
+  const sub = await subscribers.getSubscriber(req.params.id);
+  const subs = await subscriptions.listForSubscriber(sub.id);
+  const w = await wallet.getWallet('subscriber', sub.id);
+  res.json({ ...sub, subscriptions: subs, wallet: w });
+}));
+api.post('/subscribers/:id/suspend', ah(async (req, res) => {
+  res.json(await subscribers.suspendSubscriber(req.params.id, req.body?.reason));
+}));
+api.post('/subscribers/:id/restore', ah(async (req, res) => {
+  res.json(await subscribers.restoreSubscriber(req.params.id));
+}));
+api.get('/subscribers/:id/invoices', ah(async (req, res) => {
+  res.json(await billing.listInvoices(req.params.id));
+}));
+api.get('/subscribers/:id/wallet', ah(async (req, res) => {
+  const w = await wallet.getWallet('subscriber', req.params.id);
+  if (!w) return res.json({ balance_cents: 0, entries: [] });
+  res.json({ ...w, entries: await wallet.listLedger(w.id) });
+}));
+
+// -------------------------- Subscriptions ---------------------------
+api.post('/subscribers/:id/subscribe', ah(async (req, res) => {
+  const body = parse(z.object({ plan_id: z.string().uuid() }), req.body);
+  res.status(201).json(await subscriptions.activateForPlan(req.params.id, body.plan_id));
+}));
+
+// ----------------------------- Billing ------------------------------
+api.get('/invoices', ah(async (_req, res) => res.json(await billing.listInvoices())));
+api.get('/invoices/:id', ah(async (req, res) => res.json(await billing.getInvoice(req.params.id))));
+api.post('/invoices', ah(async (req, res) => {
+  const body = parse(z.object({
+    subscriber_id: z.string().uuid(),
+    subscription_id: z.string().uuid().optional(),
+    lines: z.array(z.object({
+      description: z.string().min(1),
+      quantity: z.number().int().positive().optional(),
+      unit_price_cents: z.number().int().nonnegative(),
+    })).min(1),
+  }), req.body);
+  res.status(201).json(await billing.createInvoice(body.subscriber_id, body.lines, { subscriptionId: body.subscription_id }));
+}));
+api.post('/invoices/:id/charge', ah(async (req, res) => {
+  res.json(await billing.chargeFromWallet(req.params.id));
+}));
+api.post('/billing/run-cycle', ah(async (_req, res) => res.json(await billing.runBillingCycle())));
+api.post('/billing/run-dunning', ah(async (_req, res) => res.json(await billing.runDunning())));
+
+// ----------------------------- Payments -----------------------------
+api.post('/payments/mpesa/stk', ah(async (req, res) => {
+  const body = parse(z.object({
+    subscriber_id: z.string().uuid(),
+    amount_cents: z.number().int().positive(),
+    invoice_id: z.string().uuid().optional(),
+  }), req.body);
+  res.status(201).json(await payments.initiateMpesa({
+    subscriberId: body.subscriber_id,
+    amountCents: body.amount_cents,
+    invoiceId: body.invoice_id,
+  }));
+}));
+// M-Pesa Daraja calls this; also usable to confirm a simulated push.
+api.post('/payments/mpesa/callback', ah(async (req, res) => {
+  const body = parse(z.object({
+    checkout_request_id: z.string(),
+    outcome: z.enum(['success', 'failed']).optional(),
+  }), req.body);
+  res.json(await payments.confirmPayment(body.checkout_request_id, body.outcome ?? 'success', req.body));
+}));
+api.post('/payments/stripe/topup', ah(async (req, res) => {
+  const body = parse(z.object({
+    subscriber_id: z.string().uuid(),
+    amount_cents: z.number().int().positive(),
+  }), req.body);
+  res.status(201).json(await payments.topUpViaStripe({ subscriberId: body.subscriber_id, amountCents: body.amount_cents }));
+}));
+api.post('/payments/:ref/confirm', ah(async (req, res) => {
+  res.json(await payments.confirmPayment(req.params.ref, req.body?.outcome ?? 'success', req.body ?? {}));
+}));
+api.get('/payments', ah(async (req, res) => {
+  res.json(await payments.listPayments(req.query.subscriber_id as string | undefined));
+}));
+
+// ----------------------------- Vouchers -----------------------------
+api.get('/vouchers', ah(async (req, res) => {
+  res.json(await vouchers.listVouchers({
+    batchId: req.query.batch_id as string | undefined,
+    status: req.query.status as string | undefined,
+  }));
+}));
+api.get('/voucher-batches', ah(async (_req, res) => res.json(await vouchers.listBatches())));
+api.post('/vouchers/batch', ah(async (req, res) => {
+  const body = parse(z.object({
+    plan_id: z.string().uuid(),
+    quantity: z.number().int().min(1).max(5000),
+    prefix: z.string().max(10).optional(),
+    reseller_id: z.string().uuid().optional(),
+    created_by: z.string().optional(),
+  }), req.body);
+  res.status(201).json(await vouchers.generateBatch({
+    planId: body.plan_id,
+    quantity: body.quantity,
+    prefix: body.prefix,
+    resellerId: body.reseller_id,
+    createdBy: body.created_by,
+  }));
+}));
+api.post('/vouchers/redeem', ah(async (req, res) => {
+  const body = parse(z.object({
+    code: z.string().min(4),
+    subscriber_id: z.string().uuid(),
+  }), req.body);
+  res.json(await vouchers.redeem(body.code, body.subscriber_id));
+}));
+
+// ----------------------------- Resellers ----------------------------
+api.get('/resellers', ah(async (_req, res) => res.json(await resellers.listResellers())));
+api.post('/resellers', ah(async (req, res) => {
+  const body = parse(z.object({
+    name: z.string().min(1),
+    phone: z.string().optional(),
+    email: z.string().email().optional(),
+    commission_bps: z.number().int().min(0).optional(),
+  }), req.body);
+  res.status(201).json(await resellers.createReseller(body));
+}));
+api.get('/resellers/:id/wallet', ah(async (req, res) => {
+  const w = await wallet.getWallet('reseller', req.params.id);
+  if (!w) return res.json({ balance_cents: 0, entries: [] });
+  res.json({ ...w, entries: await wallet.listLedger(w.id) });
+}));
+api.post('/resellers/:id/topup', ah(async (req, res) => {
+  const body = parse(z.object({ amount_cents: z.number().int().positive() }), req.body);
+  const w = await wallet.getOrCreateWallet('reseller', req.params.id);
+  res.json(await wallet.credit(w.id, body.amount_cents, 'Reseller top-up', { type: 'topup' }));
+}));
+
+// ------------------------------ Usage -------------------------------
+api.post('/usage', ah(async (req, res) => {
+  const body = parse(z.object({
+    subscriber_id: z.string().uuid(),
+    bytes_in: z.number().int().nonnegative(),
+    bytes_out: z.number().int().nonnegative(),
+  }), req.body);
+  res.json(await usage.ingestUsage({
+    subscriberId: body.subscriber_id,
+    bytesIn: body.bytes_in,
+    bytesOut: body.bytes_out,
+  }));
+}));
+api.get('/subscribers/:id/usage', ah(async (req, res) => {
+  res.json(await usage.usageSummary(req.params.id));
+}));
