@@ -63,6 +63,7 @@ portal** at http://localhost:3000/portal (look up the seeded number
 
 | Module          | Responsibility (architecture mapping)                                              |
 |-----------------|------------------------------------------------------------------------------------|
+| `auth`          | **JWT + RBAC** staff login and **subscriber SMS OTP** login (Layer 2 Auth Service) |
 | `plans`         | Prepaid / postpaid / hotspot packages: price, validity, data cap, FUP threshold    |
 | `subscribers`   | Hotspot & PPPoE accounts; suspend/restore → Provisioning + events                  |
 | `subscriptions` | Activating & extending a subscriber on a plan ("Plan Extend")                      |
@@ -108,6 +109,8 @@ idempotency, FUP throttling, and dunning-driven suspension.
 
 | Method & path                          | Purpose                                  |
 |----------------------------------------|------------------------------------------|
+| `POST /api/auth/login`                 | Staff/admin password login → JWT         |
+| `POST /api/auth/otp/request|verify`    | Subscriber SMS OTP login → JWT           |
 | `GET  /api/dashboard`                  | Aggregate stats for the admin home       |
 | `POST /api/plans`                      | Create a plan                            |
 | `POST /api/subscribers`                | Register a subscriber (auto-creates wallet) |

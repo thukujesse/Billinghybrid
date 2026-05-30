@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { ah, parse } from './helpers.js';
+import { requireAuth } from './middleware/auth.js';
+import * as auth from '../domains/auth/service.js';
 
 import * as plans from '../domains/plans/service.js';
 import * as subscribers from '../domains/subscribers/service.js';
@@ -19,6 +21,34 @@ import * as refunds from '../domains/refunds/service.js';
 
 export const api = Router();
 
+// ------------------------------- Auth -------------------------------
+// Staff/admin password login.
+api.post('/auth/login', ah(async (req, res) => {
+  const body = parse(z.object({ username: z.string().min(1), password: z.string().min(1) }), req.body);
+  res.json(await auth.loginPassword(body.username, body.password));
+}));
+// Create a staff user (admin only when auth is enabled).
+api.post('/auth/users', requireAuth('admin'), ah(async (req, res) => {
+  const body = parse(z.object({
+    username: z.string().min(3),
+    password: z.string().min(6),
+    role: z.enum(['admin', 'staff', 'reseller']).optional(),
+    reseller_id: z.string().uuid().optional(),
+  }), req.body);
+  res.status(201).json(await auth.createUser(body));
+}));
+// Subscriber SMS OTP login.
+api.post('/auth/otp/request', ah(async (req, res) => {
+  const body = parse(z.object({ phone: z.string().min(7) }), req.body);
+  res.json(await auth.requestOtp(body.phone));
+}));
+api.post('/auth/otp/verify', ah(async (req, res) => {
+  const body = parse(z.object({ phone: z.string().min(7), code: z.string().min(4) }), req.body);
+  res.json(await auth.verifyOtp(body.phone, body.code));
+}));
+// Echo the caller's identity from their token.
+api.get('/auth/me', requireAuth(), ah(async (req, res) => res.json(req.user)));
+
 // ---------------------------- Dashboard -----------------------------
 api.get('/dashboard', ah(async (_req, res) => res.json(await reports.dashboard())));
 api.get('/reports/revenue', ah(async (_req, res) => res.json(await reports.revenueByMonth())));
@@ -27,7 +57,7 @@ api.get('/reports/revenue', ah(async (_req, res) => res.json(await reports.reven
 api.get('/plans', ah(async (req, res) => {
   res.json(await plans.listPlans(req.query.all === 'true'));
 }));
-api.post('/plans', ah(async (req, res) => {
+api.post('/plans', requireAuth('admin', 'staff'), ah(async (req, res) => {
   const body = parse(z.object({
     name: z.string().min(1),
     type: z.enum(['prepaid', 'postpaid', 'hotspot']),
@@ -70,10 +100,10 @@ api.get('/subscribers/:id', ah(async (req, res) => {
   const w = await wallet.getWallet('subscriber', sub.id);
   res.json({ ...sub, subscriptions: subs, wallet: w });
 }));
-api.post('/subscribers/:id/suspend', ah(async (req, res) => {
+api.post('/subscribers/:id/suspend', requireAuth('admin', 'staff'), ah(async (req, res) => {
   res.json(await subscribers.suspendSubscriber(req.params.id, req.body?.reason));
 }));
-api.post('/subscribers/:id/restore', ah(async (req, res) => {
+api.post('/subscribers/:id/restore', requireAuth('admin', 'staff'), ah(async (req, res) => {
   res.json(await subscribers.restoreSubscriber(req.params.id));
 }));
 api.get('/subscribers/:id/invoices', ah(async (req, res) => {
@@ -166,7 +196,7 @@ api.get('/payments', ah(async (req, res) => {
 api.get('/credit-notes', ah(async (req, res) => {
   res.json(await credits.listCreditNotes(req.query.subscriber_id as string | undefined));
 }));
-api.post('/credit-notes', ah(async (req, res) => {
+api.post('/credit-notes', requireAuth('admin', 'staff'), ah(async (req, res) => {
   const body = parse(z.object({
     subscriber_id: z.string().uuid(),
     amount_cents: z.number().int().positive(),
@@ -185,7 +215,7 @@ api.post('/credit-notes', ah(async (req, res) => {
 api.get('/refunds', ah(async (req, res) => {
   res.json(await refunds.listRefunds(req.query.payment_id as string | undefined));
 }));
-api.post('/refunds', ah(async (req, res) => {
+api.post('/refunds', requireAuth('admin'), ah(async (req, res) => {
   const body = parse(z.object({
     payment_id: z.string().uuid(),
     amount_cents: z.number().int().positive().optional(),

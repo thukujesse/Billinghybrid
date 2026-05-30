@@ -3,9 +3,17 @@ import { createPlan } from '../domains/plans/service.js';
 import { createSubscriber } from '../domains/subscribers/service.js';
 import { createReseller } from '../domains/resellers/service.js';
 import { credit, getOrCreateWallet } from '../domains/wallet/service.js';
+import { createUser } from '../domains/auth/service.js';
 
 async function seed() {
   console.log('Seeding demo data...');
+
+  // Default admin login (change the password in production).
+  const haveAdmin = await query<{ n: number }>(`SELECT COUNT(*)::int AS n FROM users WHERE username = 'admin'`);
+  if (haveAdmin.rows[0].n === 0) {
+    await createUser({ username: 'admin', password: 'admin123', role: 'admin' });
+    console.log("  admin user created (username: admin / password: admin123)");
+  }
 
   // Kenya VAT 16%
   await query(

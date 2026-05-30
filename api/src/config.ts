@@ -12,6 +12,15 @@ export const config = {
     process.env.DATABASE_URL ?? 'postgres://jtm:jtm@127.0.0.1:5432/jtm',
   currency: process.env.DEFAULT_CURRENCY ?? 'KES',
   taxRegion: process.env.DEFAULT_TAX_REGION ?? 'KE',
+  auth: {
+    // When false, the API runs open (demo mode) and requireAuth injects a
+    // synthetic admin. Set AUTH_ENABLED=true to enforce JWT + RBAC.
+    enabled: (process.env.AUTH_ENABLED ?? 'false') === 'true',
+    jwtSecret: process.env.JWT_SECRET ?? 'dev-insecure-secret-change-me',
+    jwtTtlHours: num('JWT_TTL_HOURS', 12),
+    otpTtlMinutes: num('OTP_TTL_MINUTES', 5),
+    otpMaxAttempts: num('OTP_MAX_ATTEMPTS', 5),
+  },
   dunning: {
     maxAttempts: num('DUNNING_MAX_ATTEMPTS', 3),
     graceDays: num('INVOICE_GRACE_DAYS', 5),

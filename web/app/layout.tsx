@@ -19,7 +19,8 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           <a href="/payments">Payments</a>
           <a href="/vouchers">Vouchers</a>
           <a href="/resellers">Resellers</a>
-          <a href="/portal" style={{ marginLeft: 'auto' }}>Customer Portal →</a>
+          <a href="/login" style={{ marginLeft: 'auto' }}>Sign in</a>
+          <a href="/portal">Customer Portal →</a>
         </nav>
         {children}
       </body>
