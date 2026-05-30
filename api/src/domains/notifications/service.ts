@@ -10,6 +10,7 @@
 import { config } from '../../config.js';
 import { sendSms } from './africastalking.js';
 import { sendWhatsApp, sendWhatsAppTemplate } from './whatsapp.js';
+import { sendTelegram } from './telegram.js';
 
 type Channel = 'sms' | 'whatsapp' | 'telegram' | 'email';
 
@@ -58,6 +59,19 @@ export async function notify(
       console.log(`[notify:whatsapp->meta] ${to}: ${r.ok ? r.detail : 'FAILED ' + r.detail}`);
     } catch (err) {
       console.error(`[notify:whatsapp->meta] failed for ${to}:`, err);
+    }
+    return;
+  }
+  if (channel === 'telegram' && !config.telegram.simulated) {
+    // Admin alerts go to the first configured admin chat (or the given id).
+    const chat = to && to !== 'telegram-admin' ? to : config.telegram.adminChatIds[0];
+    try {
+      if (chat) {
+        const r = await sendTelegram(chat, message);
+        console.log(`[notify:telegram->bot] ${chat}: ${r.ok ? r.detail : 'FAILED ' + r.detail}`);
+      }
+    } catch (err) {
+      console.error(`[notify:telegram->bot] failed:`, err);
     }
     return;
   }

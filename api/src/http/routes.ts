@@ -29,6 +29,8 @@ import * as planchanges from '../domains/planchanges/service.js';
 import * as credits from '../domains/credits/service.js';
 import * as refunds from '../domains/refunds/service.js';
 import { listPlugins } from '../plugins/index.js';
+import { handleUpdate } from '../domains/telegram/bot.js';
+import { config } from '../config.js';
 
 export const api = Router();
 
@@ -59,6 +61,17 @@ api.post('/auth/otp/verify', otpVerifyLimit, ah(async (req, res) => {
 }));
 // Echo the caller's identity from their token.
 api.get('/auth/me', requireAuth(), ah(async (req, res) => res.json(req.user)));
+
+// --------------------------- Telegram bot ---------------------------
+// Telegram posts updates here. The secret path token guards the endpoint;
+// commands are further restricted to the chat-id allowlist inside handleUpdate.
+api.post('/telegram/webhook/:secret', ah(async (req, res) => {
+  if (!config.telegram.webhookSecret || req.params.secret !== config.telegram.webhookSecret) {
+    return res.status(403).json({ error: 'forbidden' });
+  }
+  const result = await handleUpdate(req.body);
+  res.json({ ok: true, handled: result.handled });
+}));
 
 // ----------------------------- Plugins ------------------------------
 api.get('/plugins', ah(async (_req, res) => res.json(listPlugins())));

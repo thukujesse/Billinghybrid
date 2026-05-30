@@ -72,4 +72,18 @@ export const config = {
       return !this.phoneNumberId || !this.accessToken;
     },
   },
+  telegram: {
+    botToken: process.env.TELEGRAM_BOT_TOKEN ?? '',
+    // Comma-separated chat ids allowed to issue admin commands.
+    adminChatIds: (process.env.TELEGRAM_ADMIN_CHAT_IDS ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+    // Secret path token guarding the webhook endpoint.
+    webhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET ?? '',
+    // Without a bot token, Telegram messages are logged rather than sent.
+    get simulated() {
+      return !this.botToken;
+    },
+  },
 };
