@@ -51,6 +51,21 @@ describe('telegram commands', () => {
     expect(reply).toContain('KES');
   });
 
+  it('/topup credits the wallet and validates the amount', async () => {
+    const phone = `6${tag}57`;
+    const sub = await createSubscriber({ full_name: 'TG Topup', phone });
+
+    expect(await handleCommand({ command: 'topup', args: [phone] })).toContain('Usage');
+    expect(await handleCommand({ command: 'topup', args: [phone, '-5'] })).toContain('positive');
+
+    const ok = await handleCommand({ command: 'topup', args: [phone, '500'] });
+    expect(ok).toContain('Topped up');
+
+    const { getWallet } = await import('../src/domains/wallet/service.js');
+    const w = await getWallet('subscriber', sub.id);
+    expect(w?.balance_cents).toBe(50000); // KES 500.00
+  });
+
   it('unknown commands are rejected', async () => {
     expect(await handleCommand({ command: 'nuke', args: [] })).toContain('Unknown command');
   });

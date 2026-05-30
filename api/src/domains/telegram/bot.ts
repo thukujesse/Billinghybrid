@@ -1,9 +1,9 @@
 import { config } from '../../config.js';
 import { sendTelegram } from '../notifications/telegram.js';
 import { listSubscribers, suspendSubscriber, restoreSubscriber } from '../subscribers/service.js';
-import { getWallet } from '../wallet/service.js';
+import { getOrCreateWallet, getWallet, credit } from '../wallet/service.js';
 import { dashboard } from '../reports/service.js';
-import { formatMoney } from '../../lib/money.js';
+import { formatMoney, toCents } from '../../lib/money.js';
 
 /**
  * Telegram admin bot — handles rich commands from authorized chats. Mirrors
@@ -16,6 +16,7 @@ import { formatMoney } from '../../lib/money.js';
  *   /suspend <phone>        suspend a subscriber
  *   /restore <phone>        restore a subscriber
  *   /balance <phone>        wallet balance
+ *   /topup <phone> <amount> credit a subscriber wallet (KES)
  */
 
 export interface ParsedCommand {
@@ -57,6 +58,7 @@ export async function handleCommand(cmd: ParsedCommand): Promise<string> {
         '/suspend <phone> — suspend a subscriber',
         '/restore <phone> — restore a subscriber',
         '/balance <phone> — wallet balance',
+        '/topup <phone> <amount> — credit a wallet (KES)',
       ].join('\n');
 
     case 'status': {
@@ -98,6 +100,17 @@ export async function handleCommand(cmd: ParsedCommand): Promise<string> {
       if (!sub) return 'No subscriber found.';
       const w = await getWallet('subscriber', sub.id);
       return `${sub.full_name}: ${formatMoney(w?.balance_cents ?? 0)}`;
+    }
+
+    case 'topup': {
+      if (!cmd.args[0] || !cmd.args[1]) return 'Usage: /topup <phone> <amount>';
+      const amount = Number(cmd.args[1]);
+      if (!Number.isFinite(amount) || amount <= 0) return 'Amount must be a positive number.';
+      const sub = await findByPhone(cmd.args[0]);
+      if (!sub) return 'No subscriber found.';
+      const w = await getOrCreateWallet('subscriber', sub.id);
+      const updated = await credit(w.id, toCents(amount), 'Admin top-up (Telegram)', { type: 'topup' });
+      return `Topped up ${sub.full_name} by ${formatMoney(toCents(amount))}. New balance: ${formatMoney(updated.balance_cents)}.`;
     }
 
     default:
