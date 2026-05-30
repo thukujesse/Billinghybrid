@@ -65,6 +65,8 @@ export const config = {
   whatsapp: {
     phoneNumberId: process.env.WA_PHONE_NUMBER_ID ?? '',
     accessToken: process.env.WA_ACCESS_TOKEN ?? '',
+    // Name of the pre-approved template used for payment receipts.
+    receiptTemplate: process.env.WA_RECEIPT_TEMPLATE ?? 'payment_receipt',
     // Without a phone-number id + token, WhatsApp is logged rather than sent.
     get simulated() {
       return !this.phoneNumberId || !this.accessToken;

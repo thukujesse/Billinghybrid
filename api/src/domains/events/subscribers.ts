@@ -1,4 +1,5 @@
 import { on } from './bus.js';
+import { config } from '../../config.js';
 import { notifications } from '../notifications/service.js';
 import { languageOf } from '../subscribers/service.js';
 import { t } from '../../lib/i18n.js';
@@ -17,7 +18,12 @@ const ADMIN_CHANNEL = 'telegram-admin';
 on('payment.paid', async (p) => {
   const id = String(p.subscriberId ?? '');
   const lang = id ? await languageOf(id) : 'en';
-  await notifications.whatsapp(id || 'customer', t(lang, 'payment.received'));
+  // A receipt is typically business-initiated (sent after payment, outside the
+  // 24h window), so use a pre-approved template. The "payment_receipt" template
+  // is expected to take one body param: the amount. Falls back to a log in
+  // simulation mode.
+  const amountKes = (Number(p.amount ?? 0) / 100).toFixed(2);
+  await notifications.whatsappTemplate(id || 'customer', config.whatsapp.receiptTemplate, [`KES ${amountKes}`], lang);
 });
 
 on('voucher.redeemed', async (p) => {

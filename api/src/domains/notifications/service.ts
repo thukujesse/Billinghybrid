@@ -9,9 +9,32 @@
 
 import { config } from '../../config.js';
 import { sendSms } from './africastalking.js';
-import { sendWhatsApp } from './whatsapp.js';
+import { sendWhatsApp, sendWhatsAppTemplate } from './whatsapp.js';
 
 type Channel = 'sms' | 'whatsapp' | 'telegram' | 'email';
+
+/**
+ * Send a pre-approved WhatsApp template — the only message type Meta allows to
+ * initiate a conversation outside the 24h customer-care window. Falls back to
+ * logging when WhatsApp is in simulation mode. Never throws.
+ */
+export async function notifyTemplate(
+  to: string,
+  templateName: string,
+  bodyParams: string[] = [],
+  langCode = 'en'
+): Promise<void> {
+  if (!config.whatsapp.simulated) {
+    try {
+      const r = await sendWhatsAppTemplate(to, templateName, bodyParams, langCode);
+      console.log(`[notify:wa-template->meta] ${to} (${templateName}): ${r.ok ? r.detail : 'FAILED ' + r.detail}`);
+    } catch (err) {
+      console.error(`[notify:wa-template->meta] failed for ${to}:`, err);
+    }
+    return;
+  }
+  console.log(`[notify:wa-template] -> ${to}: ${templateName}(${bodyParams.join(', ')})`);
+}
 
 export async function notify(
   channel: Channel,
@@ -44,6 +67,8 @@ export async function notify(
 export const notifications = {
   sms: (to: string, msg: string) => notify('sms', to, msg),
   whatsapp: (to: string, msg: string) => notify('whatsapp', to, msg),
+  whatsappTemplate: (to: string, template: string, params: string[] = [], lang = 'en') =>
+    notifyTemplate(to, template, params, lang),
   telegram: (to: string, msg: string) => notify('telegram', to, msg),
   email: (to: string, msg: string) => notify('email', to, msg),
 };
