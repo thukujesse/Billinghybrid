@@ -83,7 +83,7 @@ portal** at http://localhost:3000/portal (look up the seeded number
 | `network`       | **Pluggable provisioning adapters** — `log` (default) or `mikrotik` (RouterOS)     |
 | `provisioning`  | Drives the selected network adapter and audits every action                       |
 | `storage`       | Object-storage stand-in (S3/MinIO) for PDFs, exports, backups                      |
-| `notifications` | SMS (Africa's Talking) / WhatsApp / Telegram / Email, driven by events             |
+| `notifications` | SMS (Africa's Talking) / WhatsApp (Meta Cloud API) / Telegram / Email, driven by events |
 | i18n            | **Swahili/English** notification copy (per-subscriber) + portal language toggle    |
 | `events`        | In-process event bus (Kafka stand-in) + `events` audit table                       |
 | metrics         | **Prometheus** `/metrics` — HTTP + business counters/histograms (no deps)          |

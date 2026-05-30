@@ -62,4 +62,12 @@ export const config = {
       return !this.apiKey;
     },
   },
+  whatsapp: {
+    phoneNumberId: process.env.WA_PHONE_NUMBER_ID ?? '',
+    accessToken: process.env.WA_ACCESS_TOKEN ?? '',
+    // Without a phone-number id + token, WhatsApp is logged rather than sent.
+    get simulated() {
+      return !this.phoneNumberId || !this.accessToken;
+    },
+  },
 };
