@@ -140,8 +140,17 @@ limiting, PDF generation, and revenue reports.
 | `POST /api/credit-notes`               | Issue a credit note (credits wallet)     |
 | `POST /api/refunds`                    | Refund a payment (full/partial)          |
 
+## Plugins
+
+Extensions load at startup without touching core code. A plugin declares a
+manifest, subscribes to domain events, and/or mounts routes under
+`/api/ext/<plugin-id>` (see `api/src/plugins/`). The built-in `loyalty-points`
+plugin awards points on `payment.paid` and serves them at
+`/api/ext/loyalty-points/:subscriberId`. Disable any plugin via
+`PLUGINS_DISABLED=id1,id2`; list loaded plugins at `GET /api/plugins`.
+
 ## Roadmap (next slices)
 
-Aligned with the architecture doc's later phases: FreeRADIUS + Mikrotik adapters
-behind the Provisioning interface, TimescaleDB for high-volume CDRs, real Kafka,
-auth/RBAC + OTP, PDF invoices to object storage, and Kubernetes deployment.
+Aligned with the architecture doc's later phases: FreeRADIUS deepening,
+TimescaleDB for high-volume CDRs, real Kafka, WhatsApp message templates, and
+a third-party plugin marketplace on top of the plugin registry.

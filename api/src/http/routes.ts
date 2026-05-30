@@ -28,6 +28,7 @@ import * as purchases from '../domains/purchases/service.js';
 import * as planchanges from '../domains/planchanges/service.js';
 import * as credits from '../domains/credits/service.js';
 import * as refunds from '../domains/refunds/service.js';
+import { listPlugins } from '../plugins/index.js';
 
 export const api = Router();
 
@@ -58,6 +59,9 @@ api.post('/auth/otp/verify', otpVerifyLimit, ah(async (req, res) => {
 }));
 // Echo the caller's identity from their token.
 api.get('/auth/me', requireAuth(), ah(async (req, res) => res.json(req.user)));
+
+// ----------------------------- Plugins ------------------------------
+api.get('/plugins', ah(async (_req, res) => res.json(listPlugins())));
 
 // ---------------------------- Dashboard -----------------------------
 api.get('/dashboard', ah(async (_req, res) => res.json(await reports.dashboard())));

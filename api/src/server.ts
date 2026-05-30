@@ -2,7 +2,7 @@ import { createApp } from './app.js';
 import { config } from './config.js';
 import { pool } from './db/pool.js';
 
-const app = createApp();
+const app = await createApp();
 
 const server = app.listen(config.port, () => {
   console.log(`JTM billing API listening on http://localhost:${config.port}`);

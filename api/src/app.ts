@@ -4,10 +4,11 @@ import { api } from './http/routes.js';
 import { errorHandler } from './http/helpers.js';
 import { metricsMiddleware } from './http/middleware/metrics.js';
 import { registry } from './lib/metrics.js';
+import { registerBuiltinPlugins, loadPlugins } from './plugins/index.js';
 import './domains/events/subscribers.js'; // register event handlers
 import './domains/events/metrics.js'; // register metric counters on events
 
-export function createApp() {
+export async function createApp() {
   const app = express();
   app.use(cors());
   app.use(express.json({ limit: '12mb' })); // headroom for base64 KYC uploads
@@ -22,6 +23,11 @@ export function createApp() {
   });
 
   app.use('/api', api);
+
+  // Load plugins and mount their routers under /api/ext/<plugin-id>.
+  registerBuiltinPlugins();
+  const extRouter = await loadPlugins();
+  app.use('/api/ext', extRouter);
 
   app.use((_req, res) => res.status(404).json({ error: 'not_found' }));
   app.use(errorHandler);
