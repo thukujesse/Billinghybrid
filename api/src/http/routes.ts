@@ -2,7 +2,13 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { ah, parse } from './helpers.js';
 import { requireAuth } from './middleware/auth.js';
+import { rateLimit } from './middleware/rateLimit.js';
 import * as auth from '../domains/auth/service.js';
+
+// Auth endpoints are brute-force targets — limit by IP.
+const loginLimit = rateLimit({ name: 'login', windowMs: 60_000, max: 10 });
+const otpRequestLimit = rateLimit({ name: 'otp_req', windowMs: 60_000, max: 5 });
+const otpVerifyLimit = rateLimit({ name: 'otp_vrf', windowMs: 60_000, max: 10 });
 
 import * as plans from '../domains/plans/service.js';
 import * as subscribers from '../domains/subscribers/service.js';
@@ -25,7 +31,7 @@ export const api = Router();
 
 // ------------------------------- Auth -------------------------------
 // Staff/admin password login.
-api.post('/auth/login', ah(async (req, res) => {
+api.post('/auth/login', loginLimit, ah(async (req, res) => {
   const body = parse(z.object({ username: z.string().min(1), password: z.string().min(1) }), req.body);
   res.json(await auth.loginPassword(body.username, body.password));
 }));
@@ -40,11 +46,11 @@ api.post('/auth/users', requireAuth('admin'), ah(async (req, res) => {
   res.status(201).json(await auth.createUser(body));
 }));
 // Subscriber SMS OTP login.
-api.post('/auth/otp/request', ah(async (req, res) => {
+api.post('/auth/otp/request', otpRequestLimit, ah(async (req, res) => {
   const body = parse(z.object({ phone: z.string().min(7) }), req.body);
   res.json(await auth.requestOtp(body.phone));
 }));
-api.post('/auth/otp/verify', ah(async (req, res) => {
+api.post('/auth/otp/verify', otpVerifyLimit, ah(async (req, res) => {
   const body = parse(z.object({ phone: z.string().min(7), code: z.string().min(4) }), req.body);
   res.json(await auth.verifyOtp(body.phone, body.code));
 }));
