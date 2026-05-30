@@ -13,6 +13,7 @@ import * as usage from '../domains/usage/service.js';
 import * as wallet from '../domains/wallet/service.js';
 import * as reports from '../domains/reports/service.js';
 import * as purchases from '../domains/purchases/service.js';
+import * as planchanges from '../domains/planchanges/service.js';
 import * as credits from '../domains/credits/service.js';
 import * as refunds from '../domains/refunds/service.js';
 
@@ -97,6 +98,12 @@ api.post('/subscribers/:id/buy-plan', ah(async (req, res) => {
     recipient_id: z.string().uuid().optional(),
   }), req.body);
   res.json(await purchases.buyPlan({ buyerId: req.params.id, planId: body.plan_id, recipientId: body.recipient_id }));
+}));
+
+// Change plan mid-cycle with proration (upgrade/downgrade).
+api.post('/subscribers/:id/change-plan', ah(async (req, res) => {
+  const body = parse(z.object({ plan_id: z.string().uuid() }), req.body);
+  res.json(await planchanges.changePlan({ subscriberId: req.params.id, newPlanId: body.plan_id }));
 }));
 
 // ----------------------------- Billing ------------------------------

@@ -47,6 +47,11 @@ on('plan.purchased', async (p) => {
   }
 });
 
+on('plan.changed', async (p) => {
+  const verb = p.direction === 'upgrade' ? 'upgraded' : p.direction === 'downgrade' ? 'downgraded' : 'changed';
+  await notifications.sms(String(p.subscriberId), `Your plan has been ${verb}. It takes effect immediately.`);
+});
+
 on('credit_note.issued', async (p) => {
   await notifications.sms(String(p.subscriberId), `A credit has been added to your account.`);
 });

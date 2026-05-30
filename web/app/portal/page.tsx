@@ -13,6 +13,7 @@ export default function Portal() {
   const [code, setCode] = useState('');
   const [buyPlanId, setBuyPlanId] = useState('');
   const [giftPhone, setGiftPhone] = useState('');
+  const [changePlanId, setChangePlanId] = useState('');
   const [toast, setToast] = useState<{ ok: boolean; msg: string } | null>(null);
 
   const refresh = async (id: string) => {
@@ -58,6 +59,21 @@ export default function Portal() {
         refresh(sub.id);
       } else {
         setToast({ ok: false, msg: r.reason === 'insufficient_balance' ? 'Insufficient balance — top up first' : 'Payment failed' });
+      }
+    } catch (e: any) { setToast({ ok: false, msg: e.message }); }
+  };
+
+  const change = async () => {
+    try {
+      const r = await api(`/subscribers/${sub.id}/change-plan`, { method: 'POST', body: JSON.stringify({ plan_id: changePlanId }) });
+      if (r.paid) {
+        const net = r.net_cents;
+        const msg = net > 0 ? `${r.direction}: charged ${money(net)} (prorated)` : net < 0 ? `${r.direction}: credited ${money(-net)} to wallet` : 'plan changed';
+        setToast({ ok: true, msg });
+        setChangePlanId('');
+        refresh(sub.id);
+      } else {
+        setToast({ ok: false, msg: r.reason === 'insufficient_balance' ? 'Insufficient balance for the upgrade — top up first' : 'Change failed' });
       }
     } catch (e: any) { setToast({ ok: false, msg: e.message }); }
   };
@@ -111,6 +127,24 @@ export default function Portal() {
               {(!sub.subscriptions || sub.subscriptions.length === 0) && <tr><td colSpan={3} style={{ color: 'var(--muted)' }}>No active plan</td></tr>}
             </tbody>
           </table>
+
+          {(sub.subscriptions ?? []).some((s: any) => s.status === 'active') && (
+            <>
+              <h2>Change plan (prorated)</h2>
+              <div className="card">
+                <div className="row">
+                  <div><label>Switch to</label>
+                    <select value={changePlanId} onChange={(e) => setChangePlanId(e.target.value)}>
+                      <option value="">Select plan…</option>
+                      {plans.map((p) => <option key={p.id} value={p.id}>{p.name} — {money(p.price_cents)}</option>)}
+                    </select>
+                  </div>
+                  <div style={{ flex: '0 0 auto' }}><button onClick={change} disabled={!changePlanId}>Change plan</button></div>
+                </div>
+                <p className="sub" style={{ margin: '10px 0 0' }}>Upgrades charge the prorated difference; downgrades credit your wallet.</p>
+              </div>
+            </>
+          )}
 
           <h2>Buy a plan</h2>
           <div className="card">

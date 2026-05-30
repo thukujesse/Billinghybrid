@@ -70,6 +70,7 @@ portal** at http://localhost:3000/portal (look up the seeded number
 | `tax`           | Per-region VAT (Kenya 16% = 1600 bps) applied to invoices                          |
 | `billing`       | Invoices, the **monthly billing cycle**, and the **dunning engine** (3 strikes → suspend) |
 | `purchases`     | **Buy a plan** from wallet, incl. **buy-for-a-friend** gifting                     |
+| `planchanges`   | **Upgrade/downgrade with proration** — net difference charged or credited mid-cycle |
 | `credits`       | **Credit notes & adjustments** (NET-NEW) — applied to the wallet                   |
 | `refunds`       | **Refund workflows** (NET-NEW) — full/partial, wallet / M-Pesa / manual            |
 | `payments`      | M-Pesa STK Push + Stripe, **idempotent** confirmation, wallet credit               |
@@ -120,6 +121,7 @@ idempotency, FUP throttling, and dunning-driven suspension.
 | `POST /api/vouchers/redeem`            | Redeem a voucher (Flow 01)               |
 | `POST /api/usage`                      | Ingest usage & enforce FUP (Flow 03)     |
 | `POST /api/subscribers/:id/buy-plan`   | Buy/gift a plan from wallet              |
+| `POST /api/subscribers/:id/change-plan`| Upgrade/downgrade with proration         |
 | `POST /api/credit-notes`               | Issue a credit note (credits wallet)     |
 | `POST /api/refunds`                    | Refund a payment (full/partial)          |
 
