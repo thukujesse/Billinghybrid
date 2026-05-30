@@ -72,6 +72,14 @@ export const config = {
       return !this.phoneNumberId || !this.accessToken;
     },
   },
+  email: {
+    apiKey: process.env.SENDGRID_API_KEY ?? '',
+    from: process.env.EMAIL_FROM ?? 'no-reply@jtm.example',
+    // Without an API key, email is logged rather than sent.
+    get simulated() {
+      return !this.apiKey;
+    },
+  },
   telegram: {
     botToken: process.env.TELEGRAM_BOT_TOKEN ?? '',
     // Comma-separated chat ids allowed to issue admin commands.

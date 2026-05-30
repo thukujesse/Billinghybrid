@@ -11,8 +11,21 @@ import { config } from '../../config.js';
 import { sendSms } from './africastalking.js';
 import { sendWhatsApp, sendWhatsAppTemplate } from './whatsapp.js';
 import { sendTelegram } from './telegram.js';
+import { sendEmail } from './email.js';
 
 type Channel = 'sms' | 'whatsapp' | 'telegram' | 'email';
+
+/**
+ * For the email channel, a message may carry its subject as the first line
+ * ("Subject\nBody"); otherwise a default subject is used.
+ */
+function splitSubject(message: string): { subject: string; body: string } {
+  const nl = message.indexOf('\n');
+  if (nl > 0 && nl <= 120) {
+    return { subject: message.slice(0, nl).trim(), body: message.slice(nl + 1).trim() };
+  }
+  return { subject: 'JTM Networks', body: message };
+}
 
 /**
  * Send a pre-approved WhatsApp template — the only message type Meta allows to
@@ -59,6 +72,16 @@ export async function notify(
       console.log(`[notify:whatsapp->meta] ${to}: ${r.ok ? r.detail : 'FAILED ' + r.detail}`);
     } catch (err) {
       console.error(`[notify:whatsapp->meta] failed for ${to}:`, err);
+    }
+    return;
+  }
+  if (channel === 'email' && !config.email.simulated) {
+    const { subject, body } = splitSubject(message);
+    try {
+      const r = await sendEmail(to, subject, body);
+      console.log(`[notify:email->sendgrid] ${to}: ${r.ok ? r.detail : 'FAILED ' + r.detail}`);
+    } catch (err) {
+      console.error(`[notify:email->sendgrid] failed for ${to}:`, err);
     }
     return;
   }
