@@ -7,6 +7,9 @@
  * (triggered by domain events) stay the same.
  */
 
+import { config } from '../../config.js';
+import { sendSms } from './africastalking.js';
+
 type Channel = 'sms' | 'whatsapp' | 'telegram' | 'email';
 
 export async function notify(
@@ -14,6 +17,19 @@ export async function notify(
   to: string,
   message: string
 ): Promise<void> {
+  // SMS goes live through Africa's Talking when credentials are set; every
+  // other channel (and SMS without creds) logs. Failures never throw — a
+  // notification must not break the business flow that triggered it.
+  if (channel === 'sms' && !config.sms.simulated) {
+    try {
+      const r = await sendSms(to, message);
+      console.log(`[notify:sms->AT] ${to}: ${r.detail}`);
+      return;
+    } catch (err) {
+      console.error(`[notify:sms->AT] failed for ${to}:`, err);
+      return;
+    }
+  }
   console.log(`[notify:${channel}] -> ${to}: ${message}`);
 }
 

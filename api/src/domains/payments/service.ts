@@ -5,6 +5,8 @@ import { config } from '../../config.js';
 import { badRequest, notFound } from '../../lib/errors.js';
 import { getOrCreateWallet, credit } from '../wallet/service.js';
 import { chargeFromWallet } from '../billing/service.js';
+import { getSubscriber } from '../subscribers/service.js';
+import { stkPush } from './daraja.js';
 import { emit } from '../events/bus.js';
 
 export interface Payment {
@@ -57,7 +59,20 @@ export async function initiateMpesa(input: {
   invoiceId?: string;
 }): Promise<{ payment: Payment; checkoutRequestId: string; simulated: boolean }> {
   if (input.amountCents <= 0) throw badRequest('amount must be positive');
-  const checkoutRequestId = `ws_CO_${randomUUID()}`;
+
+  // Live mode: ask Daraja for a CheckoutRequestID. Simulation mode (no creds):
+  // mint our own id that can be confirmed via the callback endpoint.
+  let checkoutRequestId = `ws_CO_${randomUUID()}`;
+  if (!config.mpesa.simulated) {
+    const subscriber = await getSubscriber(input.subscriberId);
+    const result = await stkPush({
+      phone: subscriber.phone,
+      amountKes: Math.round(input.amountCents / 100),
+      accountReference: subscriber.phone,
+      description: 'Top-up',
+    });
+    checkoutRequestId = result.checkoutRequestId;
+  }
 
   const payment = await insertPayment({
     subscriber_id: input.subscriberId,
@@ -69,7 +84,6 @@ export async function initiateMpesa(input: {
     status: 'pending',
   });
 
-  // Real mode would POST to Daraja STK push here using config.mpesa.*
   await emit('payment.initiated', { paymentId: payment.id, provider: 'mpesa' });
   return { payment, checkoutRequestId, simulated: config.mpesa.simulated };
 }

@@ -53,4 +53,13 @@ export const config = {
       return !this.secretKey;
     },
   },
+  sms: {
+    username: process.env.AT_USERNAME ?? 'sandbox',
+    apiKey: process.env.AT_API_KEY ?? '',
+    senderId: process.env.AT_SENDER_ID ?? '',
+    // Without an API key, SMS is logged rather than sent.
+    get simulated() {
+      return !this.apiKey;
+    },
+  },
 };

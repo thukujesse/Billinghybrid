@@ -15,6 +15,7 @@ import * as subscribers from '../domains/subscribers/service.js';
 import * as subscriptions from '../domains/subscriptions/service.js';
 import * as billing from '../domains/billing/service.js';
 import * as payments from '../domains/payments/service.js';
+import { parseCallback } from '../domains/payments/daraja.js';
 import * as vouchers from '../domains/vouchers/service.js';
 import * as resellers from '../domains/resellers/service.js';
 import * as usage from '../domains/usage/service.js';
@@ -195,6 +196,13 @@ api.post('/payments/mpesa/stk', ah(async (req, res) => {
 }));
 // M-Pesa Daraja calls this; also usable to confirm a simulated push.
 api.post('/payments/mpesa/callback', ah(async (req, res) => {
+  // Accept the real Daraja callback shape ({ Body: { stkCallback }}) or the
+  // simple simulation shape ({ checkout_request_id, outcome }).
+  const daraja = parseCallback(req.body);
+  if (daraja) {
+    await payments.confirmPayment(daraja.checkoutRequestId, daraja.success ? 'success' : 'failed', req.body);
+    return res.json({ ResultCode: 0, ResultDesc: 'Accepted' }); // Daraja-required ack
+  }
   const body = parse(z.object({
     checkout_request_id: z.string(),
     outcome: z.enum(['success', 'failed']).optional(),
