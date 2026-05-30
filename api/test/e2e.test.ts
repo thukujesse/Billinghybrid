@@ -48,8 +48,13 @@ afterAll(async () => {
 });
 
 describe('e2e: health, metrics, plugins', () => {
-  it('serves health, prometheus metrics, and the plugin list', async () => {
+  it('serves health, readiness, prometheus metrics, and the plugin list', async () => {
     expect((await http('GET', '/health')).json.ok).toBe(true);
+
+    // Readiness verifies DB connectivity (the test DB is up).
+    const ready = await http('GET', '/ready');
+    expect(ready.status).toBe(200);
+    expect(ready.json).toEqual({ ok: true, db: 'up' });
 
     const metrics = await http('GET', '/metrics');
     expect(metrics.headers.get('content-type')).toContain('text/plain');

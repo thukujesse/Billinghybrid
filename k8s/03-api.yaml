@@ -54,12 +54,15 @@ spec:
           volumeMounts:
             - name: storage
               mountPath: /data/storage
+          # Readiness verifies DB connectivity — a pod that can't reach
+          # Postgres is pulled from the Service instead of serving 500s.
           readinessProbe:
             httpGet:
-              path: /health
+              path: /ready
               port: 4000
             initialDelaySeconds: 5
             periodSeconds: 10
+          # Liveness is a cheap process check — a DB blip should not restart it.
           livenessProbe:
             httpGet:
               path: /health
