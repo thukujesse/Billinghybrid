@@ -16,6 +16,10 @@ export const config = {
   storage: {
     dir: process.env.STORAGE_DIR ?? './storage',
   },
+  network: {
+    // 'log' (default, safe) or 'mikrotik' (RouterOS command planner)
+    driver: process.env.NETWORK_DRIVER ?? 'log',
+  },
   auth: {
     // When false, the API runs open (demo mode) and requireAuth injects a
     // synthetic admin. Set AUTH_ENABLED=true to enforce JWT + RBAC.

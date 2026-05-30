@@ -15,6 +15,7 @@ import * as usage from '../domains/usage/service.js';
 import * as wallet from '../domains/wallet/service.js';
 import * as reports from '../domains/reports/service.js';
 import { getInvoicePdf } from '../domains/billing/invoicePdf.js';
+import * as routers from '../domains/routers/service.js';
 import * as purchases from '../domains/purchases/service.js';
 import * as planchanges from '../domains/planchanges/service.js';
 import * as credits from '../domains/credits/service.js';
@@ -289,6 +290,26 @@ api.post('/resellers/:id/topup', ah(async (req, res) => {
   const body = parse(z.object({ amount_cents: z.number().int().positive() }), req.body);
   const w = await wallet.getOrCreateWallet('reseller', req.params.id);
   res.json(await wallet.credit(w.id, body.amount_cents, 'Reseller top-up', { type: 'topup' }));
+}));
+
+// ----------------------------- Routers ------------------------------
+api.get('/routers', ah(async (_req, res) => res.json(await routers.listRouters())));
+api.post('/routers', requireAuth('admin', 'staff'), ah(async (req, res) => {
+  const body = parse(z.object({
+    name: z.string().min(1),
+    host: z.string().min(1),
+    api_port: z.number().int().positive().optional(),
+    type: z.enum(['mikrotik', 'radius']).optional(),
+    site: z.string().optional(),
+    username: z.string().optional(),
+    password: z.string().optional(),
+  }), req.body);
+  res.status(201).json(await routers.createRouter(body));
+}));
+api.post('/subscribers/:id/assign-router', requireAuth('admin', 'staff'), ah(async (req, res) => {
+  const body = parse(z.object({ router_id: z.string().uuid() }), req.body);
+  await routers.assignSubscriber(req.params.id, body.router_id);
+  res.json({ ok: true });
 }));
 
 // ------------------------------ Usage -------------------------------

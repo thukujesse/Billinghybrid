@@ -40,9 +40,15 @@ async function seed() {
   const rw = await getOrCreateWallet('reseller', reseller.id);
   await credit(rw.id, 5_000_00, 'Initial float'); // KES 5,000
 
+  // Router fleet
+  const { createRouter, assignSubscriber } = await import('../domains/routers/service.js');
+  const edge = await createRouter({ name: 'Edge-Nairobi-01', host: '10.10.0.1', site: 'Nairobi CBD' });
+  await createRouter({ name: 'Edge-Kisumu-01', host: '10.20.0.1', site: 'Kisumu' });
+
   // Subscribers
   const alice = await createSubscriber({ full_name: 'Alice Wanjiru', phone: '254712000001', type: 'hotspot' });
   const bob = await createSubscriber({ full_name: 'Bob Otieno', phone: '254712000002', type: 'pppoe', pppoe_username: 'bob.otieno' });
+  await assignSubscriber(bob.id, edge.id);
 
   // Give Alice some wallet balance for prepaid demos
   const aw = await getOrCreateWallet('subscriber', alice.id);

@@ -1,30 +1,51 @@
 import { query } from '../../db/pool.js';
+import { getAdapter, type NetworkAction } from '../network/index.js';
+import { routerForSubscriber } from '../routers/service.js';
 
 /**
  * Provisioning Service — translates billing events into network actions.
  *
- * In production this calls the Mikrotik RouterOS API (add/remove user, set
- * rate-limit, block IP) and FreeRADIUS (CoA / disconnect). Here we record the
- * intent to `provisioning_actions` so the rest of the system — and the admin
- * UI — can be built and tested end-to-end without live routers. Swap the body
- * of `apply()` for a real RouterOS adapter and everything upstream is unchanged.
+ * It resolves the subscriber's router and PPPoE identity, hands the action to
+ * the configured NetworkAdapter (log by default, Mikrotik RouterOS when
+ * NETWORK_DRIVER=mikrotik), and records the outcome to `provisioning_actions`
+ * for audit. Swap the adapter — not this service — to integrate live gear.
  */
-
-type Action = 'activate' | 'suspend' | 'restore' | 'throttle' | 'unthrottle';
-
 async function apply(
   subscriberId: string,
-  action: Action,
+  action: NetworkAction,
   detail: Record<string, unknown> = {}
 ): Promise<void> {
-  // --- real adapter would go here ---
-  // e.g. routerOS.setRateLimit(user, ...) / radius.disconnect(user)
+  const adapter = getAdapter();
+
+  // Resolve routing + identity context (best-effort).
+  const [router, subRow] = await Promise.all([
+    routerForSubscriber(subscriberId).catch(() => null),
+    query<{ pppoe_username: string | null }>('SELECT pppoe_username FROM subscribers WHERE id = $1', [subscriberId]),
+  ]);
+
+  let status: 'applied' | 'failed' = 'applied';
+  let note = '';
+  try {
+    const result = await adapter.apply(action, {
+      subscriberId,
+      pppoeUsername: subRow.rows[0]?.pppoe_username ?? null,
+      router: router
+        ? { id: router.id, name: router.name, host: router.host, api_port: router.api_port, type: router.type }
+        : null,
+      detail,
+    });
+    note = result.note;
+    status = result.ok ? 'applied' : 'failed';
+  } catch (err) {
+    status = 'failed';
+    note = err instanceof Error ? err.message : String(err);
+  }
+
   await query(
     `INSERT INTO provisioning_actions (subscriber_id, action, status, detail)
-     VALUES ($1, $2, 'applied', $3)`,
-    [subscriberId, action, JSON.stringify(detail)]
+     VALUES ($1, $2, $3, $4)`,
+    [subscriberId, action, status, JSON.stringify({ ...detail, adapter: adapter.name, note })]
   );
-  console.log(`[provisioning] ${action} -> subscriber ${subscriberId}`);
 }
 
 export const provisioning = {
