@@ -1,0 +1,28 @@
+# Routes the portal at / and the API at /api on a single host.
+# Assumes an ingress controller (e.g. ingress-nginx) is installed.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: jtm
+  namespace: jtm
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  rules:
+    - host: billing.example.com
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: jtm-api
+                port:
+                  number: 4000
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: jtm-web
+                port:
+                  number: 3000

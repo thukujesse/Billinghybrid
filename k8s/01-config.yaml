@@ -1,0 +1,45 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jtm-config
+  namespace: jtm
+data:
+  NODE_ENV: "production"
+  PORT: "4000"
+  DEFAULT_CURRENCY: "KES"
+  DEFAULT_TAX_REGION: "KE"
+  BRAND_NAME: "JTM Networks"
+  AUTH_ENABLED: "true"
+  STORAGE_DIR: "/data/storage"
+  NETWORK_DRIVER: "log"
+  MPESA_ENV: "sandbox"
+  AT_USERNAME: "sandbox"
+---
+# Secrets are committed here with PLACEHOLDER values only. In a real cluster,
+# create them out-of-band (kubectl create secret / sealed-secrets / a vault)
+# and never commit live credentials.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: jtm-secrets
+  namespace: jtm
+type: Opaque
+stringData:
+  DATABASE_URL: "postgres://jtm:jtm@jtm-db:5432/jtm"
+  JWT_SECRET: "CHANGE-ME-to-a-long-random-string"
+  MPESA_CONSUMER_KEY: ""
+  MPESA_CONSUMER_SECRET: ""
+  MPESA_PASSKEY: ""
+  STRIPE_SECRET_KEY: ""
+  AT_API_KEY: ""
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: jtm-db-secret
+  namespace: jtm
+type: Opaque
+stringData:
+  POSTGRES_USER: "jtm"
+  POSTGRES_PASSWORD: "jtm"
+  POSTGRES_DB: "jtm"

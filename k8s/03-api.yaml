@@ -1,0 +1,107 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: jtm-storage-pvc
+  namespace: jtm
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jtm-api
+  namespace: jtm
+  labels:
+    app: jtm-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: jtm-api
+  template:
+    metadata:
+      labels:
+        app: jtm-api
+    spec:
+      # Run DB migrations once before the API starts (idempotent — safe to
+      # run on every rollout; already-applied migrations are skipped).
+      initContainers:
+        - name: migrate
+          image: jtm/api:latest
+          command: ["node", "dist/db/migrate.js"]
+          envFrom:
+            - configMapRef:
+                name: jtm-config
+            - secretRef:
+                name: jtm-secrets
+      containers:
+        - name: api
+          image: jtm/api:latest
+          ports:
+            - containerPort: 4000
+          envFrom:
+            - configMapRef:
+                name: jtm-config
+            - secretRef:
+                name: jtm-secrets
+          volumeMounts:
+            - name: storage
+              mountPath: /data/storage
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 4000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 4000
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "1"
+              memory: "512Mi"
+      volumes:
+        - name: storage
+          persistentVolumeClaim:
+            claimName: jtm-storage-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jtm-api
+  namespace: jtm
+spec:
+  selector:
+    app: jtm-api
+  ports:
+    - port: 4000
+      targetPort: 4000
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: jtm-api
+  namespace: jtm
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: jtm-api
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
