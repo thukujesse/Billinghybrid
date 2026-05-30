@@ -14,6 +14,7 @@ export default function Portal() {
   const [buyPlanId, setBuyPlanId] = useState('');
   const [giftPhone, setGiftPhone] = useState('');
   const [changePlanId, setChangePlanId] = useState('');
+  const [kycType, setKycType] = useState('id_card');
   const [toast, setToast] = useState<{ ok: boolean; msg: string } | null>(null);
 
   const refresh = async (id: string) => {
@@ -78,6 +79,24 @@ export default function Portal() {
     } catch (e: any) { setToast({ ok: false, msg: e.message }); }
   };
 
+  const uploadKyc = async (file: File) => {
+    try {
+      const dataUrl: string = await new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(String(r.result));
+        r.onerror = reject;
+        r.readAsDataURL(file);
+      });
+      const base64 = dataUrl.split(',')[1] ?? '';
+      await api(`/subscribers/${sub.id}/kyc`, {
+        method: 'POST',
+        body: JSON.stringify({ doc_type: kycType, filename: file.name, content_base64: base64, content_type: file.type }),
+      });
+      setToast({ ok: true, msg: 'Document uploaded — pending review' });
+      refresh(sub.id);
+    } catch (e: any) { setToast({ ok: false, msg: e.message }); }
+  };
+
   const topup = async () => {
     const amt = prompt('Top-up via M-Pesa (KES):', '500');
     if (!amt) return;
@@ -108,6 +127,21 @@ export default function Portal() {
             <div className="card stat"><div className="label">Account</div><div className="value" style={{ fontSize: 18 }}>{sub.full_name}</div><div className="sub" style={{ margin: 0 }}>{sub.type} · <span className={`badge ${sub.status}`}>{sub.status}</span></div></div>
             <div className="card stat"><div className="label">Wallet balance</div><div className="value">{money(wallet?.balance_cents ?? 0)}</div><button className="ghost" style={{ marginTop: 10 }} onClick={topup}>M-Pesa top-up</button></div>
             <div className="card stat"><div className="label">Data used</div><div className="value">{(((Number(usage?.bytes_in ?? 0) + Number(usage?.bytes_out ?? 0))) / GB).toFixed(2)} GB</div></div>
+          </div>
+
+          <h2>Verify your identity (KYC) — <span className={`badge ${sub.kyc_status === 'verified' ? 'active' : sub.kyc_status === 'rejected' ? 'suspended' : 'pending'}`}>{sub.kyc_status}</span></h2>
+          <div className="card">
+            <div className="row">
+              <div><label>Document type</label>
+                <select value={kycType} onChange={(e) => setKycType(e.target.value)}>
+                  <option value="id_card">National ID</option>
+                  <option value="passport">Passport</option>
+                  <option value="selfie">Selfie</option>
+                  <option value="other">Other</option>
+                </select>
+              </div>
+              <div><label>File</label><input type="file" onChange={(e) => e.target.files?.[0] && uploadKyc(e.target.files[0])} /></div>
+            </div>
           </div>
 
           <h2>Active subscriptions</h2>

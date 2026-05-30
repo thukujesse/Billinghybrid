@@ -2,6 +2,8 @@
 import { useEffect, useState } from 'react';
 import { api, money } from '@/lib/api';
 
+const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
+
 export default function Subscribers() {
   const [list, setList] = useState<any[]>([]);
   const [form, setForm] = useState({ full_name: '', phone: '', type: 'hotspot', email: '' });
@@ -47,6 +49,20 @@ export default function Subscribers() {
     } catch (e: any) { setToast({ ok: false, msg: e.message }); }
   };
 
+  const reviewKyc = async (id: string) => {
+    try {
+      const docs = await api(`/subscribers/${id}/kyc`);
+      if (!docs.length) { setToast({ ok: false, msg: 'No KYC documents submitted' }); return; }
+      const doc = docs[0];
+      window.open(`${API}/api/kyc/${doc.id}/file`, '_blank');
+      const decision = prompt(`Latest doc: ${doc.filename} (${doc.doc_type}, ${doc.status}).\nType "verify" or "reject":`, 'verify');
+      if (!decision) return;
+      await api(`/kyc/${doc.id}/review`, { method: 'POST', body: JSON.stringify({ decision: decision === 'verify' ? 'verified' : 'rejected' }) });
+      setToast({ ok: true, msg: `KYC ${decision === 'verify' ? 'verified' : 'rejected'}` });
+      load();
+    } catch (e: any) { setToast({ ok: false, msg: e.message }); }
+  };
+
   return (
     <div className="container">
       <h1>Subscribers</h1>
@@ -79,6 +95,7 @@ export default function Subscribers() {
               <td><span className={`badge ${s.status}`}>{s.status}</span></td>
               <td style={{ display: 'flex', gap: 6 }}>
                 <button className="ghost" onClick={() => topup(s.id)}>Top-up</button>
+                <button className="ghost" onClick={() => reviewKyc(s.id)}>KYC</button>
                 {s.status === 'suspended'
                   ? <button className="ghost" onClick={() => act(s.id, 'restore')}>Restore</button>
                   : <button className="ghost" onClick={() => act(s.id, 'suspend')}>Suspend</button>}

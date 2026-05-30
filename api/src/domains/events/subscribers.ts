@@ -59,3 +59,11 @@ on('credit_note.issued', async (p) => {
 on('payment.refunded', async (p) => {
   await notifications.whatsapp('customer', `A refund of ${p.amount} (${p.method}) has been processed.`);
 });
+
+on('kyc.submitted', async (p) => {
+  await notifications.telegram(ADMIN_CHANNEL, `New KYC document submitted by ${p.subscriberId} — review pending.`);
+});
+
+on('kyc.reviewed', async (p) => {
+  await notifications.sms(String(p.subscriberId), `Your KYC has been ${p.decision}.`);
+});

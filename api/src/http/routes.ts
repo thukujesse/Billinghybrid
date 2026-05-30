@@ -22,6 +22,7 @@ import * as wallet from '../domains/wallet/service.js';
 import * as reports from '../domains/reports/service.js';
 import { getInvoicePdf } from '../domains/billing/invoicePdf.js';
 import * as routers from '../domains/routers/service.js';
+import * as kyc from '../domains/kyc/service.js';
 import * as purchases from '../domains/purchases/service.js';
 import * as planchanges from '../domains/planchanges/service.js';
 import * as credits from '../domains/credits/service.js';
@@ -304,6 +305,34 @@ api.post('/resellers/:id/topup', ah(async (req, res) => {
   const body = parse(z.object({ amount_cents: z.number().int().positive() }), req.body);
   const w = await wallet.getOrCreateWallet('reseller', req.params.id);
   res.json(await wallet.credit(w.id, body.amount_cents, 'Reseller top-up', { type: 'topup' }));
+}));
+
+// ------------------------------- KYC --------------------------------
+api.post('/subscribers/:id/kyc', ah(async (req, res) => {
+  const body = parse(z.object({
+    doc_type: z.enum(['id_card', 'passport', 'selfie', 'other']),
+    filename: z.string().min(1),
+    content_base64: z.string().min(1),
+    content_type: z.string().optional(),
+  }), req.body);
+  res.status(201).json(await kyc.uploadDocument({
+    subscriberId: req.params.id,
+    docType: body.doc_type,
+    filename: body.filename,
+    contentBase64: body.content_base64,
+    contentType: body.content_type,
+  }));
+}));
+api.get('/subscribers/:id/kyc', ah(async (req, res) => res.json(await kyc.listForSubscriber(req.params.id))));
+api.get('/kyc/:id/file', requireAuth('admin', 'staff'), ah(async (req, res) => {
+  const { buffer, doc } = await kyc.downloadDocument(req.params.id);
+  res.setHeader('Content-Type', doc.content_type);
+  res.setHeader('Content-Disposition', `inline; filename="${doc.filename}"`);
+  res.send(buffer);
+}));
+api.post('/kyc/:id/review', requireAuth('admin', 'staff'), ah(async (req, res) => {
+  const body = parse(z.object({ decision: z.enum(['verified', 'rejected']), note: z.string().optional() }), req.body);
+  res.json(await kyc.review(req.params.id, body.decision, body.note));
 }));
 
 // ----------------------------- Routers ------------------------------

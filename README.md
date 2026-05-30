@@ -66,6 +66,7 @@ portal** at http://localhost:3000/portal (look up the seeded number
 | `auth`          | **JWT + RBAC** staff login and **subscriber SMS OTP** login (Layer 2 Auth Service) |
 | `plans`         | Prepaid / postpaid / hotspot packages: price, validity, data cap, FUP threshold    |
 | `subscribers`   | Hotspot & PPPoE accounts; suspend/restore → Provisioning + events                  |
+| `kyc`           | **KYC document upload & review** (base64 → object storage, admin verify/reject)    |
 | `subscriptions` | Activating & extending a subscriber on a plan ("Plan Extend")                      |
 | `wallet`        | User Balance / Wallet — **immutable ledger** with row-locked, atomic postings      |
 | `tax`           | Per-region VAT (Kenya 16% = 1600 bps) applied to invoices                          |
