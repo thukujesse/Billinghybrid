@@ -13,6 +13,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <nav className="nav">
           <span className="brand">JTM <em>Billing</em></span>
           <a href="/">Dashboard</a>
+          <a href="/reports">Reports</a>
           <a href="/subscribers">Subscribers</a>
           <a href="/plans">Plans</a>
           <a href="/invoices">Invoices</a>

@@ -60,6 +60,14 @@ api.get('/auth/me', requireAuth(), ah(async (req, res) => res.json(req.user)));
 // ---------------------------- Dashboard -----------------------------
 api.get('/dashboard', ah(async (_req, res) => res.json(await reports.dashboard())));
 api.get('/reports/revenue', ah(async (_req, res) => res.json(await reports.revenueByMonth())));
+api.get('/reports/top-plans', ah(async (_req, res) => res.json(await reports.topPlans())));
+api.get('/reports/churn', ah(async (_req, res) => res.json(await reports.churnAndMrr())));
+api.get('/reports/payments.csv', ah(async (_req, res) => {
+  const csv = await reports.paymentsCsv();
+  res.setHeader('Content-Type', 'text/csv');
+  res.setHeader('Content-Disposition', 'attachment; filename="payments.csv"');
+  res.send(csv);
+}));
 
 // ----------------------------- Plans --------------------------------
 api.get('/plans', ah(async (req, res) => {
