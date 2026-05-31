@@ -119,22 +119,31 @@ export default function Routers() {
             </>
           )}
           {result.vpsAutoAdded && (
-            <h4>Paste this one-liner into the MikroTik (RouterOS 7.x)</h4>
+            <h4>
+              {result.oneLiner
+                ? 'Paste this one-liner into the MikroTik (RouterOS 7.x)'
+                : 'Paste this script into the MikroTik (use /import or paste atomically)'}
+            </h4>
           )}
-          <ScriptBlock text={result.oneLiner} onCopy={copy} />
-          <p className="sub" style={{ marginTop: 8 }}>
-            The token in the URL is single-use and expires in 24 hours.
-            MikroTik will fetch the full WireGuard config + import it.
-          </p>
-
-          <details style={{ marginTop: 16 }}>
-            <summary style={{ cursor: 'pointer', color: 'var(--muted)' }}>
-              Show full script (for manual paste or audit)
-            </summary>
-            <div style={{ marginTop: 8 }}>
-              <ScriptBlock text={result.mikrotikScript} onCopy={copy} />
-            </div>
-          </details>
+          {result.oneLiner ? (
+            <>
+              <ScriptBlock text={result.oneLiner} onCopy={copy} />
+              <p className="sub" style={{ marginTop: 8 }}>
+                The token in the URL is single-use and expires in 24 hours.
+                MikroTik will fetch the full WireGuard config + import it.
+              </p>
+              <details style={{ marginTop: 16 }}>
+                <summary style={{ cursor: 'pointer', color: 'var(--muted)' }}>
+                  Show full script (for manual paste or audit)
+                </summary>
+                <div style={{ marginTop: 8 }}>
+                  <ScriptBlock text={result.mikrotikScript} onCopy={copy} />
+                </div>
+              </details>
+            </>
+          ) : (
+            <ScriptBlock text={result.mikrotikScript} onCopy={copy} />
+          )}
         </div>
       )}
 
