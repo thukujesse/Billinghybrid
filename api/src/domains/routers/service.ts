@@ -234,13 +234,20 @@ function renderRouterOsScript(p: {
 }): string {
   const [host, port] = p.endpoint.split(':');
   return `# --- JTM zero-touch provisioning for "${p.routerName}" ---
-# Paste this entire block into a RouterOS 7.x terminal. Safe to re-run; will
-# refuse if wg-jtm already exists.
+# Idempotent: removes any existing wg-jtm + cross-interface peer for our VPS
+# server, then provisions fresh. Safe to re-run.
 
 :local ver [/system resource get version]
 :if ([:pick $ver 0 1] != "7") do={ :error "RouterOS 7.x required. Found: $ver" }
+
+# Clean up any prior state from a previous provisioning of this router.
 :if ([:len [/interface/wireguard find name=wg-jtm]] > 0) do={
-  :error "wg-jtm already exists. Remove it before re-provisioning."
+  /ip/address remove [find interface=wg-jtm]
+  /interface/wireguard remove [find name=wg-jtm]
+}
+# Also remove any leftover peer pointing at our VPS (could be on another iface).
+:if ([:len [/interface/wireguard/peers find public-key="${p.serverPublicKey}"]] > 0) do={
+  /interface/wireguard/peers remove [find public-key="${p.serverPublicKey}"]
 }
 
 /interface/wireguard add name=wg-jtm private-key="${p.privateKey}"

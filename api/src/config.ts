@@ -91,7 +91,9 @@ export const config = {
     // peer config. Empty = provisioning endpoint refuses to issue scripts.
     serverPublicKey: process.env.WG_SERVER_PUBKEY ?? '',
     // Hostname + UDP port MikroTiks dial to reach the VPS WG server.
-    endpoint: process.env.WG_ENDPOINT ?? 'vpn.hubnetwifi.co.ke:51820',
+    // Port 4500 (IPSec NAT-T) is rarely blocked by ISPs; 51820 (WG default)
+    // is filtered by some carriers, so we default to the safer one.
+    endpoint: process.env.WG_ENDPOINT ?? 'vpn.hubnetwifi.co.ke:4500',
     // Tunnel network (CIDR). Server lives at .1, .2 reserved, peers from .3.
     // /16 = 65k peers headroom. Picked .66 to avoid 10.0/10.10/10.100 conflicts.
     network: process.env.WG_NETWORK ?? '10.66.0.0/16',
