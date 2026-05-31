@@ -1,0 +1,48 @@
+databases:
+  - name: jtm-db
+    plan: free
+    postgresMajorVersion: "16"
+
+services:
+  - type: web
+    name: jtm-api
+    runtime: node
+    plan: free
+    region: oregon
+    rootDir: .
+    buildCommand: npm ci && npm run build --workspace api
+    startCommand: cd api && node dist/db/migrate.js && node dist/server.js
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: jtm-db
+          property: connectionString
+      - key: DEFAULT_CURRENCY
+        value: KES
+      - key: DEFAULT_TAX_REGION
+        value: KE
+      - key: BRAND_NAME
+        value: JTM Networks
+      - key: NETWORK_DRIVER
+        value: log
+      - key: AUTH_ENABLED
+        value: "false"
+      - key: STORAGE_DIR
+        value: /tmp/storage
+
+  - type: web
+    name: jtm-web
+    runtime: node
+    plan: free
+    region: oregon
+    rootDir: .
+    buildCommand: npm ci && npm run build --workspace web
+    startCommand: cd web && npx next start -p $PORT
+    envVars:
+      # Set this to the jtm-api URL Render assigns after first deploy
+      # (e.g. https://jtm-api.onrender.com). Web auto-redeploys when you save it.
+      - key: NEXT_PUBLIC_API_URL
+        sync: false
