@@ -173,7 +173,7 @@ export async function provisionRouter(input: {
 }
 
 function renderOneLiner(token: string): string {
-  const url = `${config.publicApiUrl}/provision/${token}`;
+  const url = `${config.publicApiUrl}/api/provision/${token}`;
   return `/tool fetch url="${url}" dst-path=jtm.rsc; :delay 2s; /import jtm.rsc; /file remove jtm.rsc`;
 }
 
