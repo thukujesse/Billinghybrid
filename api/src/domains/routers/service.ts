@@ -52,28 +52,46 @@ export interface ProvisionResult {
   vpsAddCommand: string;
 }
 
+function ipToInt(ip: string): number {
+  const parts = ip.split('.').map(Number);
+  if (parts.length !== 4 || parts.some((n) => isNaN(n) || n < 0 || n > 255)) {
+    throw badRequest(`invalid IPv4: ${ip}`);
+  }
+  return ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0;
+}
+
+function intToIp(int: number): string {
+  return [(int >>> 24) & 0xff, (int >>> 16) & 0xff, (int >>> 8) & 0xff, int & 0xff].join('.');
+}
+
 /**
- * Allocate the next free tunnel IP within the configured WG network. The VPS
- * holds .1 (server). We start handing out peers at .3 to leave .2 reserved for
- * any pre-existing manual client. Throws if the /24 is full.
+ * Allocate the next free tunnel IP within the configured WG network. .0 is
+ * the network address, .1 is the server, .2 is reserved, broadcast is excluded.
+ * Walks the whole CIDR — works for /24 (252 peers) up to /16 (65k peers).
  */
 async function nextTunnelIp(): Promise<string> {
-  const [base] = config.wireguard.network.split('/');
-  const octets = base.split('.');
-  if (octets.length !== 4) throw badRequest('invalid WG_NETWORK');
-  const prefix = `${octets[0]}.${octets[1]}.${octets[2]}.`;
+  const [base, maskStr] = config.wireguard.network.split('/');
+  const mask = Number(maskStr);
+  if (!base || isNaN(mask) || mask < 8 || mask > 30) {
+    throw badRequest('invalid WG_NETWORK (expected CIDR like 10.66.0.0/16)');
+  }
+  const networkInt = (ipToInt(base) & ((0xffffffff << (32 - mask)) >>> 0)) >>> 0;
+  const broadcastInt = (networkInt | ((1 << (32 - mask)) - 1)) >>> 0;
 
   const r = await query<{ wg_tunnel_ip: string }>(
-    `SELECT wg_tunnel_ip FROM routers
-     WHERE wg_tunnel_ip LIKE $1`,
-    [`${prefix}%`]
+    `SELECT wg_tunnel_ip FROM routers WHERE wg_tunnel_ip IS NOT NULL`
   );
-  const taken = new Set(r.rows.map((x) => x.wg_tunnel_ip));
-  for (let i = 3; i <= 254; i++) {
-    const candidate = `${prefix}${i}`;
-    if (!taken.has(candidate)) return candidate;
+  const taken = new Set(r.rows.map((x) => ipToInt(x.wg_tunnel_ip)));
+
+  for (let i = networkInt + 3; i < broadcastInt; i++) {
+    if (!taken.has(i)) return intToIp(i);
   }
-  throw badRequest('WG tunnel subnet exhausted');
+  throw badRequest('WG tunnel network exhausted');
+}
+
+/** CIDR mask portion ("/16") for embedding in MikroTik address commands. */
+function networkMask(): number {
+  return Number(config.wireguard.network.split('/')[1]);
 }
 
 /**
@@ -140,7 +158,7 @@ function renderRouterOsScript(p: {
   endpoint-address=${host} endpoint-port=${port} \\
   allowed-address=${p.tunnelNetwork} \\
   persistent-keepalive=25s
-/ip/address add interface=wg-jtm address=${p.tunnelIp}/24
+/ip/address add interface=wg-jtm address=${p.tunnelIp}/${networkMask()}
 
 :put "wg-jtm up at ${p.tunnelIp}. Verify with: /interface/wireguard print"
 `;

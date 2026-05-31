@@ -86,8 +86,9 @@ export const config = {
     serverPublicKey: process.env.WG_SERVER_PUBKEY ?? '',
     // Hostname + UDP port MikroTiks dial to reach the VPS WG server.
     endpoint: process.env.WG_ENDPOINT ?? 'vpn.hubnetwifi.co.ke:51820',
-    // Tunnel network (CIDR). Server lives at .1; peers get .3 onwards.
-    network: process.env.WG_NETWORK ?? '10.66.66.0/24',
+    // Tunnel network (CIDR). Server lives at .1, .2 reserved, peers from .3.
+    // /16 = 65k peers headroom. Picked .66 to avoid 10.0/10.10/10.100 conflicts.
+    network: process.env.WG_NETWORK ?? '10.66.0.0/16',
   },
   telegram: {
     botToken: process.env.TELEGRAM_BOT_TOKEN ?? '',
