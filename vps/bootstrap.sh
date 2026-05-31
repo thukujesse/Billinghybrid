@@ -76,6 +76,15 @@ LOCAL_PROBE=$(curl -s -o /dev/null -w '%{http_code}' \
   -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/peers || echo "fail")
 
 echo
+echo "[9/9] FreeRADIUS (optional — requires /opt/wg-manager/radius.env first)..."
+if [ -f /opt/wg-manager/radius.env ]; then
+  curl -fsSL "$REPO_RAW/freeradius/install.sh" -o /tmp/jtm-radius-install.sh
+  REPO_RAW="$REPO_RAW" bash /tmp/jtm-radius-install.sh
+  rm /tmp/jtm-radius-install.sh
+else
+  echo "  skipped — create /opt/wg-manager/radius.env with PG* vars + re-run to install FreeRADIUS"
+fi
+
 echo "================================================================"
 echo "DONE."
 echo

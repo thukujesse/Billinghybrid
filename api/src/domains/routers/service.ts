@@ -159,16 +159,29 @@ export async function provisionRouter(input: {
 
   // URL-safe base64 token, 32 bytes = 256 bits entropy. Single-use, 24h expiry.
   const token = crypto.randomBytes(32).toString('base64url');
+  // Per-router RADIUS shared secret. Stored in `nas` table for FreeRADIUS and
+  // embedded in the RouterOS `/radius add ... secret=...` config so each
+  // MikroTik authenticates uniquely to the central RADIUS server.
+  const radiusSecret = crypto.randomBytes(24).toString('base64url');
 
   const r = await query<Router>(
     `INSERT INTO routers
        (name, host, type, site, wg_public_key, wg_private_key, wg_tunnel_ip, vpn_status,
-        provision_token, provision_token_expires_at)
-     VALUES ($1, $2, 'mikrotik', $3, $4, $5, $6, 'pending', $7, now() + interval '24 hours')
+        provision_token, provision_token_expires_at, radius_secret)
+     VALUES ($1, $2, 'mikrotik', $3, $4, $5, $6, 'pending', $7, now() + interval '24 hours', $8)
      RETURNING ${SAFE_COLS}`,
-    [input.name, tunnelIp, input.site ?? null, keys.publicKey, keys.privateKey, tunnelIp, token]
+    [input.name, tunnelIp, input.site ?? null, keys.publicKey, keys.privateKey, tunnelIp, token, radiusSecret]
   );
   const router = r.rows[0];
+
+  // Register this MikroTik as a RADIUS client in the nas table so FreeRADIUS
+  // trusts its Access-Requests. Idempotent — provisioning may re-run.
+  await query(
+    `INSERT INTO nas (nasname, shortname, type, secret, description)
+     VALUES ($1, $2, 'mikrotik', $3, $4)
+     ON CONFLICT (nasname) DO UPDATE SET secret = EXCLUDED.secret, shortname = EXCLUDED.shortname`,
+    [tunnelIp, input.name.slice(0, 30), radiusSecret, `JTM ${input.name}`]
+  );
 
   // Try to auto-add the peer on the VPS. If wg-manager isn't configured we
   // fall back to returning the manual command. If it IS configured but errors,
@@ -193,6 +206,8 @@ export async function provisionRouter(input: {
     tunnelNetwork: config.wireguard.network,
     pubkeyUrl: `${config.wireguard.managerUrl}/ssh-pubkey`,
     mgmtPassword: crypto.randomBytes(16).toString('base64url'),
+    radiusSecret,
+    radiusServerIp: config.wireguard.network.split('/')[0].replace(/0\.0$/, '0.1'),
   });
 
   const result: ProvisionResult = {
@@ -249,6 +264,12 @@ export async function fetchProvisionScript(token: string): Promise<string> {
   if (!router.wg_private_key || !router.wg_tunnel_ip) {
     throw badRequest('router missing WG fields');
   }
+  // Look up the router's stored radius_secret so the script is consistent
+  // across re-fetches of the same provisioning token.
+  const sr = await query<{ radius_secret: string | null }>(
+    `SELECT radius_secret FROM routers WHERE provision_token = $1`, [token]);
+  const radiusSecret = sr.rows[0]?.radius_secret ?? crypto.randomBytes(24).toString('base64url');
+
   return renderRouterOsScript({
     routerName: router.name,
     tunnelIp: router.wg_tunnel_ip,
@@ -258,6 +279,8 @@ export async function fetchProvisionScript(token: string): Promise<string> {
     tunnelNetwork: config.wireguard.network,
     pubkeyUrl: `${config.wireguard.managerUrl}/ssh-pubkey`,
     mgmtPassword: crypto.randomBytes(16).toString('base64url'),
+    radiusSecret,
+    radiusServerIp: config.wireguard.network.split('/')[0].replace(/0\.0$/, '0.1'),
   });
 }
 
@@ -270,6 +293,8 @@ function renderRouterOsScript(p: {
   tunnelNetwork: string;
   pubkeyUrl: string;
   mgmtPassword: string;
+  radiusSecret: string;
+  radiusServerIp: string;
 }): string {
   const [host, port] = p.endpoint.split(':');
   return `# --- JTM zero-touch provisioning for "${p.routerName}" ---
@@ -308,7 +333,15 @@ function renderRouterOsScript(p: {
 /user/ssh-keys/import file=jtm-mgr.pub user=jtm-mgmt
 /file/remove jtm-mgr.pub
 
-:put "wg-jtm up at ${p.tunnelIp}. Verify with: /interface/wireguard print"
+# RADIUS: point at central server over the tunnel for PPP + Hotspot auth.
+# Local /ppp secret store stays empty — all customers live in FreeRADIUS.
+/radius remove [find comment="jtm-radius"]
+/radius add service=ppp,hotspot address=${p.radiusServerIp} \\
+  secret="${p.radiusSecret}" timeout=3s comment="jtm-radius"
+/ppp aaa set use-radius=yes accounting=yes interim-update=1m
+/ip hotspot profile set [find name=default] use-radius=yes 2>/dev/null
+
+:put "wg-jtm up at ${p.tunnelIp}. RADIUS server: ${p.radiusServerIp}. Customers in PPP secrets list should be 0 (auth is centralized)."
 `;
 }
 
