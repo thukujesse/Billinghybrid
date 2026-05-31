@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '@/lib/api';
 
 interface RouterRow {
@@ -52,13 +52,11 @@ export default function Routers() {
     }
   };
 
-  const copy = async (text: string) => {
-    const ok = await copyToClipboard(text);
-    setToast(
-      ok
-        ? { ok: true, msg: 'Copied to clipboard' }
-        : { ok: false, msg: 'Copy failed — select text manually with Ctrl+A then Ctrl+C' }
-    );
+  const copy = async (text: string, preEl: HTMLElement | null) => {
+    const result = await copyToClipboard(text, preEl);
+    if (result === 'copied') setToast({ ok: true, msg: 'Copied to clipboard' });
+    else if (result === 'selected') setToast({ ok: true, msg: 'Text selected — press Ctrl+C to copy' });
+    else setToast({ ok: false, msg: 'Could not copy. Click the box and use Ctrl+A then Ctrl+C.' });
   };
 
   return (
@@ -167,15 +165,19 @@ export default function Routers() {
   );
 }
 
-async function copyToClipboard(text: string): Promise<boolean> {
+type CopyResult = 'copied' | 'selected' | 'failed';
+
+async function copyToClipboard(text: string, preEl: HTMLElement | null): Promise<CopyResult> {
+  // Tier 1: modern Clipboard API (HTTPS + user gesture + permission).
   if (typeof navigator !== 'undefined' && navigator.clipboard && window.isSecureContext) {
     try {
       await navigator.clipboard.writeText(text);
-      return true;
+      return 'copied';
     } catch {
       // fall through
     }
   }
+  // Tier 2: legacy execCommand via off-screen textarea.
   try {
     const ta = document.createElement('textarea');
     ta.value = text;
@@ -187,16 +189,49 @@ async function copyToClipboard(text: string): Promise<boolean> {
     ta.setSelectionRange(0, text.length);
     const ok = document.execCommand('copy');
     document.body.removeChild(ta);
-    return ok;
+    if (ok) return 'copied';
   } catch {
-    return false;
+    // fall through
   }
+  // Tier 3: select the visible text so the user can press Ctrl+C themselves.
+  if (preEl) {
+    try {
+      const range = document.createRange();
+      range.selectNodeContents(preEl);
+      const sel = window.getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(range);
+      return 'selected';
+    } catch {
+      // fall through
+    }
+  }
+  return 'failed';
 }
 
-function ScriptBlock({ text, onCopy }: { text: string; onCopy: (s: string) => void }) {
+function ScriptBlock({
+  text,
+  onCopy,
+}: {
+  text: string;
+  onCopy: (s: string, preEl: HTMLElement | null) => void;
+}) {
+  const preRef = useRef<HTMLPreElement>(null);
+  const selectAll = () => {
+    const el = preRef.current;
+    if (!el) return;
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const sel = window.getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+  };
   return (
     <div style={{ position: 'relative', marginTop: 8 }}>
       <pre
+        ref={preRef}
+        onClick={selectAll}
+        title="Click anywhere to select all"
         style={{
           background: 'var(--bg2, #0e1118)',
           padding: 12,
@@ -204,12 +239,17 @@ function ScriptBlock({ text, onCopy }: { text: string; onCopy: (s: string) => vo
           overflowX: 'auto',
           fontSize: 12,
           lineHeight: 1.5,
+          cursor: 'pointer',
+          userSelect: 'all',
         }}
       >
         <code>{text}</code>
       </pre>
       <button
-        onClick={() => onCopy(text)}
+        onClick={(e) => {
+          e.stopPropagation();
+          onCopy(text, preRef.current);
+        }}
         style={{ position: 'absolute', top: 8, right: 8, fontSize: 12 }}
       >
         Copy
