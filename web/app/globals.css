@@ -63,3 +63,32 @@ label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px
 .toast.ok { background: rgba(52,211,153,0.12); color: var(--green); }
 .toast.err { background: rgba(248,113,113,0.12); color: var(--red); }
 code { font-family: ui-monospace, monospace; background: var(--surface); padding: 2px 6px; border-radius: 4px; }
+.vpn-pill {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 6px 14px; border-radius: 99px;
+  font-size: 11px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase;
+  min-width: 110px; justify-content: center;
+  border: 1px solid var(--border); background: var(--surface);
+}
+.vpn-pill::before {
+  content: ''; width: 8px; height: 8px; border-radius: 50%;
+  background: currentColor;
+}
+.vpn-pill.online {
+  color: var(--green); border-color: var(--green); background: rgba(52,211,153,0.10);
+}
+.vpn-pill.online::before {
+  box-shadow: 0 0 0 0 currentColor;
+  animation: vpn-pulse 1.8s infinite;
+}
+.vpn-pill.offline {
+  color: var(--red); border-color: var(--red); background: rgba(248,113,113,0.10);
+}
+.vpn-pill.pending {
+  color: var(--muted); background: rgba(100,130,158,0.10);
+}
+@keyframes vpn-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(52,211,153,0.55); }
+  70%  { box-shadow: 0 0 0 8px rgba(52,211,153,0); }
+  100% { box-shadow: 0 0 0 0 rgba(52,211,153,0); }
+}

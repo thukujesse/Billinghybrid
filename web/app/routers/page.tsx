@@ -169,19 +169,7 @@ export default function Routers() {
               <td>{r.name}</td>
               <td>{r.site ?? '—'}</td>
               <td><code>{r.wg_tunnel_ip ?? '—'}</code></td>
-              <td>
-                <span
-                  className={`badge ${
-                    r.vpn_status === 'connected'
-                      ? 'active'
-                      : r.vpn_status === 'disconnected'
-                      ? 'suspended'
-                      : 'pending'
-                  }`}
-                >
-                  {r.vpn_status}
-                </span>
-              </td>
+              <td><VpnPill status={r.vpn_status} /></td>
               <td title={r.last_handshake_at ?? ''}>{formatLastSeen(r.last_handshake_at)}</td>
             </tr>
           ))}
@@ -192,6 +180,16 @@ export default function Routers() {
       </table>
     </div>
   );
+}
+
+function VpnPill({ status }: { status: string }) {
+  const cls =
+    status === 'connected' ? 'online' :
+    status === 'disconnected' ? 'offline' : 'pending';
+  const label =
+    status === 'connected' ? 'Online' :
+    status === 'disconnected' ? 'Offline' : 'Waiting';
+  return <span className={`vpn-pill ${cls}`}>{label}</span>;
 }
 
 function formatLastSeen(iso: string | null): string {
