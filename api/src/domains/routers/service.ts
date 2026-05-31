@@ -20,13 +20,19 @@ export interface Router {
   last_handshake_at: string | null;
 }
 
+// Columns safe to send to API clients — excludes wg_private_key and the
+// provision_token fields, which are secrets only the admin who provisions
+// (or the MikroTik via /provision/<token>) should ever see.
+const SAFE_COLS = `id, name, host, api_port, type, site, status, created_at,
+  wg_public_key, wg_tunnel_ip, vpn_status, last_handshake_at`;
+
 export async function listRouters(): Promise<Router[]> {
-  const r = await query<Router>('SELECT * FROM routers ORDER BY created_at DESC');
+  const r = await query<Router>(`SELECT ${SAFE_COLS} FROM routers ORDER BY created_at DESC`);
   return r.rows;
 }
 
 export async function getRouter(id: string): Promise<Router> {
-  const r = await query<Router>('SELECT * FROM routers WHERE id = $1', [id]);
+  const r = await query<Router>(`SELECT ${SAFE_COLS} FROM routers WHERE id = $1`, [id]);
   if (!r.rows[0]) throw notFound('router');
   return r.rows[0];
 }
@@ -126,7 +132,7 @@ export async function provisionRouter(input: {
        (name, host, type, site, wg_public_key, wg_private_key, wg_tunnel_ip, vpn_status,
         provision_token, provision_token_expires_at)
      VALUES ($1, $2, 'mikrotik', $3, $4, $5, $6, 'pending', $7, now() + interval '24 hours')
-     RETURNING *`,
+     RETURNING ${SAFE_COLS}`,
     [input.name, tunnelIp, input.site ?? null, keys.publicKey, keys.privateKey, tunnelIp, token]
   );
   const router = r.rows[0];
@@ -181,13 +187,17 @@ export async function fetchProvisionScript(token: string): Promise<string> {
     throw badRequest('WG_SERVER_PUBKEY not configured on the API');
   }
   // Atomically claim the token: set used_at only if NULL and not expired.
-  const r = await query<Router & { provision_token_used_at: string | null }>(
+  const r = await query<{
+    name: string;
+    wg_private_key: string | null;
+    wg_tunnel_ip: string | null;
+  }>(
     `UPDATE routers
         SET provision_token_used_at = now()
       WHERE provision_token = $1
         AND provision_token_used_at IS NULL
         AND provision_token_expires_at > now()
-      RETURNING *`,
+      RETURNING name, wg_private_key, wg_tunnel_ip`,
     [token]
   );
   if (r.rowCount === 0) {
@@ -266,7 +276,7 @@ export async function assignSubscriber(subscriberId: string, routerId: string): 
 /** The router a subscriber is homed on (or null). */
 export async function routerForSubscriber(subscriberId: string): Promise<Router | null> {
   const r = await query<Router>(
-    `SELECT rt.* FROM routers rt
+    `SELECT ${SAFE_COLS.replace(/(^|,\s)/g, '$1rt.')} FROM routers rt
      JOIN subscribers s ON s.router_id = rt.id
      WHERE s.id = $1`,
     [subscriberId]
