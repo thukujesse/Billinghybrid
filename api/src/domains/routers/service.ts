@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { query } from '../../db/pool.js';
 import { badRequest, notFound } from '../../lib/errors.js';
 import { config } from '../../config.js';
@@ -49,6 +50,9 @@ export async function createRouter(input: {
 
 export interface ProvisionResult {
   router: Router;
+  /** Single-line RouterOS command — fetch + import + cleanup. */
+  oneLiner: string;
+  /** The full .rsc script (also available; for power users). */
   mikrotikScript: string;
   /** Manual wg-set command for VPS — only populated when wg-manager is NOT configured. */
   vpsAddCommand?: string;
@@ -114,12 +118,16 @@ export async function provisionRouter(input: {
   const keys = generateWgKeypair();
   const tunnelIp = await nextTunnelIp();
 
+  // URL-safe base64 token, 32 bytes = 256 bits entropy. Single-use, 24h expiry.
+  const token = crypto.randomBytes(32).toString('base64url');
+
   const r = await query<Router>(
     `INSERT INTO routers
-       (name, host, type, site, wg_public_key, wg_private_key, wg_tunnel_ip, vpn_status)
-     VALUES ($1, $2, 'mikrotik', $3, $4, $5, $6, 'pending')
+       (name, host, type, site, wg_public_key, wg_private_key, wg_tunnel_ip, vpn_status,
+        provision_token, provision_token_expires_at)
+     VALUES ($1, $2, 'mikrotik', $3, $4, $5, $6, 'pending', $7, now() + interval '24 hours')
      RETURNING *`,
-    [input.name, tunnelIp, input.site ?? null, keys.publicKey, keys.privateKey, tunnelIp]
+    [input.name, tunnelIp, input.site ?? null, keys.publicKey, keys.privateKey, tunnelIp, token]
   );
   const router = r.rows[0];
 
@@ -137,22 +145,75 @@ export async function provisionRouter(input: {
     }
   }
 
+  const mikrotikScript = renderRouterOsScript({
+    routerName: router.name,
+    tunnelIp,
+    privateKey: keys.privateKey,
+    serverPublicKey: config.wireguard.serverPublicKey,
+    endpoint: config.wireguard.endpoint,
+    tunnelNetwork: config.wireguard.network,
+  });
+
   const result: ProvisionResult = {
     router,
-    mikrotikScript: renderRouterOsScript({
-      routerName: router.name,
-      tunnelIp,
-      privateKey: keys.privateKey,
-      serverPublicKey: config.wireguard.serverPublicKey,
-      endpoint: config.wireguard.endpoint,
-      tunnelNetwork: config.wireguard.network,
-    }),
+    oneLiner: renderOneLiner(token),
+    mikrotikScript,
     vpsAutoAdded,
   };
   if (!vpsAutoAdded) {
     result.vpsAddCommand = renderVpsAddCommand(keys.publicKey, tunnelIp);
   }
   return result;
+}
+
+function renderOneLiner(token: string): string {
+  const url = `${config.publicApiUrl}/provision/${token}`;
+  return `/tool fetch url="${url}" dst-path=jtm.rsc; :delay 2s; /import jtm.rsc; /file remove jtm.rsc`;
+}
+
+/**
+ * Look up a router by its provision token and produce the RouterOS script.
+ * Single-use: marks the token consumed on first call. Throws if expired,
+ * already used, or unknown.
+ */
+export async function fetchProvisionScript(token: string): Promise<string> {
+  if (!config.wireguard.serverPublicKey) {
+    throw badRequest('WG_SERVER_PUBKEY not configured on the API');
+  }
+  // Atomically claim the token: set used_at only if NULL and not expired.
+  const r = await query<Router & { provision_token_used_at: string | null }>(
+    `UPDATE routers
+        SET provision_token_used_at = now()
+      WHERE provision_token = $1
+        AND provision_token_used_at IS NULL
+        AND provision_token_expires_at > now()
+      RETURNING *`,
+    [token]
+  );
+  if (r.rowCount === 0) {
+    // Distinguish unknown/expired/used to give a clearer error.
+    const check = await query<{ used_at: string | null; expires_at: string | null }>(
+      `SELECT provision_token_used_at as used_at,
+              provision_token_expires_at as expires_at
+         FROM routers WHERE provision_token = $1`,
+      [token]
+    );
+    if (check.rowCount === 0) throw notFound('provision token');
+    if (check.rows[0].used_at) throw badRequest('provision token already used');
+    throw badRequest('provision token expired');
+  }
+  const router = r.rows[0];
+  if (!router.wg_private_key || !router.wg_tunnel_ip) {
+    throw badRequest('router missing WG fields');
+  }
+  return renderRouterOsScript({
+    routerName: router.name,
+    tunnelIp: router.wg_tunnel_ip,
+    privateKey: router.wg_private_key,
+    serverPublicKey: config.wireguard.serverPublicKey,
+    endpoint: config.wireguard.endpoint,
+    tunnelNetwork: config.wireguard.network,
+  });
 }
 
 function renderRouterOsScript(p: {

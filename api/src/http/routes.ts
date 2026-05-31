@@ -379,13 +379,22 @@ api.post('/routers', requireAuth('admin', 'staff'), ah(async (req, res) => {
   }), req.body);
   res.status(201).json(await routers.createRouter(body));
 }));
-// Zero-touch provisioning: generates WG keypair + RouterOS .rsc script.
+// Zero-touch provisioning: generates WG keypair + RouterOS .rsc script + one-liner.
 api.post('/routers/provision', requireAuth('admin', 'staff'), ah(async (req, res) => {
   const body = parse(z.object({
     name: z.string().min(1),
     site: z.string().optional(),
   }), req.body);
   res.status(201).json(await routers.provisionRouter(body));
+}));
+
+// Public single-use fetch endpoint: MikroTik calls this via `/tool fetch` and
+// receives the RouterOS script as text/plain. Token is consumed on first call.
+api.get('/provision/:token', ah(async (req, res) => {
+  const script = await routers.fetchProvisionScript(req.params.token);
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(script);
 }));
 api.post('/subscribers/:id/assign-router', requireAuth('admin', 'staff'), ah(async (req, res) => {
   const body = parse(z.object({ router_id: z.string().uuid() }), req.body);

@@ -15,6 +15,7 @@ interface RouterRow {
 
 interface ProvisionResult {
   router: RouterRow;
+  oneLiner: string;
   mikrotikScript: string;
   vpsAddCommand?: string;
   vpsAutoAdded: boolean;
@@ -102,7 +103,7 @@ export default function Routers() {
           </h3>
           {result.vpsAutoAdded ? (
             <p className="sub" style={{ marginTop: 4 }}>
-              ✓ Peer added to VPS automatically. One paste below — RouterOS only.
+              ✓ Peer added to VPS automatically. Paste ONE line on the MikroTik below.
             </p>
           ) : (
             <p className="sub" style={{ marginTop: 4 }}>
@@ -114,13 +115,26 @@ export default function Routers() {
             <>
               <h4>1. Run this on the VPS (adds the peer to wg0)</h4>
               <ScriptBlock text={result.vpsAddCommand} onCopy={copy} />
-              <h4>2. Paste this into the MikroTik (RouterOS 7.x terminal)</h4>
+              <h4>2. Paste this one-liner into the MikroTik (RouterOS 7.x)</h4>
             </>
           )}
           {result.vpsAutoAdded && (
-            <h4>Paste this into the MikroTik (RouterOS 7.x terminal)</h4>
+            <h4>Paste this one-liner into the MikroTik (RouterOS 7.x)</h4>
           )}
-          <ScriptBlock text={result.mikrotikScript} onCopy={copy} />
+          <ScriptBlock text={result.oneLiner} onCopy={copy} />
+          <p className="sub" style={{ marginTop: 8 }}>
+            The token in the URL is single-use and expires in 24 hours.
+            MikroTik will fetch the full WireGuard config + import it.
+          </p>
+
+          <details style={{ marginTop: 16 }}>
+            <summary style={{ cursor: 'pointer', color: 'var(--muted)' }}>
+              Show full script (for manual paste or audit)
+            </summary>
+            <div style={{ marginTop: 8 }}>
+              <ScriptBlock text={result.mikrotikScript} onCopy={copy} />
+            </div>
+          </details>
         </div>
       )}
 

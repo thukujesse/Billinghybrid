@@ -8,6 +8,12 @@ function num(name: string, def: number): number {
 export const config = {
   env: process.env.NODE_ENV ?? 'development',
   port: num('PORT', 4000),
+  // Public URL this API is reachable at. Used to build the MikroTik one-liner
+  // (`/tool fetch url=...`). Render sets RENDER_EXTERNAL_URL automatically.
+  publicApiUrl:
+    process.env.PUBLIC_API_URL ??
+    process.env.RENDER_EXTERNAL_URL ??
+    'http://localhost:4000',
   databaseUrl:
     process.env.DATABASE_URL ?? 'postgres://jtm:jtm@127.0.0.1:5432/jtm',
   currency: process.env.DEFAULT_CURRENCY ?? 'KES',
