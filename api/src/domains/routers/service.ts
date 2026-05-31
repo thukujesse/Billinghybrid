@@ -186,30 +186,28 @@ export async function fetchProvisionScript(token: string): Promise<string> {
   if (!config.wireguard.serverPublicKey) {
     throw badRequest('WG_SERVER_PUBKEY not configured on the API');
   }
-  // Atomically claim the token: set used_at only if NULL and not expired.
+  // Token is reusable within its 24h expiry window — first-use timestamp is
+  // recorded once (audit) but doesn't lock the token. Idempotent so retries
+  // and re-pastes during commissioning all work.
   const r = await query<{
     name: string;
     wg_private_key: string | null;
     wg_tunnel_ip: string | null;
   }>(
     `UPDATE routers
-        SET provision_token_used_at = now()
+        SET provision_token_used_at = COALESCE(provision_token_used_at, now())
       WHERE provision_token = $1
-        AND provision_token_used_at IS NULL
         AND provision_token_expires_at > now()
       RETURNING name, wg_private_key, wg_tunnel_ip`,
     [token]
   );
   if (r.rowCount === 0) {
-    // Distinguish unknown/expired/used to give a clearer error.
-    const check = await query<{ used_at: string | null; expires_at: string | null }>(
-      `SELECT provision_token_used_at as used_at,
-              provision_token_expires_at as expires_at
+    const check = await query<{ expires_at: string | null }>(
+      `SELECT provision_token_expires_at as expires_at
          FROM routers WHERE provision_token = $1`,
       [token]
     );
     if (check.rowCount === 0) throw notFound('provision token');
-    if (check.rows[0].used_at) throw badRequest('provision token already used');
     throw badRequest('provision token expired');
   }
   const router = r.rows[0];
