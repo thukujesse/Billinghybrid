@@ -16,7 +16,8 @@ interface RouterRow {
 interface ProvisionResult {
   router: RouterRow;
   mikrotikScript: string;
-  vpsAddCommand: string;
+  vpsAddCommand?: string;
+  vpsAutoAdded: boolean;
 }
 
 export default function Routers() {
@@ -101,15 +102,26 @@ export default function Routers() {
           <h3 style={{ marginTop: 0 }}>
             ✓ Router provisioned — tunnel IP <code>{result.router.wg_tunnel_ip}</code>
           </h3>
-          <p className="sub" style={{ marginTop: 4 }}>
-            Two manual steps. The router's status will flip from “pending” to
-            “connected” once it dials in (heartbeat coming in slice 2).
-          </p>
+          {result.vpsAutoAdded ? (
+            <p className="sub" style={{ marginTop: 4 }}>
+              ✓ Peer added to VPS automatically. One paste below — RouterOS only.
+            </p>
+          ) : (
+            <p className="sub" style={{ marginTop: 4 }}>
+              ⚠ wg-manager not configured on API — falling back to manual VPS paste.
+            </p>
+          )}
 
-          <h4>1. Run this on the VPS (adds the peer to wg0)</h4>
-          <ScriptBlock text={result.vpsAddCommand} onCopy={copy} />
-
-          <h4>2. Paste this into the MikroTik (RouterOS 7.x terminal)</h4>
+          {!result.vpsAutoAdded && result.vpsAddCommand && (
+            <>
+              <h4>1. Run this on the VPS (adds the peer to wg0)</h4>
+              <ScriptBlock text={result.vpsAddCommand} onCopy={copy} />
+              <h4>2. Paste this into the MikroTik (RouterOS 7.x terminal)</h4>
+            </>
+          )}
+          {result.vpsAutoAdded && (
+            <h4>Paste this into the MikroTik (RouterOS 7.x terminal)</h4>
+          )}
           <ScriptBlock text={result.mikrotikScript} onCopy={copy} />
         </div>
       )}

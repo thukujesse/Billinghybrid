@@ -1,0 +1,10 @@
+# Auto-HTTPS for vpn.hubnetwifi.co.ke via Let's Encrypt.
+# /wg/* is reverse-proxied to the local wg-manager (token-authenticated).
+# Everything else returns 404 so the endpoint stays minimal-surface.
+
+vpn.hubnetwifi.co.ke {
+    handle_path /wg/* {
+        reverse_proxy 127.0.0.1:8080
+    }
+    respond "JTM VPN endpoint" 404
+}

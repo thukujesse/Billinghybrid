@@ -2,6 +2,7 @@ import { query } from '../../db/pool.js';
 import { badRequest, notFound } from '../../lib/errors.js';
 import { config } from '../../config.js';
 import { generateWgKeypair } from '../../lib/wireguard.js';
+import * as wgManager from '../../lib/wgManager.js';
 
 export interface Router {
   id: string;
@@ -49,7 +50,10 @@ export async function createRouter(input: {
 export interface ProvisionResult {
   router: Router;
   mikrotikScript: string;
-  vpsAddCommand: string;
+  /** Manual wg-set command for VPS — only populated when wg-manager is NOT configured. */
+  vpsAddCommand?: string;
+  /** True if the API auto-added the peer on the VPS via wg-manager. */
+  vpsAutoAdded: boolean;
 }
 
 function ipToInt(ip: string): number {
@@ -119,7 +123,21 @@ export async function provisionRouter(input: {
   );
   const router = r.rows[0];
 
-  return {
+  // Try to auto-add the peer on the VPS. If wg-manager isn't configured we
+  // fall back to returning the manual command. If it IS configured but errors,
+  // roll the DB insert back so the IP isn't burned on a half-provisioned peer.
+  let vpsAutoAdded = false;
+  if (wgManager.isEnabled()) {
+    try {
+      await wgManager.addPeer(keys.publicKey, tunnelIp);
+      vpsAutoAdded = true;
+    } catch (err) {
+      await query('DELETE FROM routers WHERE id = $1', [router.id]);
+      throw err;
+    }
+  }
+
+  const result: ProvisionResult = {
     router,
     mikrotikScript: renderRouterOsScript({
       routerName: router.name,
@@ -129,8 +147,12 @@ export async function provisionRouter(input: {
       endpoint: config.wireguard.endpoint,
       tunnelNetwork: config.wireguard.network,
     }),
-    vpsAddCommand: renderVpsAddCommand(keys.publicKey, tunnelIp),
+    vpsAutoAdded,
   };
+  if (!vpsAutoAdded) {
+    result.vpsAddCommand = renderVpsAddCommand(keys.publicKey, tunnelIp);
+  }
+  return result;
 }
 
 function renderRouterOsScript(p: {

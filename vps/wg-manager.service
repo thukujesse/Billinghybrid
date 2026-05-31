@@ -1,0 +1,17 @@
+[Unit]
+Description=JTM WG peer manager (HTTP API on 127.0.0.1:8080)
+After=network.target wg-quick@wg0.service
+Requires=wg-quick@wg0.service
+
+[Service]
+Type=simple
+EnvironmentFile=/opt/wg-manager/wg-manager.env
+ExecStart=/usr/bin/python3 /opt/wg-manager/wg-manager.py
+Restart=on-failure
+RestartSec=3
+User=root
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

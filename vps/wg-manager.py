@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""
+JTM wg-manager: small HTTP service that lets the Render-hosted API
+add/remove/list WireGuard peers on the local wg0 interface.
+
+Listens on 127.0.0.1:8080 (Caddy reverse-proxies https://vpn/<domain>/wg/* here).
+Auth: shared bearer token via WG_MANAGER_TOKEN env var.
+
+Endpoints:
+  GET    /peers              -> {peers: [{publicKey, allowedIps, latestHandshake, transferRx, transferTx}]}
+  POST   /peers              -> body {publicKey, tunnelIp} -> 201 {ok:true}
+  DELETE /peers/<publicKey>  -> 200 {ok:true}
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import unquote
+
+TOKEN = os.environ.get('WG_MANAGER_TOKEN', '')
+PORT = int(os.environ.get('WG_MANAGER_PORT', '8080'))
+IFACE = os.environ.get('WG_MANAGER_IFACE', 'wg0')
+CONF_PATH = f'/etc/wireguard/{IFACE}.conf'
+
+if not TOKEN or len(TOKEN) < 24:
+    print('FATAL: WG_MANAGER_TOKEN env var required (>= 24 chars)', file=sys.stderr)
+    sys.exit(1)
+
+_lock = threading.Lock()
+
+
+def _run(cmd):
+    return subprocess.run(cmd, check=True, capture_output=True, text=True)
+
+
+def wg_show_peers():
+    out = _run(['wg', 'show', IFACE, 'dump']).stdout
+    lines = out.strip().split('\n')
+    peers = []
+    # First line is the interface itself, subsequent are peers.
+    for line in lines[1:]:
+        parts = line.split('\t')
+        if len(parts) < 8:
+            continue
+        peers.append({
+            'publicKey': parts[0],
+            'endpoint': parts[2] if parts[2] != '(none)' else None,
+            'allowedIps': parts[3],
+            'latestHandshake': int(parts[4]) if parts[4] != '0' else None,
+            'transferRx': int(parts[5]),
+            'transferTx': int(parts[6]),
+        })
+    return peers
+
+
+def add_peer(public_key, tunnel_ip):
+    # Live-add via wg set (takes effect immediately, no interface reload).
+    _run(['wg', 'set', IFACE, 'peer', public_key, 'allowed-ips', f'{tunnel_ip}/32'])
+    # Persist to wg0.conf so it survives reboot. Idempotent: skip if already there.
+    with open(CONF_PATH, 'r') as f:
+        conf = f.read()
+    if public_key not in conf:
+        with open(CONF_PATH, 'a') as f:
+            f.write(f'\n[Peer]\nPublicKey = {public_key}\nAllowedIPs = {tunnel_ip}/32\n')
+
+
+def remove_peer(public_key):
+    _run(['wg', 'set', IFACE, 'peer', public_key, 'remove'])
+    with open(CONF_PATH, 'r') as f:
+        conf = f.read()
+    pattern = (
+        r'\n*\[Peer\][^\[]*?PublicKey\s*=\s*' + re.escape(public_key) + r'[^\[]*'
+    )
+    new_conf = re.sub(pattern, '\n', conf)
+    if new_conf != conf:
+        with open(CONF_PATH, 'w') as f:
+            f.write(new_conf)
+
+
+class Handler(BaseHTTPRequestHandler):
+    def _auth(self):
+        return self.headers.get('Authorization', '') == f'Bearer {TOKEN}'
+
+    def _send_json(self, code, obj):
+        body = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if not self._auth():
+            return self._send_json(401, {'error': 'unauthorized'})
+        if self.path == '/peers':
+            try:
+                with _lock:
+                    return self._send_json(200, {'peers': wg_show_peers()})
+            except subprocess.CalledProcessError as e:
+                return self._send_json(500, {'error': e.stderr.strip()})
+        return self._send_json(404, {'error': 'not_found'})
+
+    def do_POST(self):
+        if not self._auth():
+            return self._send_json(401, {'error': 'unauthorized'})
+        if self.path == '/peers':
+            try:
+                length = int(self.headers.get('Content-Length', '0'))
+                body = json.loads(self.rfile.read(length))
+                pk = body['publicKey']
+                ip = body['tunnelIp']
+                if not re.match(r'^[A-Za-z0-9+/=]{40,50}$', pk):
+                    return self._send_json(400, {'error': 'invalid publicKey'})
+                if not re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', ip):
+                    return self._send_json(400, {'error': 'invalid tunnelIp'})
+                with _lock:
+                    add_peer(pk, ip)
+                return self._send_json(201, {'ok': True})
+            except subprocess.CalledProcessError as e:
+                return self._send_json(500, {'error': e.stderr.strip()})
+            except (KeyError, json.JSONDecodeError, ValueError) as e:
+                return self._send_json(400, {'error': str(e)})
+        return self._send_json(404, {'error': 'not_found'})
+
+    def do_DELETE(self):
+        if not self._auth():
+            return self._send_json(401, {'error': 'unauthorized'})
+        m = re.match(r'^/peers/(.+)$', self.path)
+        if not m:
+            return self._send_json(404, {'error': 'not_found'})
+        pk = unquote(m.group(1))
+        try:
+            with _lock:
+                remove_peer(pk)
+            return self._send_json(200, {'ok': True})
+        except subprocess.CalledProcessError as e:
+            return self._send_json(500, {'error': e.stderr.strip()})
+
+    def log_message(self, fmt, *args):
+        if os.environ.get('DEBUG'):
+            super().log_message(fmt, *args)
+
+
+if __name__ == '__main__':
+    print(f'wg-manager listening on 127.0.0.1:{PORT} (iface={IFACE})')
+    HTTPServer(('127.0.0.1', PORT), Handler).serve_forever()

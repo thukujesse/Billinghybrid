@@ -89,6 +89,11 @@ export const config = {
     // Tunnel network (CIDR). Server lives at .1, .2 reserved, peers from .3.
     // /16 = 65k peers headroom. Picked .66 to avoid 10.0/10.10/10.100 conflicts.
     network: process.env.WG_NETWORK ?? '10.66.0.0/16',
+    // VPS wg-manager: small service on the VPS that this API calls to add or
+    // remove peers on wg0. Empty managerToken => provisioning falls back to
+    // returning the manual `wg set` command (slice 1 behavior).
+    managerUrl: process.env.WG_MANAGER_URL ?? 'https://vpn.hubnetwifi.co.ke/wg',
+    managerToken: process.env.WG_MANAGER_TOKEN ?? '',
   },
   telegram: {
     botToken: process.env.TELEGRAM_BOT_TOKEN ?? '',
