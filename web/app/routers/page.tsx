@@ -51,9 +51,13 @@ export default function Routers() {
     }
   };
 
-  const copy = (text: string) => {
-    navigator.clipboard.writeText(text);
-    setToast({ ok: true, msg: 'Copied to clipboard' });
+  const copy = async (text: string) => {
+    const ok = await copyToClipboard(text);
+    setToast(
+      ok
+        ? { ok: true, msg: 'Copied to clipboard' }
+        : { ok: false, msg: 'Copy failed — select text manually with Ctrl+A then Ctrl+C' }
+    );
   };
 
   return (
@@ -149,6 +153,32 @@ export default function Routers() {
       </table>
     </div>
   );
+}
+
+async function copyToClipboard(text: string): Promise<boolean> {
+  if (typeof navigator !== 'undefined' && navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // fall through
+    }
+  }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    ta.setAttribute('readonly', '');
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
 }
 
 function ScriptBlock({ text, onCopy }: { text: string; onCopy: (s: string) => void }) {
