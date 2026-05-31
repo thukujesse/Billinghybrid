@@ -11,14 +11,15 @@ services:
     region: oregon
     rootDir: .
     buildCommand: |
-      npm ci
-      echo "===== root node_modules/@types ====="
-      ls node_modules/@types 2>/dev/null || echo "(missing)"
-      echo "===== api/node_modules/@types ====="
-      ls api/node_modules/@types 2>/dev/null || echo "(missing)"
-      echo "===== where is @types/node ====="
-      find . -path ./node_modules/.cache -prune -o -name "node" -path "*/@types/*" -print 2>/dev/null | head -10
-      echo "===== building ====="
+      npm ci --include=dev
+      if [ ! -d node_modules/@types/node ]; then
+        echo "@types/* missing after npm ci; installing explicitly"
+        npm install --no-save --include=dev \
+          @types/node@^22.10.2 \
+          @types/cors@^2.8.17 \
+          @types/express@^4.17.21 \
+          @types/pg@^8.11.10
+      fi
       npm run build --workspace api
     startCommand: cd api && node dist/db/migrate.js && node dist/server.js
     healthCheckPath: /health
