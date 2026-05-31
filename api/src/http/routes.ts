@@ -379,6 +379,14 @@ api.post('/routers', requireAuth('admin', 'staff'), ah(async (req, res) => {
   }), req.body);
   res.status(201).json(await routers.createRouter(body));
 }));
+// Zero-touch provisioning: generates WG keypair + RouterOS .rsc script.
+api.post('/routers/provision', requireAuth('admin', 'staff'), ah(async (req, res) => {
+  const body = parse(z.object({
+    name: z.string().min(1),
+    site: z.string().optional(),
+  }), req.body);
+  res.status(201).json(await routers.provisionRouter(body));
+}));
 api.post('/subscribers/:id/assign-router', requireAuth('admin', 'staff'), ah(async (req, res) => {
   const body = parse(z.object({ router_id: z.string().uuid() }), req.body);
   await routers.assignSubscriber(req.params.id, body.router_id);

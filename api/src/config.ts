@@ -80,6 +80,15 @@ export const config = {
       return !this.apiKey;
     },
   },
+  wireguard: {
+    // Public key of the VPS WG server. MikroTik peers trust this in their
+    // peer config. Empty = provisioning endpoint refuses to issue scripts.
+    serverPublicKey: process.env.WG_SERVER_PUBKEY ?? '',
+    // Hostname + UDP port MikroTiks dial to reach the VPS WG server.
+    endpoint: process.env.WG_ENDPOINT ?? 'vpn.hubnetwifi.co.ke:51820',
+    // Tunnel network (CIDR). Server lives at .1; peers get .3 onwards.
+    network: process.env.WG_NETWORK ?? '10.66.66.0/24',
+  },
   telegram: {
     botToken: process.env.TELEGRAM_BOT_TOKEN ?? '',
     // Comma-separated chat ids allowed to issue admin commands.
