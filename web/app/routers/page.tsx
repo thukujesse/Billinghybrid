@@ -32,7 +32,13 @@ export default function Routers() {
     api<RouterRow[]>('/routers')
       .then(setList)
       .catch((e) => setToast({ ok: false, msg: e.message }));
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    // Poll every 10s so VPN status flips from 'pending' to 'connected' live
+    // (api itself polls the VPS wg-manager every 30s in the background).
+    const t = setInterval(load, 10_000);
+    return () => clearInterval(t);
+  }, []);
 
   const provision = async () => {
     setProvisioning(true);
@@ -176,7 +182,7 @@ export default function Routers() {
                   {r.vpn_status}
                 </span>
               </td>
-              <td>{r.last_handshake_at ? new Date(r.last_handshake_at).toLocaleString() : '—'}</td>
+              <td title={r.last_handshake_at ?? ''}>{formatLastSeen(r.last_handshake_at)}</td>
             </tr>
           ))}
           {list.length === 0 && (
@@ -186,6 +192,15 @@ export default function Routers() {
       </table>
     </div>
   );
+}
+
+function formatLastSeen(iso: string | null): string {
+  if (!iso) return '—';
+  const sec = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (sec < 60) return `${sec}s ago`;
+  if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
+  if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
+  return `${Math.floor(sec / 86400)}d ago`;
 }
 
 type CopyResult = 'copied' | 'selected' | 'failed';

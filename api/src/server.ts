@@ -1,8 +1,19 @@
 import { createApp } from './app.js';
 import { config } from './config.js';
 import { pool } from './db/pool.js';
+import { pollVpsHandshakes } from './domains/routers/service.js';
 
 const app = await createApp();
+
+// Heartbeat loop: pull WG peer handshake state from the VPS every 30s so the
+// dashboard can show live VPN status without admins refreshing manually. Quiet
+// failure mode — wg-manager being down just means stale data, not crash.
+const heartbeatInterval = setInterval(() => {
+  pollVpsHandshakes().catch((err) =>
+    console.error('[heartbeat] unhandled:', err)
+  );
+}, 30_000);
+heartbeatInterval.unref();
 
 const server = app.listen(config.port, () => {
   console.log(`JTM billing API listening on http://localhost:${config.port}`);

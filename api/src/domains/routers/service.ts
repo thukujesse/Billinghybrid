@@ -22,9 +22,15 @@ export interface Router {
 
 // Columns safe to send to API clients — excludes wg_private_key and the
 // provision_token fields, which are secrets only the admin who provisions
-// (or the MikroTik via /provision/<token>) should ever see.
+// (or the MikroTik via /provision/<token>) should ever see. vpn_status is
+// derived from last_handshake_at freshness so it's always current.
 const SAFE_COLS = `id, name, host, api_port, type, site, status, created_at,
-  wg_public_key, wg_tunnel_ip, vpn_status, last_handshake_at`;
+  wg_public_key, wg_tunnel_ip, last_handshake_at,
+  CASE
+    WHEN last_handshake_at IS NULL THEN 'pending'
+    WHEN last_handshake_at > now() - interval '3 minutes' THEN 'connected'
+    ELSE 'disconnected'
+  END AS vpn_status`;
 
 export async function listRouters(): Promise<Router[]> {
   const r = await query<Router>(`SELECT ${SAFE_COLS} FROM routers ORDER BY created_at DESC`);
@@ -35,6 +41,33 @@ export async function getRouter(id: string): Promise<Router> {
   const r = await query<Router>(`SELECT ${SAFE_COLS} FROM routers WHERE id = $1`, [id]);
   if (!r.rows[0]) throw notFound('router');
   return r.rows[0];
+}
+
+/**
+ * Poll wg-manager and update last_handshake_at for any peer that has a fresher
+ * handshake than what's in the DB. Quiet on errors — heartbeat must not crash
+ * the app, just log.
+ */
+export async function pollVpsHandshakes(): Promise<void> {
+  if (!wgManager.isEnabled()) return;
+  let peers;
+  try {
+    peers = await wgManager.listPeers();
+  } catch (err) {
+    console.error('[heartbeat] wg-manager unreachable:', (err as Error).message);
+    return;
+  }
+  for (const peer of peers) {
+    if (!peer.latestHandshake) continue;
+    const handshakeIso = new Date(peer.latestHandshake * 1000).toISOString();
+    await query(
+      `UPDATE routers
+          SET last_handshake_at = $2
+        WHERE wg_public_key = $1
+          AND (last_handshake_at IS NULL OR last_handshake_at < $2)`,
+      [peer.publicKey, handshakeIso]
+    );
+  }
 }
 
 export async function createRouter(input: {
