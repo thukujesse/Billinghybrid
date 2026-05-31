@@ -24,6 +24,9 @@ TOKEN = os.environ.get('WG_MANAGER_TOKEN', '')
 PORT = int(os.environ.get('WG_MANAGER_PORT', '8080'))
 IFACE = os.environ.get('WG_MANAGER_IFACE', 'wg0')
 CONF_PATH = f'/etc/wireguard/{IFACE}.conf'
+SSH_KEY_PATH = os.environ.get('WG_MANAGER_SSH_KEY', '/opt/wg-manager/router-ssh-key')
+SSH_PUBKEY_PATH = SSH_KEY_PATH + '.pub'
+DEFAULT_ROUTER_SSH_PORT = int(os.environ.get('ROUTER_SSH_PORT', '22'))
 
 if not TOKEN or len(TOKEN) < 24:
     print('FATAL: WG_MANAGER_TOKEN env var required (>= 24 chars)', file=sys.stderr)
@@ -67,6 +70,44 @@ def add_peer(public_key, tunnel_ip):
             f.write(f'\n[Peer]\nPublicKey = {public_key}\nAllowedIPs = {tunnel_ip}/32\n')
 
 
+def read_ssh_pubkey():
+    """Return wg-manager's SSH public key (one line) so MikroTiks can fetch it
+    during provisioning and authorize it for admin SSH access."""
+    try:
+        with open(SSH_PUBKEY_PATH, 'r') as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        return ''
+
+
+def exec_on_router(tunnel_ip, command, ssh_port=DEFAULT_ROUTER_SSH_PORT, user='admin', timeout=10):
+    """SSH into the MikroTik (at tunnel_ip, via wg0) and run `command`.
+    Returns {stdout, stderr, returncode}. Auth via key, no password."""
+    try:
+        result = subprocess.run(
+            [
+                'ssh',
+                '-p', str(ssh_port),
+                '-i', SSH_KEY_PATH,
+                '-o', 'StrictHostKeyChecking=no',
+                '-o', 'UserKnownHostsFile=/dev/null',
+                '-o', 'BatchMode=yes',
+                '-o', f'ConnectTimeout={timeout}',
+                '-o', 'LogLevel=ERROR',
+                f'{user}@{tunnel_ip}',
+                command,
+            ],
+            capture_output=True, text=True, timeout=timeout + 5,
+        )
+        return {
+            'stdout': result.stdout,
+            'stderr': result.stderr,
+            'returncode': result.returncode,
+        }
+    except subprocess.TimeoutExpired:
+        return {'stdout': '', 'stderr': 'ssh timeout', 'returncode': -1}
+
+
 def remove_peer(public_key):
     _run(['wg', 'set', IFACE, 'peer', public_key, 'remove'])
     with open(CONF_PATH, 'r') as f:
@@ -93,6 +134,18 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        # /ssh-pubkey is intentionally unauthenticated — public keys are public,
+        # and MikroTiks during provisioning need to fetch it without a token.
+        if self.path == '/ssh-pubkey':
+            pub = read_ssh_pubkey()
+            if not pub:
+                return self._send_json(500, {'error': 'ssh key not generated'})
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/plain; charset=utf-8')
+            self.send_header('Content-Length', str(len(pub) + 1))
+            self.end_headers()
+            self.wfile.write((pub + '\n').encode())
+            return
         if not self._auth():
             return self._send_json(401, {'error': 'unauthorized'})
         if self.path == '/peers':
@@ -106,6 +159,23 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._auth():
             return self._send_json(401, {'error': 'unauthorized'})
+        # POST /routers/<tunnel-ip>/exec  body: {"command": "...", "sshPort": 22}
+        m = re.match(r'^/routers/([\d.]+)/exec$', self.path)
+        if m:
+            tunnel_ip = m.group(1)
+            try:
+                length = int(self.headers.get('Content-Length', '0'))
+                body = json.loads(self.rfile.read(length)) if length else {}
+                command = body.get('command')
+                if not command or not isinstance(command, str):
+                    return self._send_json(400, {'error': 'missing command'})
+                ssh_port = int(body.get('sshPort', DEFAULT_ROUTER_SSH_PORT))
+                user = body.get('user', 'admin')
+                result = exec_on_router(tunnel_ip, command, ssh_port=ssh_port, user=user)
+                code = 200 if result['returncode'] == 0 else 502
+                return self._send_json(code, result)
+            except (json.JSONDecodeError, ValueError) as e:
+                return self._send_json(400, {'error': str(e)})
         if self.path == '/peers':
             try:
                 length = int(self.headers.get('Content-Length', '0'))

@@ -191,6 +191,8 @@ export async function provisionRouter(input: {
     serverPublicKey: config.wireguard.serverPublicKey,
     endpoint: config.wireguard.endpoint,
     tunnelNetwork: config.wireguard.network,
+    pubkeyUrl: `${config.wireguard.managerUrl}/ssh-pubkey`,
+    mgmtPassword: crypto.randomBytes(16).toString('base64url'),
   });
 
   const result: ProvisionResult = {
@@ -254,6 +256,8 @@ export async function fetchProvisionScript(token: string): Promise<string> {
     serverPublicKey: config.wireguard.serverPublicKey,
     endpoint: config.wireguard.endpoint,
     tunnelNetwork: config.wireguard.network,
+    pubkeyUrl: `${config.wireguard.managerUrl}/ssh-pubkey`,
+    mgmtPassword: crypto.randomBytes(16).toString('base64url'),
   });
 }
 
@@ -264,25 +268,28 @@ function renderRouterOsScript(p: {
   serverPublicKey: string;
   endpoint: string;
   tunnelNetwork: string;
+  pubkeyUrl: string;
+  mgmtPassword: string;
 }): string {
   const [host, port] = p.endpoint.split(':');
   return `# --- JTM zero-touch provisioning for "${p.routerName}" ---
-# Idempotent: removes any existing wg-jtm + cross-interface peer for our VPS
-# server, then provisions fresh. Safe to re-run.
+# Idempotent: cleans prior wg-jtm + management user state, then provisions
+# WireGuard tunnel + a jtm-mgmt SSH user so the backend can push config via
+# the tunnel. Safe to re-run.
 
 :local ver [/system resource get version]
 :if ([:pick $ver 0 1] != "7") do={ :error "RouterOS 7.x required. Found: $ver" }
 
-# Clean up any prior state from a previous provisioning of this router.
+# Clean up any prior WG state.
 :if ([:len [/interface/wireguard find name=wg-jtm]] > 0) do={
   /ip/address remove [find interface=wg-jtm]
   /interface/wireguard remove [find name=wg-jtm]
 }
-# Also remove any leftover peer pointing at our VPS (could be on another iface).
 :if ([:len [/interface/wireguard/peers find public-key="${p.serverPublicKey}"]] > 0) do={
   /interface/wireguard/peers remove [find public-key="${p.serverPublicKey}"]
 }
 
+# WireGuard tunnel.
 /interface/wireguard add name=wg-jtm private-key="${p.privateKey}"
 /interface/wireguard/peers add interface=wg-jtm \\
   public-key="${p.serverPublicKey}" \\
@@ -290,6 +297,16 @@ function renderRouterOsScript(p: {
   allowed-address=${p.tunnelNetwork} \\
   persistent-keepalive=25s
 /ip/address add interface=wg-jtm address=${p.tunnelIp}/${networkMask()}
+
+# Management user "jtm-mgmt" — backend SSHs in as this user using a key we
+# fetch below. Password is set but unused; SSH key auth is the access path.
+:if ([:len [/user find name=jtm-mgmt]] = 0) do={
+  /user add name=jtm-mgmt group=full disabled=no password="${p.mgmtPassword}"
+}
+/user/ssh-keys/remove [find user=jtm-mgmt]
+/tool fetch url="${p.pubkeyUrl}" dst-path=jtm-mgr.pub
+/user/ssh-keys/import file=jtm-mgr.pub user=jtm-mgmt
+/file/remove jtm-mgr.pub
 
 :put "wg-jtm up at ${p.tunnelIp}. Verify with: /interface/wireguard print"
 `;
@@ -302,6 +319,18 @@ function renderVpsAddCommand(peerPublicKey: string, tunnelIp: string): string {
     `sudo wg set wg0 peer "${peerPublicKey}" allowed-ips ${tunnelIp}/32`,
     `printf '\\n[Peer]\\nPublicKey = ${peerPublicKey}\\nAllowedIPs = ${tunnelIp}/32\\n' | sudo tee -a /etc/wireguard/wg0.conf >/dev/null`,
   ].join(' && ');
+}
+
+/**
+ * Push a RouterOS command into the MikroTik via the WG tunnel (SSH on the
+ * other side, terminated by wg-manager). Returns stdout/stderr/returncode.
+ */
+export async function execOnRouter(routerId: string, command: string): Promise<{
+  stdout: string; stderr: string; returncode: number;
+}> {
+  const router = await getRouter(routerId);
+  if (!router.wg_tunnel_ip) throw badRequest('router has no tunnel IP');
+  return wgManager.execOnRouter(router.wg_tunnel_ip, command);
 }
 
 /** Assign a subscriber's service to a router. */

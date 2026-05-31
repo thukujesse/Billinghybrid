@@ -44,3 +44,31 @@ export async function listPeers(): Promise<VpsPeer[]> {
   const j = (await r.json()) as { peers: VpsPeer[] };
   return j.peers;
 }
+
+export interface ExecResult {
+  stdout: string;
+  stderr: string;
+  returncode: number;
+}
+
+/**
+ * Ask wg-manager to SSH into the MikroTik at `tunnelIp` (over the WG tunnel)
+ * and run `command`. SSH auth is by key — the MikroTik trusts wg-manager's
+ * public key via the provisioning script.
+ */
+export async function execOnRouter(
+  tunnelIp: string,
+  command: string,
+  opts: { sshPort?: number; user?: string } = {}
+): Promise<ExecResult> {
+  const r = await fetch(`${config.wireguard.managerUrl}/routers/${tunnelIp}/exec`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeader() },
+    body: JSON.stringify({ command, sshPort: opts.sshPort, user: opts.user }),
+  });
+  const body = (await r.json()) as ExecResult & { error?: string };
+  if (!r.ok && r.status !== 502) {
+    throw new Error(`wg-manager exec failed (${r.status}): ${body.error ?? 'unknown'}`);
+  }
+  return body;
+}

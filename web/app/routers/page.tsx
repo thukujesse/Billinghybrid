@@ -59,6 +59,22 @@ export default function Routers() {
     }
   };
 
+  const testConnection = async (id: string) => {
+    try {
+      const r = await api<{ stdout: string; stderr: string; returncode: number }>(
+        `/routers/${id}/exec`,
+        { method: 'POST', body: JSON.stringify({ command: '/system/identity/print' }) }
+      );
+      if (r.returncode === 0) {
+        setToast({ ok: true, msg: `Router responded: ${r.stdout.trim().slice(0, 100)}` });
+      } else {
+        setToast({ ok: false, msg: `exec failed: ${r.stderr.trim().slice(0, 200)}` });
+      }
+    } catch (e: any) {
+      setToast({ ok: false, msg: e.message });
+    }
+  };
+
   const copy = async (text: string, preEl: HTMLElement | null) => {
     const result = await copyToClipboard(text, preEl);
     if (result === 'copied') setToast({ ok: true, msg: 'Copied to clipboard' });
@@ -161,6 +177,7 @@ export default function Routers() {
             <th>Tunnel IP</th>
             <th>VPN</th>
             <th>Last handshake</th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
@@ -171,10 +188,19 @@ export default function Routers() {
               <td><code>{r.wg_tunnel_ip ?? '—'}</code></td>
               <td><VpnPill status={r.vpn_status} /></td>
               <td title={r.last_handshake_at ?? ''}>{formatLastSeen(r.last_handshake_at)}</td>
+              <td>
+                <button
+                  className="ghost"
+                  style={{ fontSize: 11, padding: '4px 10px' }}
+                  onClick={() => testConnection(r.id)}
+                >
+                  Test
+                </button>
+              </td>
             </tr>
           ))}
           {list.length === 0 && (
-            <tr><td colSpan={5} style={{ color: 'var(--muted)' }}>No routers yet</td></tr>
+            <tr><td colSpan={6} style={{ color: 'var(--muted)' }}>No routers yet</td></tr>
           )}
         </tbody>
       </table>

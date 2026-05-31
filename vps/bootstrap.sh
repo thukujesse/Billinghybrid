@@ -7,11 +7,11 @@ set -euo pipefail
 REPO_RAW="https://raw.githubusercontent.com/thukujesse/Billinghybrid/main/vps"
 DOMAIN="vpn.hubnetwifi.co.ke"
 
-echo "[1/8] Installing python3 + caddy + helpers..."
+echo "[1/8] Installing python3 + caddy + openssh-client + helpers..."
 export DEBIAN_FRONTEND=noninteractive
 export NEEDRESTART_MODE=a
 apt-get update -qq
-apt-get install -y python3 curl gnupg debian-keyring debian-archive-keyring apt-transport-https >/dev/null
+apt-get install -y python3 curl gnupg debian-keyring debian-archive-keyring apt-transport-https openssh-client >/dev/null
 
 if ! command -v caddy >/dev/null; then
   curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
@@ -27,7 +27,17 @@ install -d -m 755 /opt/wg-manager
 curl -fsSL "$REPO_RAW/wg-manager.py" -o /opt/wg-manager/wg-manager.py
 chmod 755 /opt/wg-manager/wg-manager.py
 
-echo "[3/8] Bearer token..."
+echo "[3/8] SSH key for managing MikroTiks over the tunnel..."
+if [ ! -f /opt/wg-manager/router-ssh-key ]; then
+  ssh-keygen -t ed25519 -N '' -C 'wg-manager@jtm' -f /opt/wg-manager/router-ssh-key >/dev/null
+  echo "  generated new ed25519 keypair"
+else
+  echo "  existing key kept"
+fi
+chmod 600 /opt/wg-manager/router-ssh-key
+chmod 644 /opt/wg-manager/router-ssh-key.pub
+
+echo "[3b/8] Bearer token..."
 if [ ! -f /opt/wg-manager/wg-manager.env ]; then
   TOKEN=$(head -c 32 /dev/urandom | base64 | tr -d '/+=' | head -c 40)
   cat > /opt/wg-manager/wg-manager.env <<EOF
