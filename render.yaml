@@ -10,7 +10,16 @@ services:
     plan: free
     region: oregon
     rootDir: .
-    buildCommand: npm ci && npm run build --workspace api
+    buildCommand: |
+      npm ci
+      echo "===== root node_modules/@types ====="
+      ls node_modules/@types 2>/dev/null || echo "(missing)"
+      echo "===== api/node_modules/@types ====="
+      ls api/node_modules/@types 2>/dev/null || echo "(missing)"
+      echo "===== where is @types/node ====="
+      find . -path ./node_modules/.cache -prune -o -name "node" -path "*/@types/*" -print 2>/dev/null | head -10
+      echo "===== building ====="
+      npm run build --workspace api
     startCommand: cd api && node dist/db/migrate.js && node dist/server.js
     healthCheckPath: /health
     envVars:
