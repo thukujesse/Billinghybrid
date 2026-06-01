@@ -330,8 +330,8 @@ function renderRouterOsScript(p: {
 }
 /user/ssh-keys/remove [find user=jtm-mgmt]
 /tool fetch url="${p.pubkeyUrl}" dst-path=jtm-mgr.pub
-/user/ssh-keys/import file=jtm-mgr.pub user=jtm-mgmt
-/file/remove jtm-mgr.pub
+/user/ssh-keys/import public-key-file=jtm-mgr.pub user=jtm-mgmt
+/file/remove [find name=jtm-mgr.pub]
 
 # RADIUS: point at central server over the tunnel for PPP + Hotspot auth.
 # Local /ppp secret store stays empty — all customers live in FreeRADIUS.
