@@ -35,7 +35,16 @@ RADDB=/etc/freeradius/3.0
 
 echo "[radius 2/5] Installing sql module config (substituted from radius.env)..."
 curl -fsSL "$REPO_RAW/freeradius/sql.conf" -o /tmp/jtm-sql.conf
-envsubst < /tmp/jtm-sql.conf > "$RADDB/mods-available/sql"
+# Use sed with @VAR@ placeholders so FreeRADIUS's own ${...} config refs
+# (like ${modconfdir} and ${thread[pool].start_servers}) survive the
+# substitution. envsubst would have clobbered them.
+sed \
+  -e "s|@PGHOST@|${PGHOST}|g" \
+  -e "s|@PGPORT@|${PGPORT}|g" \
+  -e "s|@PGUSER@|${PGUSER}|g" \
+  -e "s|@PGPASSWORD@|${PGPASSWORD}|g" \
+  -e "s|@PGDATABASE@|${PGDATABASE}|g" \
+  /tmp/jtm-sql.conf > "$RADDB/mods-available/sql"
 rm /tmp/jtm-sql.conf
 
 # Enable sql module.
