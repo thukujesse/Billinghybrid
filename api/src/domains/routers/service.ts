@@ -516,6 +516,67 @@ export async function identifyRouter(token: string, serial: string): Promise<{
   return { routerId: currentId, dedupedCount: dupes.rowCount ?? 0 };
 }
 
+/**
+ * Build a RouterOS script the admin pastes onto a MikroTik to turn one of its
+ * LAN interfaces into a JTM-managed hotspot. Walled-garden whitelists our
+ * portal so unauthenticated clients can reach it; login.html is replaced with
+ * a thin redirect to the captive portal page on jtm-web.
+ */
+export async function buildHotspotScript(
+  routerId: string,
+  opts: { interfaceName: string; networkCidr: string }
+): Promise<{ script: string }> {
+  const router = await getRouter(routerId);
+  const [base, prefixStr] = opts.networkCidr.split('/');
+  const prefix = Number(prefixStr);
+  const octets = base.split('.').map(Number);
+  if (octets.length !== 4 || octets.some(isNaN) || isNaN(prefix)) {
+    throw badRequest('invalid networkCidr (expected e.g. 10.5.50.0/24)');
+  }
+  const gateway   = `${octets[0]}.${octets[1]}.${octets[2]}.1`;
+  const poolStart = `${octets[0]}.${octets[1]}.${octets[2]}.10`;
+  const poolEnd   = `${octets[0]}.${octets[1]}.${octets[2]}.250`;
+
+  const apiHost  = new URL(config.publicApiUrl).host;          // jtm-api-h6o3.onrender.com
+  const webHost  = apiHost.replace(/^jtm-api/, 'jtm-web');     // jtm-web-h6o3.onrender.com
+  const loginUrl = `${config.publicApiUrl}/api/hotspot/login.html`;
+
+  const script = `# --- JTM hotspot setup for "${router.name}" on ${opts.interfaceName} ---
+# Idempotent: removes prior JTM hotspot config, then provisions fresh.
+
+/ip hotspot remove [find name=jtm-hs]
+/ip hotspot profile remove [find name=jtm-hotspot]
+/ip pool remove [find name=jtm-hs-pool]
+/ip hotspot walled-garden remove [find comment="jtm"]
+/ip hotspot walled-garden ip remove [find comment="jtm"]
+/ip address remove [find comment="jtm-hs"]
+
+/ip pool add name=jtm-hs-pool ranges=${poolStart}-${poolEnd}
+/ip address add interface=${opts.interfaceName} address=${gateway}/${prefix} comment="jtm-hs"
+
+/ip hotspot profile add name=jtm-hotspot \\
+  hotspot-address=${gateway} dns-name=jtm-hotspot \\
+  use-radius=yes login-by=http-pap
+
+/ip hotspot add name=jtm-hs \\
+  interface=${opts.interfaceName} \\
+  address-pool=jtm-hs-pool \\
+  profile=jtm-hotspot disabled=no
+
+# Walled garden — let unauthenticated clients reach the captive portal.
+/ip hotspot walled-garden add dst-host=${webHost} action=allow comment="jtm"
+/ip hotspot walled-garden add dst-host=${apiHost} action=allow comment="jtm"
+/ip hotspot walled-garden ip add tls-host=${webHost} action=accept comment="jtm"
+/ip hotspot walled-garden ip add tls-host=${apiHost} action=accept comment="jtm"
+
+# Replace MikroTik's default login.html with a thin redirect to our portal.
+/tool fetch url="${loginUrl}" dst-path=hotspot/login.html mode=https
+
+:put "Hotspot active on ${opts.interfaceName} (${opts.networkCidr}). Connect a device + open any HTTP page."
+`;
+  return { script };
+}
+
 /** Manual cleanup — delete a router record, its WG peer on VPS, its nas row. */
 export async function deleteRouter(id: string): Promise<void> {
   const r = await query<{ wg_public_key: string | null; wg_tunnel_ip: string | null }>(

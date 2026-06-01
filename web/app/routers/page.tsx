@@ -75,6 +75,28 @@ export default function Routers() {
     }
   };
 
+  const setupHotspot = async (id: string, name: string) => {
+    const iface = prompt(`LAN interface to put hotspot on for ${name}?\n(e.g. ether2, bridge1, wlan1)`, 'ether2');
+    if (!iface) return;
+    const cidr = prompt(`Hotspot network CIDR? (gateway will be .1)`, '10.5.50.0/24');
+    if (!cidr) return;
+    try {
+      const r = await api<{ script: string }>(`/routers/${id}/hotspot-script`, {
+        method: 'POST',
+        body: JSON.stringify({ interfaceName: iface, networkCidr: cidr }),
+      });
+      setResult({
+        router: { id, name } as any,
+        oneLiner: '',
+        mikrotikScript: r.script,
+        vpsAutoAdded: false,
+      } as any);
+      setToast({ ok: true, msg: `Hotspot script generated — paste it on ${name}` });
+    } catch (e: any) {
+      setToast({ ok: false, msg: e.message });
+    }
+  };
+
   const deleteRouter = async (id: string, name: string) => {
     if (!confirm(`Delete ${name}? Releases its tunnel IP and removes the WG peer + RADIUS nas row. The MikroTik itself isn't touched (it'll just lose its tunnel until reprovisioned).`)) return;
     try {
@@ -239,6 +261,13 @@ export default function Routers() {
                   onClick={() => reprovision(r.id, r.name)}
                 >
                   Reprovision
+                </button>
+                <button
+                  className="ghost"
+                  style={{ fontSize: 11, padding: '4px 10px', marginRight: 4 }}
+                  onClick={() => setupHotspot(r.id, r.name)}
+                >
+                  Hotspot
                 </button>
                 <button
                   className="ghost"

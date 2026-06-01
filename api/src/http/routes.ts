@@ -474,6 +474,39 @@ api.post('/routers/:id/reprovision', requireAuth('admin', 'staff'), ah(async (re
   res.json(await routers.reprovisionRouter(req.params.id));
 }));
 
+// Build a RouterOS script that turns a LAN interface into a JTM hotspot.
+api.post('/routers/:id/hotspot-script', requireAuth('admin', 'staff'), ah(async (req, res) => {
+  const body = parse(z.object({
+    interfaceName: z.string().min(1),
+    networkCidr: z.string().regex(/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/),
+  }), req.body);
+  res.json(await routers.buildHotspotScript(req.params.id, body));
+}));
+
+// Captive portal landing page that MikroTik serves to unauthenticated clients.
+// Public — gets fetched by the MikroTik itself and by client browsers via the
+// hotspot redirect. The HTML JS-redirects to our actual portal at /hotspot.
+api.get('/hotspot/login.html', ah(async (_req, res) => {
+  const webHost = new URL(config.publicApiUrl).host.replace(/^jtm-api/, 'jtm-web');
+  // $(varname) is MikroTik's hotspot variable substitution — replaced by the
+  // MikroTik when it serves this file. We pass them through to our portal.
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Connecting</title>
+<style>body{font-family:system-ui,sans-serif;text-align:center;padding-top:30vh;color:#444}</style>
+</head><body><p>Redirecting to login&hellip;</p>
+<script>
+var p = new URLSearchParams({
+  'link-login-only': '$(link-login-only)',
+  'link-orig': '$(link-orig)',
+  'mac': '$(mac)',
+  'ip': '$(ip)'
+});
+location.href = 'https://${webHost}/hotspot?' + p.toString();
+</script></body></html>`;
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(html);
+}));
+
 // Identify: called by the MikroTik itself (no auth — gated by the unguessable
 // provisioning token) to report its serial number. API uses this to merge
 // duplicate router rows that point at the same physical box.
