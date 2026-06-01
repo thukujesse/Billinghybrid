@@ -32,6 +32,7 @@ import { listPlugins } from '../plugins/index.js';
 import { handleUpdate } from '../domains/telegram/bot.js';
 import { config } from '../config.js';
 import * as radius from '../domains/radius/service.js';
+import * as customers from '../domains/customers/service.js';
 
 export const api = Router();
 
@@ -380,6 +381,49 @@ api.post('/routers', requireAuth('admin', 'staff'), ah(async (req, res) => {
   }), req.body);
   res.status(201).json(await routers.createRouter(body));
 }));
+// ---------------------- Customers + Services ----------------------
+api.get('/customers', ah(async (_req, res) => {
+  res.json(await customers.listCustomers());
+}));
+api.get('/customers/:id', ah(async (req, res) => {
+  res.json(await customers.getCustomer(req.params.id));
+}));
+api.post('/customers', ah(async (req, res) => {
+  const body = parse(z.object({
+    account_number: z.string().optional(),
+    full_name: z.string().min(1),
+    phone: z.string().optional(),
+    email: z.string().email().optional(),
+    address: z.string().optional(),
+    notes: z.string().optional(),
+  }), req.body);
+  res.status(201).json(await customers.createCustomer(body));
+}));
+api.post('/customers/:id/services', ah(async (req, res) => {
+  const body = parse(z.object({
+    service_type: z.enum(['pppoe', 'hotspot', 'static', 'ftth_gpon']),
+    username: z.string().optional(),
+    password: z.string().optional(),
+    ip_address: z.string().optional(),
+    mac_address: z.string().optional(),
+    vlan_id: z.number().int().optional(),
+    router_id: z.string().uuid().optional(),
+    rate_limit: z.string().optional(),
+    expiry_date: z.string().optional(),
+  }), req.body);
+  res.status(201).json(await customers.createService({ ...body, customer_id: req.params.id }));
+}));
+api.patch('/services/:id/status', ah(async (req, res) => {
+  const body = parse(z.object({
+    status: z.enum(['active', 'suspended', 'expired', 'cancelled']),
+  }), req.body);
+  res.json(await customers.setServiceStatus(req.params.id, body.status));
+}));
+api.delete('/services/:id', ah(async (req, res) => {
+  await customers.deleteService(req.params.id);
+  res.status(204).end();
+}));
+
 // ---------------------- RADIUS sessions ----------------------
 api.get('/radius/sessions/active', ah(async (_req, res) => {
   res.json(await radius.listActiveSessions());
