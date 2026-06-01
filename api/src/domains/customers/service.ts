@@ -208,14 +208,16 @@ export async function setServiceStatus(
 }
 
 async function kickActiveSessions(username: string): Promise<void> {
+  // Use host() to strip the /32 that INET::text would produce — otherwise the
+  // join against nas.nasname (plain text "10.66.0.25") never matches.
   const sessions = await query<{
     nas_ip: string; session_id: string; secret: string;
   }>(
-    `SELECT a.nasipaddress::text AS nas_ip,
+    `SELECT host(a.nasipaddress) AS nas_ip,
             a.acctsessionid AS session_id,
             n.secret AS secret
        FROM radacct a
-       LEFT JOIN nas n ON n.nasname = a.nasipaddress::text
+       LEFT JOIN nas n ON n.nasname = host(a.nasipaddress)
       WHERE a.username = $1 AND a.acctstoptime IS NULL`,
     [username]
   );
