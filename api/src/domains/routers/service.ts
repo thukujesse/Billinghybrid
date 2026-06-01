@@ -208,6 +208,8 @@ export async function provisionRouter(input: {
     mgmtPassword: crypto.randomBytes(16).toString('base64url'),
     radiusSecret,
     radiusServerIp: config.wireguard.network.split('/')[0].replace(/0\.0$/, '0.1'),
+    identifyUrl: `${config.publicApiUrl}/api/routers/identify`,
+    provisionToken: token,
   });
 
   const result: ProvisionResult = {
@@ -281,6 +283,8 @@ export async function fetchProvisionScript(token: string): Promise<string> {
     mgmtPassword: crypto.randomBytes(16).toString('base64url'),
     radiusSecret,
     radiusServerIp: config.wireguard.network.split('/')[0].replace(/0\.0$/, '0.1'),
+    identifyUrl: `${config.publicApiUrl}/api/routers/identify`,
+    provisionToken: token,
   });
 }
 
@@ -295,6 +299,8 @@ function renderRouterOsScript(p: {
   mgmtPassword: string;
   radiusSecret: string;
   radiusServerIp: string;
+  identifyUrl: string;
+  provisionToken: string;
 }): string {
   const [host, port] = p.endpoint.split(':');
   return `# --- JTM zero-touch provisioning for "${p.routerName}" ---
@@ -346,7 +352,17 @@ function renderRouterOsScript(p: {
   /ip hotspot profile set [find name=default] use-radius=yes
 }
 
-:put "wg-jtm up at ${p.tunnelIp}. RADIUS server: ${p.radiusServerIp}. Customers in PPP secrets list should be 0 (auth is centralized)."
+# Report this MikroTik's serial back to the API so duplicate router records
+# (from re-provisioning the same physical box) get auto-merged + their tunnel
+# IPs released. Best-effort — errors don't break provisioning.
+:local serial [/system/routerboard get serial-number]
+:do {
+  /tool fetch url="${p.identifyUrl}" http-method=post \\
+    http-data=("token=${p.provisionToken}&serial=" . $serial) \\
+    output=none
+} on-error={ :log warning "jtm identify call failed" }
+
+:put "wg-jtm up at ${p.tunnelIp}. RADIUS server: ${p.radiusServerIp}. Serial: $serial"
 `;
 }
 
@@ -433,6 +449,8 @@ export async function reprovisionRouter(routerId: string): Promise<ReprovisionRe
     mgmtPassword: crypto.randomBytes(16).toString('base64url'),
     radiusSecret,
     radiusServerIp: config.wireguard.network.split('/')[0].replace(/0\.0$/, '0.1'),
+    identifyUrl: `${config.publicApiUrl}/api/routers/identify`,
+    provisionToken: token,
   });
   const oneLiner = renderOneLiner(token);
 
@@ -454,6 +472,66 @@ export async function reprovisionRouter(routerId: string): Promise<ReprovisionRe
   }
 
   return { router, oneLiner, mikrotikScript, autoApplied, autoApplyOutput };
+}
+
+/**
+ * Called by the MikroTik itself once provisioning finishes. The router POSTs
+ * its serial number; we match by token, then find any other router rows with
+ * the same serial (left over from previous provisioning attempts on the same
+ * physical box) and delete them — releasing their tunnel IPs + WG peers + nas
+ * rows. Idempotent — safe to call multiple times.
+ */
+export async function identifyRouter(token: string, serial: string): Promise<{
+  routerId: string; dedupedCount: number;
+}> {
+  if (!serial) throw badRequest('serial required');
+  const cur = await query<{ id: string; wg_tunnel_ip: string }>(
+    `SELECT id, wg_tunnel_ip FROM routers WHERE provision_token = $1`, [token]
+  );
+  if (cur.rows.length === 0) throw notFound('provision token');
+  const currentId = cur.rows[0].id;
+
+  // Record the serial on the current router.
+  await query(`UPDATE routers SET serial_number = $2 WHERE id = $1`, [currentId, serial]);
+
+  // Find duplicates — same serial, different id. Release their resources.
+  const dupes = await query<{
+    id: string; wg_public_key: string | null; wg_tunnel_ip: string | null;
+  }>(
+    `SELECT id, wg_public_key, wg_tunnel_ip FROM routers
+      WHERE serial_number = $1 AND id != $2`,
+    [serial, currentId]
+  );
+  for (const d of dupes.rows) {
+    if (d.wg_public_key && wgManager.isEnabled()) {
+      try { await wgManager.removePeer(d.wg_public_key); } catch (e) {
+        console.error('[identify] wg peer remove failed:', (e as Error).message);
+      }
+    }
+    if (d.wg_tunnel_ip) {
+      await query(`DELETE FROM nas WHERE nasname = $1`, [d.wg_tunnel_ip]);
+    }
+    await query(`DELETE FROM routers WHERE id = $1`, [d.id]);
+  }
+  return { routerId: currentId, dedupedCount: dupes.rowCount ?? 0 };
+}
+
+/** Manual cleanup — delete a router record, its WG peer on VPS, its nas row. */
+export async function deleteRouter(id: string): Promise<void> {
+  const r = await query<{ wg_public_key: string | null; wg_tunnel_ip: string | null }>(
+    `SELECT wg_public_key, wg_tunnel_ip FROM routers WHERE id = $1`, [id]
+  );
+  if (r.rows.length === 0) throw notFound('router');
+  const { wg_public_key, wg_tunnel_ip } = r.rows[0];
+  if (wg_public_key && wgManager.isEnabled()) {
+    try { await wgManager.removePeer(wg_public_key); } catch (e) {
+      console.error('[delete] wg peer remove failed:', (e as Error).message);
+    }
+  }
+  if (wg_tunnel_ip) {
+    await query(`DELETE FROM nas WHERE nasname = $1`, [wg_tunnel_ip]);
+  }
+  await query(`DELETE FROM routers WHERE id = $1`, [id]);
 }
 
 /** Assign a subscriber's service to a router. */

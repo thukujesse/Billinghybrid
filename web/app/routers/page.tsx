@@ -75,6 +75,17 @@ export default function Routers() {
     }
   };
 
+  const deleteRouter = async (id: string, name: string) => {
+    if (!confirm(`Delete ${name}? Releases its tunnel IP and removes the WG peer + RADIUS nas row. The MikroTik itself isn't touched (it'll just lose its tunnel until reprovisioned).`)) return;
+    try {
+      await api(`/routers/${id}`, { method: 'DELETE' });
+      setToast({ ok: true, msg: `Deleted ${name}` });
+      load();
+    } catch (e: any) {
+      setToast({ ok: false, msg: e.message });
+    }
+  };
+
   const reprovision = async (id: string, name: string) => {
     if (!confirm(`Reprovision ${name}? Rotates RADIUS secret + pushes fresh config to the MikroTik.`)) return;
     try {
@@ -217,17 +228,24 @@ export default function Routers() {
               <td>
                 <button
                   className="ghost"
-                  style={{ fontSize: 11, padding: '4px 10px', marginRight: 6 }}
+                  style={{ fontSize: 11, padding: '4px 10px', marginRight: 4 }}
                   onClick={() => testConnection(r.id)}
                 >
                   Test
                 </button>
                 <button
                   className="ghost"
-                  style={{ fontSize: 11, padding: '4px 10px' }}
+                  style={{ fontSize: 11, padding: '4px 10px', marginRight: 4 }}
                   onClick={() => reprovision(r.id, r.name)}
                 >
                   Reprovision
+                </button>
+                <button
+                  className="ghost"
+                  style={{ fontSize: 11, padding: '4px 10px', color: 'var(--red)' }}
+                  onClick={() => deleteRouter(r.id, r.name)}
+                >
+                  Delete
                 </button>
               </td>
             </tr>

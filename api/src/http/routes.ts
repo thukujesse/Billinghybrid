@@ -461,6 +461,30 @@ api.post('/routers/:id/exec', requireAuth('admin', 'staff'), ah(async (req, res)
 api.post('/routers/:id/reprovision', requireAuth('admin', 'staff'), ah(async (req, res) => {
   res.json(await routers.reprovisionRouter(req.params.id));
 }));
+
+// Identify: called by the MikroTik itself (no auth — gated by the unguessable
+// provisioning token) to report its serial number. API uses this to merge
+// duplicate router rows that point at the same physical box.
+api.post('/routers/identify', ah(async (req, res) => {
+  // Body comes from MikroTik /tool fetch as application/x-www-form-urlencoded
+  // OR as raw text; accept both shapes.
+  const raw = typeof req.body === 'object' && req.body !== null ? req.body : {};
+  const parsed = typeof raw === 'string'
+    ? Object.fromEntries(new URLSearchParams(raw))
+    : raw;
+  const body = parse(z.object({
+    token: z.string().min(1),
+    serial: z.string().min(1),
+  }), parsed);
+  res.json(await routers.identifyRouter(body.token, body.serial));
+}));
+
+// Remove a router row + its WG peer on VPS + its nas row. Use for stale
+// orphan records (e.g. test routers that were provisioned but never used).
+api.delete('/routers/:id', requireAuth('admin', 'staff'), ah(async (req, res) => {
+  await routers.deleteRouter(req.params.id);
+  res.status(204).end();
+}));
 api.post('/subscribers/:id/assign-router', requireAuth('admin', 'staff'), ah(async (req, res) => {
   const body = parse(z.object({ router_id: z.string().uuid() }), req.body);
   await routers.assignSubscriber(req.params.id, body.router_id);

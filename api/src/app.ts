@@ -14,6 +14,8 @@ export async function createApp() {
   const app = express();
   app.use(cors());
   app.use(express.json({ limit: '12mb' })); // headroom for base64 KYC uploads
+  // MikroTik /tool fetch posts form-encoded data — needed for /routers/identify.
+  app.use(express.urlencoded({ extended: false }));
   app.use(requestLog);
   app.use(metricsMiddleware);
 
