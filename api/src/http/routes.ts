@@ -455,6 +455,12 @@ api.post('/routers/:id/exec', requireAuth('admin', 'staff'), ah(async (req, res)
   const body = parse(z.object({ command: z.string().min(1) }), req.body);
   res.json(await routers.execOnRouter(req.params.id, body.command));
 }));
+
+// Re-issue token, rotate RADIUS secret, and SSH-push the new config to the
+// MikroTik. If SSH push works, MikroTik self-applies — true one-touch refresh.
+api.post('/routers/:id/reprovision', requireAuth('admin', 'staff'), ah(async (req, res) => {
+  res.json(await routers.reprovisionRouter(req.params.id));
+}));
 api.post('/subscribers/:id/assign-router', requireAuth('admin', 'staff'), ah(async (req, res) => {
   const body = parse(z.object({ router_id: z.string().uuid() }), req.body);
   await routers.assignSubscriber(req.params.id, body.router_id);

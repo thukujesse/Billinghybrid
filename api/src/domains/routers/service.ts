@@ -371,6 +371,91 @@ export async function execOnRouter(routerId: string, command: string): Promise<{
   return wgManager.execOnRouter(router.wg_tunnel_ip, command);
 }
 
+export interface ReprovisionResult {
+  router: Router;
+  oneLiner: string;
+  mikrotikScript: string;
+  autoApplied: boolean;
+  autoApplyOutput: string;
+}
+
+/**
+ * Re-issue a provisioning token + fresh RADIUS secret for an existing router,
+ * then attempt to push it via SSH (using jtm-mgmt installed by the prior
+ * provisioning). If SSH succeeds, the MikroTik self-applies the new config —
+ * truly "one-touch". If SSH fails (port closed, jtm-mgmt not yet installed),
+ * we return the one-liner so admin can paste it manually.
+ */
+export async function reprovisionRouter(routerId: string): Promise<ReprovisionResult> {
+  if (!config.wireguard.serverPublicKey) {
+    throw badRequest('WG_SERVER_PUBKEY not configured on the API');
+  }
+  const router = await getRouter(routerId);
+  if (!router.wg_tunnel_ip) throw badRequest('router has no tunnel IP');
+
+  // Fetch the private key (excluded from getRouter SAFE_COLS).
+  const pkr = await query<{ wg_private_key: string | null }>(
+    `SELECT wg_private_key FROM routers WHERE id = $1`, [routerId]
+  );
+  const privateKey = pkr.rows[0]?.wg_private_key;
+  if (!privateKey) throw badRequest('router missing WG private key');
+
+  const token = crypto.randomBytes(32).toString('base64url');
+  const radiusSecret = crypto.randomBytes(24).toString('base64url');
+
+  await query(
+    `UPDATE routers SET
+       provision_token = $2,
+       provision_token_expires_at = now() + interval '24 hours',
+       provision_token_used_at = NULL,
+       radius_secret = $3
+     WHERE id = $1`,
+    [routerId, token, radiusSecret]
+  );
+
+  // Keep nas table in sync — the new shared secret must match what the
+  // re-pushed RouterOS script will configure.
+  await query(
+    `INSERT INTO nas (nasname, shortname, type, secret, description)
+     VALUES ($1, $2, 'mikrotik', $3, $4)
+     ON CONFLICT (nasname) DO UPDATE SET secret = EXCLUDED.secret`,
+    [router.wg_tunnel_ip, router.name.slice(0, 30), radiusSecret, `JTM ${router.name}`]
+  );
+
+  const mikrotikScript = renderRouterOsScript({
+    routerName: router.name,
+    tunnelIp: router.wg_tunnel_ip,
+    privateKey,
+    serverPublicKey: config.wireguard.serverPublicKey,
+    endpoint: config.wireguard.endpoint,
+    tunnelNetwork: config.wireguard.network,
+    pubkeyUrl: `${config.wireguard.managerUrl}/ssh-pubkey`,
+    mgmtPassword: crypto.randomBytes(16).toString('base64url'),
+    radiusSecret,
+    radiusServerIp: config.wireguard.network.split('/')[0].replace(/0\.0$/, '0.1'),
+  });
+  const oneLiner = renderOneLiner(token);
+
+  // Try SSH-push the one-liner. RouterOS executes the semicolon-separated
+  // commands directly. If jtm-mgmt user/SSH-port aren't right, fall back to
+  // returning the one-liner for manual paste.
+  let autoApplied = false;
+  let autoApplyOutput = '';
+  if (wgManager.isEnabled()) {
+    try {
+      const ssh = await wgManager.execOnRouter(router.wg_tunnel_ip, oneLiner);
+      autoApplied = ssh.returncode === 0;
+      autoApplyOutput = (ssh.stdout + ssh.stderr).trim();
+    } catch (err) {
+      autoApplyOutput = (err as Error).message;
+    }
+  } else {
+    autoApplyOutput = 'wg-manager not configured';
+  }
+
+  return { router, oneLiner, mikrotikScript, autoApplied, autoApplyOutput };
+}
+
 /** Assign a subscriber's service to a router. */
 export async function assignSubscriber(subscriberId: string, routerId: string): Promise<void> {
   await getRouter(routerId);

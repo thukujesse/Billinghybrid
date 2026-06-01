@@ -75,6 +75,32 @@ export default function Routers() {
     }
   };
 
+  const reprovision = async (id: string, name: string) => {
+    if (!confirm(`Reprovision ${name}? Rotates RADIUS secret + pushes fresh config to the MikroTik.`)) return;
+    try {
+      const r = await api<{
+        autoApplied: boolean; autoApplyOutput: string; oneLiner: string;
+        mikrotikScript: string; router: RouterRow;
+      }>(`/routers/${id}/reprovision`, { method: 'POST' });
+      if (r.autoApplied) {
+        setToast({ ok: true, msg: `Reprovisioned ${name} — pushed via SSH, MikroTik self-applied` });
+      } else {
+        // Fall back: show the one-liner for manual paste via the success card.
+        setResult({
+          router: r.router, oneLiner: r.oneLiner,
+          mikrotikScript: r.mikrotikScript, vpsAutoAdded: true,
+        } as any);
+        setToast({
+          ok: false,
+          msg: `SSH push failed (${r.autoApplyOutput.slice(0, 100)}). Paste the one-liner manually.`,
+        });
+      }
+      load();
+    } catch (e: any) {
+      setToast({ ok: false, msg: e.message });
+    }
+  };
+
   const copy = async (text: string, preEl: HTMLElement | null) => {
     const result = await copyToClipboard(text, preEl);
     if (result === 'copied') setToast({ ok: true, msg: 'Copied to clipboard' });
@@ -191,10 +217,17 @@ export default function Routers() {
               <td>
                 <button
                   className="ghost"
-                  style={{ fontSize: 11, padding: '4px 10px' }}
+                  style={{ fontSize: 11, padding: '4px 10px', marginRight: 6 }}
                   onClick={() => testConnection(r.id)}
                 >
                   Test
+                </button>
+                <button
+                  className="ghost"
+                  style={{ fontSize: 11, padding: '4px 10px' }}
+                  onClick={() => reprovision(r.id, r.name)}
+                >
+                  Reprovision
                 </button>
               </td>
             </tr>
