@@ -33,6 +33,7 @@ import { handleUpdate } from '../domains/telegram/bot.js';
 import { config } from '../config.js';
 import * as radius from '../domains/radius/service.js';
 import * as customers from '../domains/customers/service.js';
+import * as hotspot from '../domains/hotspot/service.js';
 
 export const api = Router();
 
@@ -422,6 +423,17 @@ api.patch('/services/:id/status', ah(async (req, res) => {
 api.delete('/services/:id', ah(async (req, res) => {
   await customers.deleteService(req.params.id);
   res.status(204).end();
+}));
+
+// ---------------------- Hotspot captive portal ----------------------
+// Public endpoint — gated by the voucher code being unguessable, not auth.
+// The captive portal page calls this with the voucher code from the customer.
+api.post('/hotspot/redeem', ah(async (req, res) => {
+  const body = parse(z.object({
+    code: z.string().min(1),
+    mac: z.string().optional(),
+  }), req.body);
+  res.json(await hotspot.redeemVoucher(body));
 }));
 
 // ---------------------- RADIUS sessions ----------------------
