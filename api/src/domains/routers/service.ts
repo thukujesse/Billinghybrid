@@ -339,7 +339,9 @@ function renderRouterOsScript(p: {
 /radius add service=ppp,hotspot address=${p.radiusServerIp} \\
   secret="${p.radiusSecret}" timeout=3s comment="jtm-radius"
 /ppp aaa set use-radius=yes accounting=yes interim-update=1m
-/ip hotspot profile set [find name=default] use-radius=yes 2>/dev/null
+:if ([:len [/ip/hotspot/profile find name=default]] > 0) do={
+  /ip hotspot profile set [find name=default] use-radius=yes
+}
 
 :put "wg-jtm up at ${p.tunnelIp}. RADIUS server: ${p.radiusServerIp}. Customers in PPP secrets list should be 0 (auth is centralized)."
 `;
