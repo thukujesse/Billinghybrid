@@ -159,6 +159,34 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._auth():
             return self._send_json(401, {'error': 'unauthorized'})
+        # POST /coa/disconnect  body: {"nasIp": "10.66.0.25", "sessionId": "...", "secret": "...", "username": "..."}
+        # Sends a RADIUS Disconnect-Request to the MikroTik to kick a live session.
+        if self.path == '/coa/disconnect':
+            try:
+                length = int(self.headers.get('Content-Length', '0'))
+                body = json.loads(self.rfile.read(length)) if length else {}
+                nas_ip = body.get('nasIp')
+                session_id = body.get('sessionId')
+                secret = body.get('secret')
+                username = body.get('username', '')
+                if not nas_ip or not session_id or not secret:
+                    return self._send_json(400, {'error': 'nasIp, sessionId, secret required'})
+                attrs = (
+                    f'User-Name={username}\n'
+                    f'Acct-Session-Id={session_id}\n'
+                )
+                result = subprocess.run(
+                    ['radclient', '-x', f'{nas_ip}:3799', 'disconnect', secret],
+                    input=attrs, capture_output=True, text=True, timeout=5,
+                )
+                ok = 'Disconnect-ACK' in result.stdout
+                return self._send_json(200 if ok else 502, {
+                    'ok': ok,
+                    'stdout': result.stdout,
+                    'stderr': result.stderr,
+                })
+            except (json.JSONDecodeError, ValueError, subprocess.TimeoutExpired) as e:
+                return self._send_json(400, {'error': str(e)})
         # POST /routers/<tunnel-ip>/exec  body: {"command": "...", "sshPort": 22}
         m = re.match(r'^/routers/([\d.]+)/exec$', self.path)
         if m:

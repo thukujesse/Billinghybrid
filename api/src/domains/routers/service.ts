@@ -339,6 +339,9 @@ function renderRouterOsScript(p: {
 /radius add service=ppp,hotspot address=${p.radiusServerIp} \\
   secret="${p.radiusSecret}" timeout=3s comment="jtm-radius"
 /ppp aaa set use-radius=yes accounting=yes interim-update=1m
+# Listen for RADIUS CoA (Disconnect-Message) on UDP 3799 from the central
+# server, so admin "suspend" in the dashboard kicks active sessions instantly.
+/radius incoming set accept=yes
 :if ([:len [/ip/hotspot/profile find name=default]] > 0) do={
   /ip hotspot profile set [find name=default] use-radius=yes
 }

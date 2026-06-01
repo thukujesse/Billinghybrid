@@ -1,5 +1,6 @@
 import { query, withTransaction } from '../../db/pool.js';
 import { badRequest, notFound } from '../../lib/errors.js';
+import * as wgManager from '../../lib/wgManager.js';
 
 export interface Customer {
   id: string;
@@ -77,11 +78,34 @@ export async function syncServiceToRadius(svc: Service): Promise<void> {
   });
 }
 
-export async function listCustomers(): Promise<Customer[]> {
+export interface CustomerWithServiceSummary extends Customer {
+  services: Pick<Service, 'id' | 'service_type' | 'username' | 'rate_limit' | 'status'>[];
+}
+
+export async function listCustomers(): Promise<CustomerWithServiceSummary[]> {
   const r = await query<Customer>(
     `SELECT ${CUSTOMER_COLS} FROM customers ORDER BY created_at DESC`
   );
-  return r.rows;
+  if (r.rows.length === 0) return [];
+  const ids = r.rows.map((c) => c.id);
+  const sr = await query<{
+    id: string; customer_id: string; service_type: Service['service_type'];
+    username: string | null; rate_limit: string | null; status: Service['status'];
+  }>(
+    `SELECT id, customer_id, service_type, username, rate_limit, status
+       FROM services WHERE customer_id = ANY($1::uuid[])
+       ORDER BY created_at`,
+    [ids]
+  );
+  const byCustomer = new Map<string, CustomerWithServiceSummary['services']>();
+  for (const s of sr.rows) {
+    if (!byCustomer.has(s.customer_id)) byCustomer.set(s.customer_id, []);
+    byCustomer.get(s.customer_id)!.push({
+      id: s.id, service_type: s.service_type, username: s.username,
+      rate_limit: s.rate_limit, status: s.status,
+    });
+  }
+  return r.rows.map((c) => ({ ...c, services: byCustomer.get(c.id) ?? [] }));
 }
 
 export async function getCustomer(id: string): Promise<CustomerWithServices> {
@@ -172,8 +196,39 @@ export async function setServiceStatus(
     [id, status]
   );
   if (!r.rows[0]) throw notFound('service');
-  await syncServiceToRadius(r.rows[0]);
-  return r.rows[0];
+  const svc = r.rows[0];
+  await syncServiceToRadius(svc);
+
+  // If suspending, kick any active sessions via CoA so the user is dropped
+  // within seconds rather than waiting for re-auth on next session-timeout.
+  if (status !== 'active' && svc.username && wgManager.isEnabled()) {
+    await kickActiveSessions(svc.username);
+  }
+  return svc;
+}
+
+async function kickActiveSessions(username: string): Promise<void> {
+  const sessions = await query<{
+    nas_ip: string; session_id: string; secret: string;
+  }>(
+    `SELECT a.nasipaddress::text AS nas_ip,
+            a.acctsessionid AS session_id,
+            n.secret AS secret
+       FROM radacct a
+       LEFT JOIN nas n ON n.nasname = a.nasipaddress::text
+      WHERE a.username = $1 AND a.acctstoptime IS NULL`,
+    [username]
+  );
+  for (const s of sessions.rows) {
+    if (!s.secret) continue; // NAS not in our table — can't CoA
+    try {
+      await wgManager.coaDisconnect({
+        nasIp: s.nas_ip, sessionId: s.session_id, secret: s.secret, username,
+      });
+    } catch (err) {
+      console.error('[coa] disconnect failed:', (err as Error).message);
+    }
+  }
 }
 
 export async function deleteService(id: string): Promise<void> {

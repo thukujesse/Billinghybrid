@@ -72,3 +72,19 @@ export async function execOnRouter(
   }
   return body;
 }
+
+/**
+ * Send a RADIUS CoA Disconnect-Request to the MikroTik that owns the live
+ * session, so the user is kicked immediately on suspend (rather than waiting
+ * for the next re-authentication interval).
+ */
+export async function coaDisconnect(input: {
+  nasIp: string; sessionId: string; secret: string; username?: string;
+}): Promise<{ ok: boolean; stdout: string; stderr: string }> {
+  const r = await fetch(`${config.wireguard.managerUrl}/coa/disconnect`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeader() },
+    body: JSON.stringify(input),
+  });
+  return (await r.json()) as { ok: boolean; stdout: string; stderr: string };
+}
