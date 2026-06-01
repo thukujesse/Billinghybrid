@@ -31,6 +31,7 @@ import * as refunds from '../domains/refunds/service.js';
 import { listPlugins } from '../plugins/index.js';
 import { handleUpdate } from '../domains/telegram/bot.js';
 import { config } from '../config.js';
+import * as radius from '../domains/radius/service.js';
 
 export const api = Router();
 
@@ -379,6 +380,14 @@ api.post('/routers', requireAuth('admin', 'staff'), ah(async (req, res) => {
   }), req.body);
   res.status(201).json(await routers.createRouter(body));
 }));
+// ---------------------- RADIUS sessions ----------------------
+api.get('/radius/sessions/active', ah(async (_req, res) => {
+  res.json(await radius.listActiveSessions());
+}));
+api.get('/radius/sessions/recent', ah(async (_req, res) => {
+  res.json(await radius.listRecentSessions(50));
+}));
+
 // Zero-touch provisioning: generates WG keypair + RouterOS .rsc script + one-liner.
 api.post('/routers/provision', requireAuth('admin', 'staff'), ah(async (req, res) => {
   const body = parse(z.object({
