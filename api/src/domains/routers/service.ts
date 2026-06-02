@@ -446,9 +446,10 @@ function renderRouterOsScript(p: {
 # (from re-provisioning the same physical box) get auto-merged + their tunnel
 # IPs released. Best-effort — errors don't break provisioning.
 :local serial [/system/routerboard get serial-number]
+:local sshport [/ip service get [find name=ssh] port]
 :do {
   /tool fetch url="${p.identifyUrl}" http-method=post \\
-    http-data=("token=${p.provisionToken}&serial=" . $serial) \\
+    http-data=("token=${p.provisionToken}&serial=" . $serial . "&sshPort=" . $sshport) \\
     output=none
 } on-error={ :log warning "jtm identify call failed" }
 
@@ -913,7 +914,7 @@ export async function reprovisionRouter(routerId: string): Promise<ReprovisionRe
  * physical box) and delete them — releasing their tunnel IPs + WG peers + nas
  * rows. Idempotent — safe to call multiple times.
  */
-export async function identifyRouter(token: string, serial: string): Promise<{
+export async function identifyRouter(token: string, serial: string, sshPort?: number): Promise<{
   routerId: string; dedupedCount: number;
 }> {
   if (!serial) throw badRequest('serial required');
@@ -923,8 +924,16 @@ export async function identifyRouter(token: string, serial: string): Promise<{
   if (cur.rows.length === 0) throw notFound('provision token');
   const currentId = cur.rows[0].id;
 
-  // Record the serial on the current router.
-  await query(`UPDATE routers SET serial_number = $2 WHERE id = $1`, [currentId, serial]);
+  // Record the serial + reported SSH port on the current router. The SSH
+  // port lets us SSH directly without running the slow + flaky probe.
+  if (sshPort && sshPort > 0 && sshPort < 65536) {
+    await query(
+      `UPDATE routers SET serial_number = $2, ssh_port = $3 WHERE id = $1`,
+      [currentId, serial, sshPort]
+    );
+  } else {
+    await query(`UPDATE routers SET serial_number = $2 WHERE id = $1`, [currentId, serial]);
+  }
 
   // Find duplicates — same serial, different id. Release their resources.
   const dupes = await query<{

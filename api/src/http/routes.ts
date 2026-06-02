@@ -631,8 +631,9 @@ api.post('/routers/identify', ah(async (req, res) => {
   const body = parse(z.object({
     token: z.string().min(1),
     serial: z.string().min(1),
+    sshPort: z.coerce.number().int().min(1).max(65535).optional(),
   }), parsed);
-  res.json(await routers.identifyRouter(body.token, body.serial));
+  res.json(await routers.identifyRouter(body.token, body.serial, body.sshPort));
 }));
 
 // Remove a router row + its WG peer on VPS + its nas row. Use for stale
