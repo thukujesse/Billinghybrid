@@ -440,7 +440,7 @@ api.put('/settings/mpesa', requireAuth('admin'), ah(async (req, res) => {
     consumerSecret: z.string().optional(),
     passkey: z.string().optional(),
   }), req.body);
-  await settings.setMpesaConfig(body, req.user?.username);
+  await settings.setMpesaConfig(body, (req.user as { username?: string } | undefined)?.username);
   res.json(await settings.getMpesaConfigPublic());
 }));
 
