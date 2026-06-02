@@ -376,12 +376,22 @@ function renderRouterOsScript(p: {
 # server, so admin "suspend" in the dashboard kicks active sessions instantly.
 /radius incoming set accept=yes
 
-# Management lifeline — allow input from the WG tunnel so the api can always
-# reach SSH/RADIUS/CoA, regardless of other firewall rules. Idempotent.
-/ip firewall filter remove [find comment="jtm-fw allow-tunnel-mgmt"]
-/ip firewall filter add chain=input action=accept in-interface=wg-jtm src-address=${p.tunnelNetwork} comment="jtm-fw allow-tunnel-mgmt"
+# Management lifeline — tunnel input/output to the RADIUS server.
+# Both directions tagged with the radius server (comment=jtm-radius) so
+# admins can see what these rules are for. Always-on regardless of other
+# firewall state. Idempotent.
+:local radSrv "${p.radiusServerIp}"
+/ip firewall filter remove [find comment~"jtm-fw allow-tunnel"]
+/ip firewall filter add chain=input action=accept in-interface=wg-jtm \\
+  src-address=\$radSrv comment="jtm-fw allow-tunnel-in (jtm-radius)"
+/ip firewall filter add chain=output action=accept out-interface=wg-jtm \\
+  dst-address=\$radSrv comment="jtm-fw allow-tunnel-out (jtm-radius)"
+/ip firewall filter add chain=input action=accept in-interface=wg-jtm \\
+  src-address=${p.tunnelNetwork} comment="jtm-fw allow-tunnel-mgmt"
 :do {
-  /ip firewall filter move [find comment="jtm-fw allow-tunnel-mgmt"] destination=0
+  :foreach r in=[/ip firewall filter find comment~"jtm-fw allow-tunnel"] do={
+    /ip firewall filter move \$r destination=0
+  }
 } on-error={}
 
 # Security: lock the legacy /ip service api to the tunnel only (we don't use
