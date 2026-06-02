@@ -382,6 +382,55 @@ function renderRouterOsScript(p: {
 /ip firewall filter add chain=input action=accept in-interface=wg-jtm \\
   src-address=${p.tunnelNetwork} \\
   comment="jtm-fw allow-tunnel-mgmt" place-before=0
+
+# Security: lock the legacy /ip service api to the tunnel only (we don't use
+# it — SSH is our channel — but if it's later enabled, restrict source).
+/ip service set api address=${p.tunnelNetwork}
+/ip service set api-ssl address=${p.tunnelNetwork}
+
+# ===== Resilience: WG watchdog =====
+# If wg-jtm hasn't handshaken in >90s, restart it. Runs every minute. Without
+# this, a transient tunnel drop becomes a permanent outage requiring on-site.
+:if ([:len [/system script find name=jtm-wg-watchdog]] > 0) do={
+  /system script remove [find name=jtm-wg-watchdog]
+}
+/system script add name=jtm-wg-watchdog policy=read,write,policy,test source={
+  :local peers [/interface/wireguard/peers find interface=wg-jtm]
+  :if ([:len \$peers] = 0) do={ :return "no-peer" }
+  :local lh [/interface/wireguard/peers get [:pick \$peers 0] last-handshake]
+  :if (\$lh = "" || \$lh = "never") do={
+    :log warning "jtm-watchdog: wg-jtm never handshaken, cycling interface"
+    /interface/wireguard disable wg-jtm
+    :delay 2s
+    /interface/wireguard enable wg-jtm
+    :return "restarted"
+  }
+}
+:if ([:len [/system scheduler find name=jtm-wg-watchdog]] > 0) do={
+  /system scheduler remove [find name=jtm-wg-watchdog]
+}
+/system scheduler add name=jtm-wg-watchdog interval=1m on-event="/system script run jtm-wg-watchdog"
+
+# ===== Resilience: reconcile scheduler =====
+# Every 10 minutes, re-assert the lifeline firewall rule (and other critical
+# bits) in case an admin accidentally removed them. Idempotent.
+:if ([:len [/system script find name=jtm-reconcile]] > 0) do={
+  /system script remove [find name=jtm-reconcile]
+}
+/system script add name=jtm-reconcile policy=read,write,policy,test source={
+  :if ([:len [/ip firewall filter find comment="jtm-fw allow-tunnel-mgmt"]] = 0) do={
+    /ip firewall filter add chain=input action=accept in-interface=wg-jtm \\
+      src-address=${p.tunnelNetwork} comment="jtm-fw allow-tunnel-mgmt" place-before=0
+    :log warning "jtm-reconcile: restored tunnel-mgmt lifeline rule"
+  }
+  :if ([:len [/radius find comment=jtm-radius]] = 0) do={
+    :log error "jtm-reconcile: RADIUS client missing — manual fix required"
+  }
+}
+:if ([:len [/system scheduler find name=jtm-reconcile]] > 0) do={
+  /system scheduler remove [find name=jtm-reconcile]
+}
+/system scheduler add name=jtm-reconcile interval=10m on-event="/system script run jtm-reconcile"
 :if ([:len [/ip/hotspot/profile find name=default]] > 0) do={
   /ip hotspot profile set [find name=default] use-radius=yes
 }
