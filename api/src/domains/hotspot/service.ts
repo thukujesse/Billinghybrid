@@ -3,6 +3,7 @@ import { query, withTransaction } from '../../db/pool.js';
 import { badRequest, conflict, notFound } from '../../lib/errors.js';
 import { config } from '../../config.js';
 import { stkPush, normalizeMsisdn, parseCallback } from '../payments/daraja.js';
+import { isMpesaSimulated } from '../settings/service.js';
 
 export interface HotspotGrant {
   /** Username to pass to MikroTik hotspot login (typically = voucher code). */
@@ -143,7 +144,7 @@ export async function initPurchase(input: {
   if (!/^254\d{9}$/.test(phone)) throw badRequest('invalid phone');
 
   const amountKes = Math.round(plan.price_cents / 100);
-  const simulated = config.mpesa.simulated;
+  const simulated = await isMpesaSimulated();
   let checkoutRequestId: string;
   let customerMessage: string;
 

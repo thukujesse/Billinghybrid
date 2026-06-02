@@ -4,6 +4,7 @@ import { ah, parse } from './helpers.js';
 import { requireAuth } from './middleware/auth.js';
 import { rateLimit } from './middleware/rateLimit.js';
 import * as auth from '../domains/auth/service.js';
+import * as settings from '../domains/settings/service.js';
 
 // Auth endpoints are brute-force targets — limit by IP.
 const loginLimit = rateLimit({ name: 'login', windowMs: 60_000, max: 10 });
@@ -425,6 +426,24 @@ api.delete('/services/:id', ah(async (req, res) => {
   res.status(204).end();
 }));
 
+// ---------------------- Settings ----------------------
+// Admin-configurable runtime config. Secrets are write-only via the API:
+// GET returns whether a key is set, never its value.
+api.get('/settings/mpesa', requireAuth('admin'), ah(async (_req, res) => {
+  res.json(await settings.getMpesaConfigPublic());
+}));
+api.put('/settings/mpesa', requireAuth('admin'), ah(async (req, res) => {
+  const body = parse(z.object({
+    env: z.enum(['sandbox', 'production']).optional(),
+    shortcode: z.string().optional(),
+    consumerKey: z.string().optional(),
+    consumerSecret: z.string().optional(),
+    passkey: z.string().optional(),
+  }), req.body);
+  await settings.setMpesaConfig(body, req.user?.username);
+  res.json(await settings.getMpesaConfigPublic());
+}));
+
 // ---------------------- Hotspot captive portal ----------------------
 // Public endpoint — gated by the voucher code being unguessable, not auth.
 // The captive portal page calls this with the voucher code from the customer.
@@ -438,7 +457,7 @@ api.post('/hotspot/redeem', ah(async (req, res) => {
 
 // Hotspot plan list — only active plans of type=hotspot, returned to the portal.
 api.get('/hotspot/plans', ah(async (_req, res) => {
-  res.json(await routers.listHotspotPlans?.() ?? await listHotspotPlansInline());
+  res.json(await listHotspotPlansInline());
 }));
 
 // Kick off an M-Pesa STK push for a hotspot plan.

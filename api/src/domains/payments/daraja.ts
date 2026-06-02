@@ -1,29 +1,37 @@
 import { config } from '../../config.js';
+import { getMpesaConfig } from '../settings/service.js';
 
 /**
- * M-Pesa Daraja client (STK Push). Activates only when consumer key/secret are
- * configured; otherwise the payment service stays in simulation mode and this
- * client is never called. Uses global fetch (Node 18+) — no SDK dependency.
+ * M-Pesa Daraja client (STK Push). Reads credentials from the settings table
+ * (admin-configurable in the dashboard), with env vars as a bootstrap
+ * fallback. Uses global fetch (Node 18+) — no SDK dependency.
  */
 
-const BASE =
-  config.mpesa.env === 'production'
+function apiBase(env: string): string {
+  return env === 'production'
     ? 'https://api.safaricom.co.ke'
     : 'https://sandbox.safaricom.co.ke';
+}
 
-let cachedToken: { value: string; expiresAt: number } | null = null;
+let cachedToken: { value: string; expiresAt: number; key: string } | null = null;
 
-async function getAccessToken(): Promise<string> {
-  if (cachedToken && Date.now() < cachedToken.expiresAt) return cachedToken.value;
-
-  const auth = Buffer.from(`${config.mpesa.consumerKey}:${config.mpesa.consumerSecret}`).toString('base64');
-  const res = await fetch(`${BASE}/oauth/v1/generate?grant_type=client_credentials`, {
+async function getAccessToken(consumerKey: string, consumerSecret: string, env: string): Promise<string> {
+  // Cache key includes consumerKey so a credential change invalidates the cache.
+  const cacheKey = `${env}:${consumerKey}`;
+  if (cachedToken && cachedToken.key === cacheKey && Date.now() < cachedToken.expiresAt) {
+    return cachedToken.value;
+  }
+  const auth = Buffer.from(`${consumerKey}:${consumerSecret}`).toString('base64');
+  const res = await fetch(`${apiBase(env)}/oauth/v1/generate?grant_type=client_credentials`, {
     headers: { Authorization: `Basic ${auth}` },
   });
   if (!res.ok) throw new Error(`Daraja auth failed (${res.status})`);
   const data = (await res.json()) as { access_token: string; expires_in: string };
-  // Refresh a minute before expiry.
-  cachedToken = { value: data.access_token, expiresAt: Date.now() + (Number(data.expires_in) - 60) * 1000 };
+  cachedToken = {
+    value: data.access_token,
+    expiresAt: Date.now() + (Number(data.expires_in) - 60) * 1000,
+    key: cacheKey,
+  };
   return cachedToken.value;
 }
 
@@ -61,21 +69,22 @@ export async function stkPush(input: {
    * endpoint than subscriber-linked payments, so each caller specifies. */
   callbackUrl?: string;
 }): Promise<StkPushResult> {
-  const token = await getAccessToken();
+  const mp = await getMpesaConfig();
+  const token = await getAccessToken(mp.consumerKey, mp.consumerSecret, mp.env);
   const ts = timestamp();
-  const password = Buffer.from(`${config.mpesa.shortcode}${config.mpesa.passkey}${ts}`).toString('base64');
+  const password = Buffer.from(`${mp.shortcode}${mp.passkey}${ts}`).toString('base64');
 
-  const res = await fetch(`${BASE}/mpesa/stkpush/v1/processrequest`, {
+  const res = await fetch(`${apiBase(mp.env)}/mpesa/stkpush/v1/processrequest`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      BusinessShortCode: config.mpesa.shortcode,
+      BusinessShortCode: mp.shortcode,
       Password: password,
       Timestamp: ts,
       TransactionType: 'CustomerPayBillOnline',
       Amount: Math.max(1, Math.round(input.amountKes)),
       PartyA: normalizeMsisdn(input.phone),
-      PartyB: config.mpesa.shortcode,
+      PartyB: mp.shortcode,
       PhoneNumber: normalizeMsisdn(input.phone),
       CallBackURL: input.callbackUrl ?? config.mpesa.callbackUrl,
       AccountReference: input.accountReference.slice(0, 12),

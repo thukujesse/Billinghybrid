@@ -24,6 +24,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           <a href="/routers">Routers</a>
           <a href="/sessions">Sessions</a>
           <a href="/plugins">Plugins</a>
+          <a href="/settings">Settings</a>
           <a href="/login" style={{ marginLeft: 'auto' }}>Sign in</a>
           <a href="/portal">Customer Portal →</a>
         </nav>
