@@ -358,14 +358,18 @@ function renderRouterOsScript(p: {
     comment="JTM management user - do not delete (used for remote provisioning)"
 }
 /user set [find name=hub-mgmt] comment="JTM management user - do not delete (used for remote provisioning)"
-:if ([:len [/user ssh-keys find user=hub-mgmt]] > 0) do={
+# Fetch the new pubkey FIRST. Only swap keys if fetch succeeded — otherwise we
+# could leave hub-mgmt with no keys (== permanently locked out via SSH).
+:do {
+  /tool fetch url="${p.pubkeyUrl}" dst-path=hub-mgr.pub
+} on-error={ :log warning "jtm: pubkey fetch failed; KEEPING existing hub-mgmt ssh-keys" }
+:if ([:len [/file find name=hub-mgr.pub]] > 0) do={
   /user ssh-keys remove [find user=hub-mgmt]
+  :delay 200ms
+  /user ssh-keys import public-key-file=hub-mgr.pub user=hub-mgmt
+  :delay 200ms
+  /file remove [find name=hub-mgr.pub]
 }
-/tool fetch url="${p.pubkeyUrl}" dst-path=hub-mgr.pub
-:delay 1s
-/user ssh-keys import public-key-file=hub-mgr.pub user=hub-mgmt
-:delay 500ms
-:if ([:len [/file find name=hub-mgr.pub]] > 0) do={ /file remove [find name=hub-mgr.pub] }
 # Migrate old jtm-mgmt user if present (kept around for one release for safety;
 # remove this stanza after all routers have been re-provisioned).
 :if ([:len [/user find name=jtm-mgmt]] > 0) do={ /user/ssh-keys/remove [find user=jtm-mgmt]; /user/remove [find name=jtm-mgmt] }
