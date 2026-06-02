@@ -675,21 +675,26 @@ function renderUnifiedConfig(
   const apiHost = new URL(config.publicApiUrl).host;
   const webHost = apiHost.replace(/^jtm-api/, 'jtm-web');
   lines.push(
-    `# ===== JTM firewall =====`,
+    `:put "[Firewall] portal allow-list + DNS + expired-reject + mgmt lifeline..."`,
     `# Resolved portal hostnames into address-list so HTTPS (no SNI inspection)`,
     `# is allowed unconditionally even when other rules would reject.`,
     `/ip firewall address-list add list=jtm-portal address=${webHost} comment="jtm-fw portal"`,
     `/ip firewall address-list add list=jtm-portal address=${apiHost} comment="jtm-fw portal"`,
-    `# Place portal/DNS accepts FIRST so they win over the expired-reject below.`,
-    `/ip firewall filter add chain=forward action=accept dst-address-list=jtm-portal comment="jtm-fw allow-portal" place-before=0`,
-    `/ip firewall filter add chain=forward action=accept protocol=udp dst-port=53 comment="jtm-fw allow-dns" place-before=0`,
-    `/ip firewall filter add chain=forward action=accept protocol=tcp dst-port=53 comment="jtm-fw allow-dns" place-before=0`,
+    `# Add then move-to-top (place-before=0 can error on empty chain).`,
+    `/ip firewall filter add chain=forward action=accept dst-address-list=jtm-portal comment="jtm-fw allow-portal"`,
+    `/ip firewall filter add chain=forward action=accept protocol=udp dst-port=53 comment="jtm-fw allow-dns-udp"`,
+    `/ip firewall filter add chain=forward action=accept protocol=tcp dst-port=53 comment="jtm-fw allow-dns-tcp"`,
     `# Suspended/expired customers: API pushes their IP into jtm-expired list.`,
     `/ip firewall filter add chain=forward action=reject reject-with=icmp-admin-prohibited src-address-list=jtm-expired comment="jtm-fw reject-expired-up"`,
     `/ip firewall filter add chain=forward action=reject reject-with=icmp-admin-prohibited dst-address-list=jtm-expired comment="jtm-fw reject-expired-down"`,
     `# Management lifeline — ALWAYS allow input from the WG tunnel so the api`,
-    `# can SSH/RADIUS/CoA to this router, even if other input rules drop.`,
-    `/ip firewall filter add chain=input action=accept in-interface=wg-jtm src-address=10.66.0.0/16 comment="jtm-fw allow-tunnel-mgmt" place-before=0`,
+    `# can SSH/RADIUS/CoA to this router. src-address derived from WG_NETWORK.`,
+    `/ip firewall filter add chain=input action=accept in-interface=wg-jtm src-address=${config.wireguard.network} comment="jtm-fw allow-tunnel-mgmt"`,
+    `# Move all jtm-fw accept rules to top (above any drops). Best-effort.`,
+    `:foreach r in=[/ip firewall filter find comment~"jtm-fw allow"] do={`,
+    `  :do { /ip firewall filter move \$r destination=0 } on-error={}`,
+    `}`,
+    `:put "[Firewall] done"`,
     ``,
   );
 
