@@ -159,22 +159,30 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._auth():
             return self._send_json(401, {'error': 'unauthorized'})
-        # POST /freeradius/reload — restart freeradius so it re-reads the
-        # `nas` client table. Called by the API after any provision/reprovision/
-        # delete to avoid the "old secret cached in memory" pattern that
-        # silently drops Access-Requests.
+        # POST /freeradius/reload — SIGHUP freeradius so it re-reads the `nas`
+        # client table without dropping active sessions. ~50-200ms vs ~2-3s
+        # for a full restart — important for multi-tenant where one tenant's
+        # provisioning shouldn't briefly kill auth for everyone else.
+        # Falls back to `kill -HUP` if the systemd unit lacks ExecReload.
         if self.path == '/freeradius/reload':
             try:
                 result = subprocess.run(
-                    ['systemctl', 'restart', 'freeradius'],
-                    capture_output=True, text=True, timeout=15,
+                    ['systemctl', 'reload', 'freeradius'],
+                    capture_output=True, text=True, timeout=10,
                 )
+                if result.returncode != 0:
+                    pid = subprocess.run(['pidof', 'freeradius'], capture_output=True, text=True)
+                    if pid.returncode == 0 and pid.stdout.strip():
+                        result = subprocess.run(
+                            ['kill', '-HUP', pid.stdout.strip().split()[0]],
+                            capture_output=True, text=True, timeout=5,
+                        )
                 return self._send_json(
                     200 if result.returncode == 0 else 500,
                     {'ok': result.returncode == 0, 'stdout': result.stdout, 'stderr': result.stderr},
                 )
             except subprocess.TimeoutExpired:
-                return self._send_json(500, {'error': 'restart timeout'})
+                return self._send_json(500, {'error': 'reload timeout'})
         # POST /coa/disconnect  body: {"nasIp": "10.66.0.25", "sessionId": "...", "secret": "...", "username": "..."}
         # Sends a RADIUS Disconnect-Request to the MikroTik to kick a live session.
         if self.path == '/coa/disconnect':
