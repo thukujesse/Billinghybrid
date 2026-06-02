@@ -376,20 +376,16 @@ function renderRouterOsScript(p: {
 # server, so admin "suspend" in the dashboard kicks active sessions instantly.
 /radius incoming set accept=yes
 
-# Management lifeline — tunnel input/output to the RADIUS server.
-# Both directions tagged with the radius server (comment=jtm-radius) so
-# admins can see what these rules are for. Always-on regardless of other
-# firewall state. Idempotent.
-:local radSrv "${p.radiusServerIp}"
-/ip firewall filter remove [find comment~"jtm-fw allow-tunnel"]
+# Management lifeline — paired input/output rules scoped to the RADIUS server
+# IP only. Same comment on both ("jtm-fw allow-tunnel-mgmt"). Idempotent —
+# old rules with this comment are wiped first.
+/ip firewall filter remove [find comment="jtm-fw allow-tunnel-mgmt"]
 /ip firewall filter add chain=input action=accept in-interface=wg-jtm \\
-  src-address=\$radSrv comment="jtm-fw allow-tunnel-in (jtm-radius)"
+  src-address=${p.radiusServerIp} comment="jtm-fw allow-tunnel-mgmt"
 /ip firewall filter add chain=output action=accept out-interface=wg-jtm \\
-  dst-address=\$radSrv comment="jtm-fw allow-tunnel-out (jtm-radius)"
-/ip firewall filter add chain=input action=accept in-interface=wg-jtm \\
-  src-address=${p.tunnelNetwork} comment="jtm-fw allow-tunnel-mgmt"
+  dst-address=${p.radiusServerIp} comment="jtm-fw allow-tunnel-mgmt"
 :do {
-  :foreach r in=[/ip firewall filter find comment~"jtm-fw allow-tunnel"] do={
+  :foreach r in=[/ip firewall filter find comment="jtm-fw allow-tunnel-mgmt"] do={
     /ip firewall filter move \$r destination=0
   }
 } on-error={}
@@ -429,10 +425,16 @@ function renderRouterOsScript(p: {
   /system script remove [find name=jtm-reconcile]
 }
 /system script add name=jtm-reconcile policy=read,write,policy,test source={
-  :if ([:len [/ip firewall filter find comment="jtm-fw allow-tunnel-mgmt"]] = 0) do={
-    /ip firewall filter add chain=input action=accept in-interface=wg-jtm src-address=${p.tunnelNetwork} comment="jtm-fw allow-tunnel-mgmt"
-    :do { /ip firewall filter move [find comment="jtm-fw allow-tunnel-mgmt"] destination=0 } on-error={}
-    :log warning "jtm-reconcile: restored tunnel-mgmt lifeline rule"
+  :if ([:len [/ip firewall filter find comment="jtm-fw allow-tunnel-mgmt"]] < 2) do={
+    /ip firewall filter remove [find comment="jtm-fw allow-tunnel-mgmt"]
+    /ip firewall filter add chain=input action=accept in-interface=wg-jtm src-address=${p.radiusServerIp} comment="jtm-fw allow-tunnel-mgmt"
+    /ip firewall filter add chain=output action=accept out-interface=wg-jtm dst-address=${p.radiusServerIp} comment="jtm-fw allow-tunnel-mgmt"
+    :do {
+      :foreach r in=[/ip firewall filter find comment="jtm-fw allow-tunnel-mgmt"] do={
+        /ip firewall filter move \$r destination=0
+      }
+    } on-error={}
+    :log warning "jtm-reconcile: restored tunnel-mgmt lifeline rules"
   }
   :if ([:len [/radius find comment=jtm-radius]] = 0) do={
     :log error "jtm-reconcile: RADIUS client missing — manual fix required"
