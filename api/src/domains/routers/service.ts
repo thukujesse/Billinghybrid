@@ -560,6 +560,8 @@ function renderUnifiedConfig(
     `/ip pool remove [find name=jtm-hs-pool]`,
     `/ip hotspot walled-garden remove [find comment="jtm"]`,
     `/ip hotspot walled-garden ip remove [find comment="jtm"]`,
+    `/ip firewall filter remove [find comment~"jtm-fw"]`,
+    `/ip firewall address-list remove [find comment~"jtm-fw"]`,
     `/interface pppoe-server server remove [find service-name=jtm]`,
     `/ppp profile remove [find name=jtm-ppp]`,
     `/ip pool remove [find name=jtm-ppp-pool]`,
@@ -609,6 +611,27 @@ function renderUnifiedConfig(
       ``,
     );
   }
+
+  // ---- JTM-tagged firewall rules (walled-garden + expired block) ----
+  // Always added (regardless of services) so suspend/restore has teeth. All
+  // are commented "jtm-fw" so cleanup-on-reapply finds them.
+  const apiHost = new URL(config.publicApiUrl).host;
+  const webHost = apiHost.replace(/^jtm-api/, 'jtm-web');
+  lines.push(
+    `# ===== JTM firewall =====`,
+    `# Resolved portal hostnames into address-list so HTTPS (no SNI inspection)`,
+    `# is allowed unconditionally even when other rules would reject.`,
+    `/ip firewall address-list add list=jtm-portal address=${webHost} comment="jtm-fw portal"`,
+    `/ip firewall address-list add list=jtm-portal address=${apiHost} comment="jtm-fw portal"`,
+    `# Place portal/DNS accepts FIRST so they win over the expired-reject below.`,
+    `/ip firewall filter add chain=forward action=accept dst-address-list=jtm-portal comment="jtm-fw allow-portal" place-before=0`,
+    `/ip firewall filter add chain=forward action=accept protocol=udp dst-port=53 comment="jtm-fw allow-dns" place-before=0`,
+    `/ip firewall filter add chain=forward action=accept protocol=tcp dst-port=53 comment="jtm-fw allow-dns" place-before=0`,
+    `# Suspended/expired customers: API pushes their IP into jtm-expired list.`,
+    `/ip firewall filter add chain=forward action=reject reject-with=icmp-admin-prohibited src-address-list=jtm-expired comment="jtm-fw reject-expired-up"`,
+    `/ip firewall filter add chain=forward action=reject reject-with=icmp-admin-prohibited dst-address-list=jtm-expired comment="jtm-fw reject-expired-down"`,
+    ``,
+  );
 
   // ---- PPPoE (if selected) ----
   if (wantsPppoe) {
