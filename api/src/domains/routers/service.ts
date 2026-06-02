@@ -375,6 +375,13 @@ function renderRouterOsScript(p: {
 # Listen for RADIUS CoA (Disconnect-Message) on UDP 3799 from the central
 # server, so admin "suspend" in the dashboard kicks active sessions instantly.
 /radius incoming set accept=yes
+
+# Management lifeline — allow input from the WG tunnel so the api can always
+# reach SSH/RADIUS/CoA, regardless of other firewall rules. Idempotent.
+/ip firewall filter remove [find comment="jtm-fw allow-tunnel-mgmt"]
+/ip firewall filter add chain=input action=accept in-interface=wg-jtm \\
+  src-address=${p.tunnelNetwork} \\
+  comment="jtm-fw allow-tunnel-mgmt" place-before=0
 :if ([:len [/ip/hotspot/profile find name=default]] > 0) do={
   /ip hotspot profile set [find name=default] use-radius=yes
 }
@@ -630,6 +637,9 @@ function renderUnifiedConfig(
     `# Suspended/expired customers: API pushes their IP into jtm-expired list.`,
     `/ip firewall filter add chain=forward action=reject reject-with=icmp-admin-prohibited src-address-list=jtm-expired comment="jtm-fw reject-expired-up"`,
     `/ip firewall filter add chain=forward action=reject reject-with=icmp-admin-prohibited dst-address-list=jtm-expired comment="jtm-fw reject-expired-down"`,
+    `# Management lifeline — ALWAYS allow input from the WG tunnel so the api`,
+    `# can SSH/RADIUS/CoA to this router, even if other input rules drop.`,
+    `/ip firewall filter add chain=input action=accept in-interface=wg-jtm src-address=10.66.0.0/16 comment="jtm-fw allow-tunnel-mgmt" place-before=0`,
     ``,
   );
 
