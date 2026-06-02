@@ -546,6 +546,8 @@ export async function buildHotspotScript(
 
 /ip hotspot remove [find name=jtm-hs]
 /ip hotspot profile remove [find name=jtm-hotspot]
+/ip dhcp-server remove [find name=jtm-hs-dhcp]
+/ip dhcp-server network remove [find comment="jtm-hs"]
 /ip pool remove [find name=jtm-hs-pool]
 /ip hotspot walled-garden remove [find comment="jtm"]
 /ip hotspot walled-garden ip remove [find comment="jtm"]
@@ -553,6 +555,17 @@ export async function buildHotspotScript(
 
 /ip pool add name=jtm-hs-pool ranges=${poolStart}-${poolEnd}
 /ip address add interface=${opts.interfaceName} address=${gateway}/${prefix} comment="jtm-hs"
+
+# DHCP so devices connecting to the hotspot interface actually get an IP.
+# Without this the captive portal can never intercept — devices wouldn't
+# even know what gateway to talk to.
+/ip dhcp-server network add address=${opts.networkCidr} gateway=${gateway} dns-server=${gateway} comment="jtm-hs"
+/ip dhcp-server add name=jtm-hs-dhcp interface=${opts.interfaceName} \\
+  address-pool=jtm-hs-pool lease-time=1h disabled=no
+
+# Make MikroTik resolve DNS for hotspot clients (so the redirect to the
+# external portal resolves before walled-garden lets it through).
+/ip dns set allow-remote-requests=yes servers=1.1.1.1,8.8.8.8
 
 /ip hotspot profile add name=jtm-hotspot \\
   hotspot-address=${gateway} dns-name=jtm-hotspot \\
