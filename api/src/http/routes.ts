@@ -546,6 +546,21 @@ api.post('/routers/:id/reprovision', requireAuth('admin', 'staff'), ah(async (re
 }));
 
 // Build a RouterOS script that turns a LAN interface into a JTM hotspot.
+// Detect router model + interfaces over the tunnel. Powers the wizard's
+// port-selection step so the admin doesn't have to type interface names.
+api.get('/routers/:id/detect', requireAuth('admin', 'staff'), ah(async (req, res) => {
+  res.json(await routers.detectRouter(req.params.id));
+}));
+// Apply selected services (pppoe + hotspot) via SSH push. One-shot.
+api.post('/routers/:id/configure', requireAuth('admin', 'staff'), ah(async (req, res) => {
+  const body = parse(z.object({
+    services: z.array(z.enum(['pppoe', 'hotspot'])).min(1),
+    pppoeInterfaces: z.array(z.string()).optional(),
+    hotspotInterfaces: z.array(z.string()).optional(),
+    hotspotNetwork: z.string().optional(),
+  }), req.body);
+  res.json(await routers.configureServices(req.params.id, body));
+}));
 api.post('/routers/:id/hotspot-script', requireAuth('admin', 'staff'), ah(async (req, res) => {
   const body = parse(z.object({
     interfaceName: z.string().min(1),

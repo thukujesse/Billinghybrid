@@ -74,6 +74,27 @@ export async function execOnRouter(
 }
 
 /**
+ * Probe SSH ports (22, 21, 2222, 8022) for one that accepts our jtm-mgmt key
+ * auth. Returns the working port or null if none respond.
+ */
+export async function probeSshPort(
+  tunnelIp: string,
+  user = 'jtm-mgmt'
+): Promise<number | null> {
+  const r = await fetch(
+    `${config.wireguard.managerUrl}/routers/${tunnelIp}/probe-ssh`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeader() },
+      body: JSON.stringify({ user }),
+    }
+  );
+  if (!r.ok) return null;
+  const body = (await r.json()) as { sshPort: number | null };
+  return body.sshPort;
+}
+
+/**
  * Send a RADIUS CoA Disconnect-Request to the MikroTik that owns the live
  * session, so the user is kicked immediately on suspend (rather than waiting
  * for the next re-authentication interval).

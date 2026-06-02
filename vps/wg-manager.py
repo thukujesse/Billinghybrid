@@ -204,6 +204,24 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json(code, result)
             except (json.JSONDecodeError, ValueError) as e:
                 return self._send_json(400, {'error': str(e)})
+
+        # POST /routers/<tunnel-ip>/probe-ssh  body: {"user": "jtm-mgmt"}
+        # Probe common SSH ports (22, 21, 2222, 8022) for one that accepts our
+        # key-auth. Returns the port + result or null.
+        m = re.match(r'^/routers/([\d.]+)/probe-ssh$', self.path)
+        if m:
+            tunnel_ip = m.group(1)
+            try:
+                length = int(self.headers.get('Content-Length', '0'))
+                body = json.loads(self.rfile.read(length)) if length else {}
+                user = body.get('user', 'admin')
+                for port in (22, 21, 2222, 8022):
+                    res = exec_on_router(tunnel_ip, ':put ok', ssh_port=port, user=user, timeout=4)
+                    if res['returncode'] == 0 and 'ok' in res['stdout']:
+                        return self._send_json(200, {'sshPort': port, 'user': user})
+                return self._send_json(200, {'sshPort': None})
+            except (json.JSONDecodeError, ValueError) as e:
+                return self._send_json(400, {'error': str(e)})
         if self.path == '/peers':
             try:
                 length = int(self.headers.get('Content-Length', '0'))

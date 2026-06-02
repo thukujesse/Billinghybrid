@@ -18,6 +18,22 @@ export interface Router {
   wg_tunnel_ip: string | null;
   vpn_status: 'pending' | 'connected' | 'disconnected';
   last_handshake_at: string | null;
+  ssh_port: number;
+}
+
+export interface DetectedRouter {
+  board: string;
+  version: string;
+  hostname: string;
+  defaultGateway: string;
+  sshPort: number;
+  interfaces: Array<{
+    name: string;
+    type: string;
+    running: boolean;
+    isWan: boolean;
+    inBridge: string | null;
+  }>;
 }
 
 // Columns safe to send to API clients — excludes wg_private_key and the
@@ -25,7 +41,7 @@ export interface Router {
 // (or the MikroTik via /provision/<token>) should ever see. vpn_status is
 // derived from last_handshake_at freshness so it's always current.
 const SAFE_COLS = `id, name, host, api_port, type, site, status, created_at,
-  wg_public_key, wg_tunnel_ip, last_handshake_at,
+  wg_public_key, wg_tunnel_ip, last_handshake_at, ssh_port,
   CASE
     WHEN last_handshake_at IS NULL THEN 'pending'
     WHEN last_handshake_at > now() - interval '3 minutes' THEN 'connected'
@@ -378,13 +394,220 @@ function renderVpsAddCommand(peerPublicKey: string, tunnelIp: string): string {
 /**
  * Push a RouterOS command into the MikroTik via the WG tunnel (SSH on the
  * other side, terminated by wg-manager). Returns stdout/stderr/returncode.
+ * Auto-probes SSH port if the stored one fails.
  */
 export async function execOnRouter(routerId: string, command: string): Promise<{
   stdout: string; stderr: string; returncode: number;
 }> {
   const router = await getRouter(routerId);
   if (!router.wg_tunnel_ip) throw badRequest('router has no tunnel IP');
-  return wgManager.execOnRouter(router.wg_tunnel_ip, command);
+  const sshPort = await resolveSshPort(router);
+  return wgManager.execOnRouter(router.wg_tunnel_ip, command, { sshPort });
+}
+
+/** Try the stored ssh_port; if it fails, probe common ports and persist. */
+async function resolveSshPort(router: Router): Promise<number> {
+  if (!router.wg_tunnel_ip) throw badRequest('router has no tunnel IP');
+  // Cheap test: short ssh attempt.
+  const test = await wgManager.execOnRouter(
+    router.wg_tunnel_ip, ':put ok', { sshPort: router.ssh_port }
+  );
+  if (test.returncode === 0 && test.stdout.includes('ok')) return router.ssh_port;
+  const probed = await wgManager.probeSshPort(router.wg_tunnel_ip);
+  if (probed === null) {
+    throw badRequest(`SSH unreachable on ports 22/21/2222/8022 for ${router.wg_tunnel_ip}`);
+  }
+  if (probed !== router.ssh_port) {
+    await query(`UPDATE routers SET ssh_port = $2 WHERE id = $1`, [router.id, probed]);
+  }
+  return probed;
+}
+
+/**
+ * Detect router model + interfaces + default-route WAN via SSH. The result
+ * powers the "Configure services" wizard, which lets admin pick which ports
+ * each service binds to without typing interface names manually.
+ */
+export async function detectRouter(routerId: string): Promise<DetectedRouter> {
+  const router = await getRouter(routerId);
+  if (!router.wg_tunnel_ip) throw badRequest('router has no tunnel IP');
+  const sshPort = await resolveSshPort(router);
+
+  const script = `:put ("BOARD:" . [/system resource get board-name])
+:put ("VERSION:" . [/system resource get version])
+:put ("HOSTNAME:" . [/system identity get name])
+:foreach r in=[/ip route find dst-address="0.0.0.0/0" active=yes] do={
+  :put ("DEFROUTE:" . [/ip route get $r gateway])
+}
+:foreach i in=[/interface find] do={
+  :local n [/interface get $i name]
+  :local t [/interface get $i type]
+  :local rn [/interface get $i running]
+  :local br ""
+  :do { :set br [/interface bridge port get [find interface=$n] bridge] } on-error={}
+  :put ("IFACE:" . $n . "|" . $t . "|" . $rn . "|" . $br)
+}`;
+
+  const result = await wgManager.execOnRouter(router.wg_tunnel_ip, script, { sshPort });
+  if (result.returncode !== 0) {
+    throw badRequest(`detect failed: ${result.stderr.trim() || result.stdout.trim()}`);
+  }
+
+  const out = result.stdout;
+  const board = /^BOARD:(.+)$/m.exec(out)?.[1].trim() ?? '';
+  const version = /^VERSION:(.+)$/m.exec(out)?.[1].trim() ?? '';
+  const hostname = /^HOSTNAME:(.+)$/m.exec(out)?.[1].trim() ?? '';
+  const defaultGateway = /^DEFROUTE:(.+)$/m.exec(out)?.[1].trim() ?? '';
+
+  // Build wan candidates: the default-route gateway itself, and the bridge
+  // it's in (so we exclude both from the picker).
+  const ifaceLines = [...out.matchAll(/^IFACE:([^|]+)\|([^|]+)\|(true|false)\|([^\n\r]*)$/gm)];
+  // First pass: build name → bridge map
+  const bridgeOf = new Map<string, string>();
+  for (const m of ifaceLines) {
+    const name = m[1].trim();
+    const br = m[4].trim();
+    if (br) bridgeOf.set(name, br);
+  }
+  const wanBridge = bridgeOf.get(defaultGateway) || '';
+
+  // Skip JTM-managed virtual interfaces — admin shouldn't repurpose them.
+  const SKIP = new Set(['wg-jtm', 'jtm-hs-bridge', 'jtm-ppp-bridge']);
+  const interfaces = ifaceLines
+    .map((m) => {
+      const name = m[1].trim();
+      const type = m[2].trim();
+      const running = m[3] === 'true';
+      const inBridge = m[4].trim() || null;
+      const isWan = name === defaultGateway || (!!wanBridge && inBridge === wanBridge);
+      return { name, type, running, isWan, inBridge };
+    })
+    .filter((i) => !SKIP.has(i.name))
+    .filter((i) => i.type === 'ether' || i.type === 'wlan' || i.type === 'vlan');
+
+  return { board, version, hostname, defaultGateway, sshPort, interfaces };
+}
+
+export interface ConfigureServicesInput {
+  services: ('pppoe' | 'hotspot')[];
+  pppoeInterfaces?: string[];
+  hotspotInterfaces?: string[];
+  hotspotNetwork?: string;
+}
+
+/** Build + push (via SSH) the combined RouterOS config for the selected
+ *  services. Each service gets its own bridge (jtm-ppp-bridge / jtm-hs-bridge)
+ *  so the configuration is composable and the WAN port is left alone. */
+export async function configureServices(
+  routerId: string,
+  input: ConfigureServicesInput
+): Promise<{ stdout: string; stderr: string; success: boolean }> {
+  if (!input.services.length) throw badRequest('no services selected');
+
+  const router = await getRouter(routerId);
+  if (!router.wg_tunnel_ip) throw badRequest('router has no tunnel IP');
+  const sshPort = await resolveSshPort(router);
+
+  let script = '';
+  if (input.services.includes('pppoe')) {
+    if (!input.pppoeInterfaces?.length) throw badRequest('pppoeInterfaces required');
+    script += renderPppoeScript(input.pppoeInterfaces) + '\n';
+  }
+  if (input.services.includes('hotspot')) {
+    if (!input.hotspotInterfaces?.length) throw badRequest('hotspotInterfaces required');
+    if (!input.hotspotNetwork) throw badRequest('hotspotNetwork required');
+    script += renderHotspotMultiPort(router.name, input.hotspotInterfaces, input.hotspotNetwork);
+  }
+
+  const result = await wgManager.execOnRouter(router.wg_tunnel_ip, script, { sshPort });
+  return {
+    stdout: result.stdout,
+    stderr: result.stderr,
+    success: result.returncode === 0,
+  };
+}
+
+function renderPppoeScript(interfaces: string[]): string {
+  const portAdds = interfaces
+    .map((i) => `/interface bridge port add bridge=jtm-ppp-bridge interface=${i}`)
+    .join('\n');
+  return `# --- JTM PPPoE setup ---
+/interface pppoe-server server remove [find service-name=jtm]
+/ppp profile remove [find name=jtm-ppp]
+/ip pool remove [find name=jtm-ppp-pool]
+/interface bridge port remove [find bridge=jtm-ppp-bridge]
+/interface bridge remove [find name=jtm-ppp-bridge]
+
+/interface bridge add name=jtm-ppp-bridge protocol-mode=none
+${portAdds}
+
+/ip pool add name=jtm-ppp-pool ranges=10.7.0.10-10.7.255.250
+/ppp profile add name=jtm-ppp local-address=10.7.0.1 remote-address=jtm-ppp-pool \\
+  dns-server=1.1.1.1,8.8.8.8 only-one=yes
+/interface pppoe-server server add service-name=jtm interface=jtm-ppp-bridge \\
+  default-profile=jtm-ppp authentication=pap,chap \\
+  one-session-per-host=yes disabled=no
+
+:put "PPPoE server live on jtm-ppp-bridge"
+`;
+}
+
+function renderHotspotMultiPort(routerName: string, interfaces: string[], cidr: string): string {
+  const [base, prefixStr] = cidr.split('/');
+  const prefix = Number(prefixStr);
+  const octets = base.split('.').map(Number);
+  if (octets.length !== 4 || octets.some(isNaN) || isNaN(prefix)) {
+    throw badRequest('invalid hotspotNetwork');
+  }
+  const gateway = `${octets[0]}.${octets[1]}.${octets[2]}.1`;
+  const poolStart = `${octets[0]}.${octets[1]}.${octets[2]}.10`;
+  const poolEnd = `${octets[0]}.${octets[1]}.${octets[2]}.250`;
+  const apiHost = new URL(config.publicApiUrl).host;
+  const webHost = apiHost.replace(/^jtm-api/, 'jtm-web');
+  const loginUrl = `${config.publicApiUrl}/api/hotspot/login.html`;
+  const portAdds = interfaces
+    .map((i) => `/interface bridge port add bridge=jtm-hs-bridge interface=${i}`)
+    .join('\n');
+
+  return `# --- JTM Hotspot setup for "${routerName}" ---
+/ip hotspot remove [find name=jtm-hs]
+/ip hotspot profile remove [find name=jtm-hotspot]
+/ip dhcp-server remove [find name=jtm-hs-dhcp]
+/ip dhcp-server network remove [find comment="jtm-hs"]
+/ip pool remove [find name=jtm-hs-pool]
+/ip hotspot walled-garden remove [find comment="jtm"]
+/ip hotspot walled-garden ip remove [find comment="jtm"]
+/ip address remove [find comment="jtm-hs"]
+/interface bridge port remove [find bridge=jtm-hs-bridge]
+/interface bridge remove [find name=jtm-hs-bridge]
+
+/interface bridge add name=jtm-hs-bridge protocol-mode=none auto-mac=yes
+${portAdds}
+
+/ip pool add name=jtm-hs-pool ranges=${poolStart}-${poolEnd}
+/ip address add interface=jtm-hs-bridge address=${gateway}/${prefix} comment="jtm-hs"
+
+/ip dhcp-server network add address=${cidr} gateway=${gateway} dns-server=${gateway} comment="jtm-hs"
+/ip dhcp-server add name=jtm-hs-dhcp interface=jtm-hs-bridge \\
+  address-pool=jtm-hs-pool lease-time=1h disabled=no
+
+/ip dns set allow-remote-requests=yes servers=1.1.1.1,8.8.8.8
+
+/ip hotspot profile add name=jtm-hotspot \\
+  hotspot-address=${gateway} dns-name=jtm-hotspot \\
+  use-radius=yes login-by=http-pap
+
+/ip hotspot add name=jtm-hs interface=jtm-hs-bridge \\
+  address-pool=jtm-hs-pool profile=jtm-hotspot disabled=no
+
+/ip hotspot walled-garden add dst-host=${webHost} action=allow comment="jtm"
+/ip hotspot walled-garden add dst-host=${apiHost} action=allow comment="jtm"
+/ip hotspot walled-garden ip add tls-host=${webHost} action=accept comment="jtm"
+/ip hotspot walled-garden ip add tls-host=${apiHost} action=accept comment="jtm"
+
+/tool fetch url="${loginUrl}" dst-path=hotspot/login.html mode=https
+:put "Hotspot live on jtm-hs-bridge"
+`;
 }
 
 export interface ReprovisionResult {
