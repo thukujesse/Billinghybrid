@@ -41,16 +41,29 @@ export default function HotspotPortal() {
   const [purchaseStatus, setPurchaseStatus] = useState<string>('');
   const [mtikParams, setMtikParams] = useState<{
     linkLogin: string; mac: string; ip: string; orig: string;
+    mode: 'login' | 'status' | 'logout' | 'error' | 'rlogin';
+    username: string; sessionTimeLeft: string; uptime: string;
+    bytesIn: string; bytesOut: string; linkLogout: string;
+    mikrotikError: string;
   } | null>(null);
   const formRef = useRef<HTMLFormElement>(null);
 
   useEffect(() => {
     const q = new URLSearchParams(window.location.search);
+    const mode = (q.get('mode') ?? 'login') as 'login' | 'status' | 'logout' | 'error' | 'rlogin';
     setMtikParams({
       linkLogin: q.get('link-login-only') ?? q.get('link-login') ?? '',
       mac: q.get('mac') ?? '',
       ip: q.get('ip') ?? '',
       orig: q.get('link-orig') ?? q.get('dst') ?? '',
+      mode,
+      username: q.get('username') ?? '',
+      sessionTimeLeft: q.get('session-time-left') ?? '',
+      uptime: q.get('uptime') ?? '',
+      bytesIn: q.get('bytes-in') ?? '',
+      bytesOut: q.get('bytes-out') ?? '',
+      linkLogout: q.get('link-logout') ?? '',
+      mikrotikError: q.get('error') ?? '',
     });
     api<HotspotPlan[]>('/hotspot/plans')
       .then((p) => { setPlans(p); if (p[0]) setPlanId(p[0].id); })
@@ -140,7 +153,29 @@ export default function HotspotPortal() {
           Connect with a voucher code or buy a plan via M-Pesa.
         </p>
 
-        {grant ? (
+        {mtikParams?.mode === 'status' ? (
+          <>
+            <div className="toast ok" style={{ marginBottom: 12 }}>✓ You're connected</div>
+            <table style={{ width: '100%', fontSize: 13, marginBottom: 16 }}>
+              <tbody>
+                {mtikParams.username && <tr><td className="sub">User</td><td><code>{mtikParams.username}</code></td></tr>}
+                {mtikParams.ip && <tr><td className="sub">IP</td><td><code>{mtikParams.ip}</code></td></tr>}
+                {mtikParams.uptime && <tr><td className="sub">Uptime</td><td>{mtikParams.uptime}</td></tr>}
+                {mtikParams.sessionTimeLeft && <tr><td className="sub">Time left</td><td>{mtikParams.sessionTimeLeft}</td></tr>}
+                {mtikParams.bytesIn && <tr><td className="sub">Down</td><td>{mtikParams.bytesIn}</td></tr>}
+                {mtikParams.bytesOut && <tr><td className="sub">Up</td><td>{mtikParams.bytesOut}</td></tr>}
+              </tbody>
+            </table>
+            {mtikParams.linkLogout && (
+              <a href={mtikParams.linkLogout} className="btn" style={{ display: 'block', textAlign: 'center', textDecoration: 'none' }}>Log out</a>
+            )}
+          </>
+        ) : mtikParams?.mode === 'logout' ? (
+          <>
+            <div className="toast ok" style={{ marginBottom: 12 }}>✓ Logged out</div>
+            <p className="sub">Thanks for using HUB Networks Wi-Fi. Reconnect anytime with a new voucher or M-Pesa payment.</p>
+          </>
+        ) : grant ? (
           <>
             <div className="toast ok" style={{ marginBottom: 12 }}>
               ✓ {grant.planName} · {Math.round(grant.validitySeconds / 3600)}h
@@ -237,6 +272,11 @@ export default function HotspotPortal() {
               </>
             )}
 
+            {mtikParams?.mikrotikError && (
+              <div className="toast err" style={{ marginTop: 12 }}>
+                Login error: {mtikParams.mikrotikError}
+              </div>
+            )}
             {error && <div className="toast err" style={{ marginTop: 12 }}>{error}</div>}
             {mtikParams?.mac && (
               <p className="sub" style={{ marginTop: 16, fontSize: 11, textAlign: 'center' }}>
