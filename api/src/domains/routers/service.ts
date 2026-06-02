@@ -444,20 +444,16 @@ export async function detectRouter(routerId: string): Promise<DetectedRouter> {
   if (!router.wg_tunnel_ip) throw badRequest('router has no tunnel IP');
   const sshPort = await resolveSshPort(router);
 
-  const script = `:put ("BOARD:" . [/system resource get board-name])
-:put ("VERSION:" . [/system resource get version])
-:put ("HOSTNAME:" . [/system identity get name])
-:foreach r in=[/ip route find dst-address="0.0.0.0/0" active=yes] do={
-  :put ("DEFROUTE:" . [/ip route get $r gateway])
-}
-:foreach i in=[/interface find] do={
-  :local n [/interface get $i name]
-  :local t [/interface get $i type]
-  :local rn [/interface get $i running]
-  :local br ""
-  :do { :set br [/interface bridge port get [find interface=$n] bridge] } on-error={}
-  :put ("IFACE:" . $n . "|" . $t . "|" . $rn . "|" . $br)
-}`;
+  // RouterOS multi-line scripts via SSH can drop foreach blocks — keep each
+  // statement on a single line so the shell never reflows it.
+  const script = [
+    `:put ("BOARD:" . [/system resource get board-name])`,
+    `:put ("VERSION:" . [/system resource get version])`,
+    `:put ("HOSTNAME:" . [/system identity get name])`,
+    `:foreach r in=[/ip route find dst-address="0.0.0.0/0"] do={ :put ("DEFROUTE:" . [/ip route get $r gateway]) }`,
+    `:foreach i in=[/interface find] do={ :put ("IFACE:" . [/interface get $i name] . "|" . [/interface get $i type] . "|" . [/interface get $i running]) }`,
+    `:foreach p in=[/interface bridge port find] do={ :put ("BRPORT:" . [/interface bridge port get $p interface] . "=" . [/interface bridge port get $p bridge]) }`,
+  ].join('\n');
 
   const result = await wgManager.execOnRouter(router.wg_tunnel_ip, script, { sshPort });
   if (result.returncode !== 0) {
@@ -472,13 +468,10 @@ export async function detectRouter(routerId: string): Promise<DetectedRouter> {
 
   // Build wan candidates: the default-route gateway itself, and the bridge
   // it's in (so we exclude both from the picker).
-  const ifaceLines = [...out.matchAll(/^IFACE:([^|]+)\|([^|]+)\|(true|false)\|([^\n\r]*)$/gm)];
-  // First pass: build name → bridge map
+  const ifaceLines = [...out.matchAll(/^IFACE:([^|]+)\|([^|]+)\|(true|false)\s*$/gm)];
   const bridgeOf = new Map<string, string>();
-  for (const m of ifaceLines) {
-    const name = m[1].trim();
-    const br = m[4].trim();
-    if (br) bridgeOf.set(name, br);
+  for (const m of out.matchAll(/^BRPORT:([^=]+)=(.+)$/gm)) {
+    bridgeOf.set(m[1].trim(), m[2].trim());
   }
   const wanBridge = bridgeOf.get(defaultGateway) || '';
 
@@ -489,7 +482,7 @@ export async function detectRouter(routerId: string): Promise<DetectedRouter> {
       const name = m[1].trim();
       const type = m[2].trim();
       const running = m[3] === 'true';
-      const inBridge = m[4].trim() || null;
+      const inBridge = bridgeOf.get(name) ?? null;
       const isWan = name === defaultGateway || (!!wanBridge && inBridge === wanBridge);
       return { name, type, running, isWan, inBridge };
     })
