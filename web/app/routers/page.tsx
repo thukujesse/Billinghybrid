@@ -28,6 +28,18 @@ interface DetectedRouter {
   }>;
 }
 
+interface WizardState {
+  id: string;
+  name: string;
+  step: 'detect' | 'select' | 'applying' | 'done';
+  detected: DetectedRouter | null;
+  services: Set<'pppoe' | 'hotspot'>;
+  pppoeIfaces: Set<string>;
+  hotspotIfaces: Set<string>;
+  hotspotNetwork: string;
+  result: { stdout: string; stderr: string; success: boolean } | null;
+}
+
 interface ProvisionResult {
   router: RouterRow;
   oneLiner: string;
@@ -90,16 +102,7 @@ export default function Routers() {
     }
   };
 
-  const [wizard, setWizard] = useState<{
-    id: string; name: string;
-    step: 'detect' | 'select' | 'applying' | 'done';
-    detected: DetectedRouter | null;
-    services: Set<'pppoe' | 'hotspot'>;
-    pppoeIfaces: Set<string>;
-    hotspotIfaces: Set<string>;
-    hotspotNetwork: string;
-    result: { stdout: string; stderr: string; success: boolean } | null;
-  } | null>(null);
+  const [wizard, setWizard] = useState<WizardState | null>(null);
 
   const openConfigure = async (id: string, name: string) => {
     setWizard({
@@ -361,24 +364,14 @@ export default function Routers() {
 }
 
 function ConfigureWizard(props: {
-  wizard: NonNullable<Parameters<typeof Routers>[0]> extends never ? never : any;
+  wizard: WizardState;
   onClose: () => void;
   onToggleService: (s: 'pppoe' | 'hotspot') => void;
   onTogglePort: (kind: 'pppoeIfaces' | 'hotspotIfaces', name: string) => void;
   onCidrChange: (v: string) => void;
   onApply: () => void;
 }) {
-  const { wizard, onClose, onToggleService, onTogglePort, onCidrChange, onApply } = props;
-  const w = wizard as {
-    id: string; name: string;
-    step: 'detect' | 'select' | 'applying' | 'done';
-    detected: DetectedRouter | null;
-    services: Set<'pppoe' | 'hotspot'>;
-    pppoeIfaces: Set<string>;
-    hotspotIfaces: Set<string>;
-    hotspotNetwork: string;
-    result: { stdout: string; stderr: string; success: boolean } | null;
-  };
+  const { wizard: w, onClose, onToggleService, onTogglePort, onCidrChange, onApply } = props;
   const overlay: React.CSSProperties = {
     position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
     display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50,
