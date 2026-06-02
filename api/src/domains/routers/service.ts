@@ -198,6 +198,10 @@ export async function provisionRouter(input: {
      ON CONFLICT (nasname) DO UPDATE SET secret = EXCLUDED.secret, shortname = EXCLUDED.shortname`,
     [tunnelIp, input.name.slice(0, 30), radiusSecret, `JTM ${input.name}`]
   );
+  // Reload FreeRADIUS so it picks up the new/updated NAS client. Fire-and-
+  // forget — if wg-manager is unreachable, provisioning still succeeds, the
+  // operator can restart freeradius manually.
+  void wgManager.reloadFreeRadius();
 
   // Try to auto-add the peer on the VPS. If wg-manager isn't configured we
   // fall back to returning the manual command. If it IS configured but errors,
@@ -874,6 +878,9 @@ export async function reprovisionRouter(routerId: string): Promise<ReprovisionRe
      ON CONFLICT (nasname) DO UPDATE SET secret = EXCLUDED.secret`,
     [router.wg_tunnel_ip, router.name.slice(0, 30), radiusSecret, `JTM ${router.name}`]
   );
+  // Reprovision rotated the shared secret — FreeRADIUS must drop its cached
+  // OLD secret or the next Access-Request from this MikroTik gets silent-dropped.
+  void wgManager.reloadFreeRadius();
 
   const mikrotikScript = renderRouterOsScript({
     routerName: router.name,
@@ -950,6 +957,8 @@ export async function identifyRouter(token: string, serial: string): Promise<{
     }
     await query(`DELETE FROM routers WHERE id = $1`, [d.id]);
   }
+  // Deduped at least one router → nas rows removed → FreeRADIUS should forget them.
+  if ((dupes.rowCount ?? 0) > 0) void wgManager.reloadFreeRadius();
   return { routerId: currentId, dedupedCount: dupes.rowCount ?? 0 };
 }
 
@@ -1054,6 +1063,7 @@ export async function deleteRouter(id: string): Promise<void> {
     await query(`DELETE FROM nas WHERE nasname = $1`, [wg_tunnel_ip]);
   }
   await query(`DELETE FROM routers WHERE id = $1`, [id]);
+  void wgManager.reloadFreeRadius();
 }
 
 /** Assign a subscriber's service to a router. */

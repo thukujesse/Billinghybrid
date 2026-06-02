@@ -38,6 +38,27 @@ export async function removePeer(publicKey: string): Promise<void> {
   }
 }
 
+/**
+ * Tell wg-manager to restart freeradius so it re-reads the `nas` client table
+ * (needed after we INSERT/UPDATE/DELETE on `nas` — otherwise FreeRADIUS keeps
+ * the old shared secret cached and silently drops new requests). Fire-and-
+ * forget — failure here shouldn't break the calling operation.
+ */
+export async function reloadFreeRadius(): Promise<void> {
+  if (!isEnabled()) return;
+  try {
+    const r = await fetch(`${config.wireguard.managerUrl}/freeradius/reload`, {
+      method: 'POST',
+      headers: authHeader(),
+    });
+    if (!r.ok) {
+      console.error('[freeradius] reload non-ok:', r.status, await r.text());
+    }
+  } catch (err) {
+    console.error('[freeradius] reload error:', (err as Error).message);
+  }
+}
+
 export async function listPeers(): Promise<VpsPeer[]> {
   const r = await fetch(`${config.wireguard.managerUrl}/peers`, { headers: authHeader() });
   if (!r.ok) throw new Error(`wg-manager list failed (${r.status})`);
