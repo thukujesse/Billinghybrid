@@ -17,15 +17,23 @@ export interface RenewInfo {
  * username (matches services.username), then the IP (matches radacct's most
  * recent open session for any of our managed routers).
  */
+interface SvcRow {
+  service_id: string;
+  service_type: string;
+  username: string | null;
+  customer_id: string;
+  full_name: string;
+  account_number: string;
+  phone: string | null;
+}
+
 export async function getInfo(params: {
   customer?: string; service?: string; username?: string; ip?: string;
 }): Promise<RenewInfo> {
-  let svcRow: { service_id: string; service_type: string; username: string | null;
-                customer_id: string; full_name: string; account_number: string;
-                phone: string | null } | null = null;
+  let svcRow: SvcRow | null = null;
 
   if (params.service) {
-    const r = await query<typeof svcRow>(
+    const r = await query<SvcRow>(
       `SELECT s.id AS service_id, s.service_type, s.username,
               c.id AS customer_id, c.full_name, c.account_number, c.phone
          FROM services s JOIN customers c ON c.id = s.customer_id
@@ -35,7 +43,7 @@ export async function getInfo(params: {
     svcRow = r.rows[0] ?? null;
   }
   if (!svcRow && params.username) {
-    const r = await query<typeof svcRow>(
+    const r = await query<SvcRow>(
       `SELECT s.id AS service_id, s.service_type, s.username,
               c.id AS customer_id, c.full_name, c.account_number, c.phone
          FROM services s JOIN customers c ON c.id = s.customer_id
@@ -45,7 +53,7 @@ export async function getInfo(params: {
     svcRow = r.rows[0] ?? null;
   }
   if (!svcRow && params.customer) {
-    const r = await query<typeof svcRow>(
+    const r = await query<SvcRow>(
       `SELECT s.id AS service_id, s.service_type, s.username,
               c.id AS customer_id, c.full_name, c.account_number, c.phone
          FROM services s JOIN customers c ON c.id = s.customer_id
@@ -58,7 +66,7 @@ export async function getInfo(params: {
   if (!svcRow && params.ip) {
     // Look up via active accounting — even though it's now closed (we kicked
     // them) the username from the most recent session matches our service.
-    const r = await query<typeof svcRow>(
+    const r = await query<SvcRow>(
       `SELECT s.id AS service_id, s.service_type, s.username,
               c.id AS customer_id, c.full_name, c.account_number, c.phone
          FROM radacct a
