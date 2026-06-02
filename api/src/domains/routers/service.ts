@@ -689,6 +689,7 @@ function renderUnifiedConfig(
   // are commented "jtm-fw" so cleanup-on-reapply finds them.
   const apiHost = new URL(config.publicApiUrl).host;
   const webHost = apiHost.replace(/^jtm-api/, 'jtm-web');
+  const radiusServerIp = config.wireguard.network.split('/')[0].replace(/0\.0$/, '0.1');
   lines.push(
     `:put "[Firewall] portal allow-list + DNS + expired-reject + mgmt lifeline..."`,
     `# Resolved portal hostnames into address-list so HTTPS (no SNI inspection)`,
@@ -702,9 +703,10 @@ function renderUnifiedConfig(
     `# Suspended/expired customers: API pushes their IP into jtm-expired list.`,
     `/ip firewall filter add chain=forward action=reject reject-with=icmp-admin-prohibited src-address-list=jtm-expired comment="jtm-fw reject-expired-up"`,
     `/ip firewall filter add chain=forward action=reject reject-with=icmp-admin-prohibited dst-address-list=jtm-expired comment="jtm-fw reject-expired-down"`,
-    `# Management lifeline — ALWAYS allow input from the WG tunnel so the api`,
-    `# can SSH/RADIUS/CoA to this router. src-address derived from WG_NETWORK.`,
-    `/ip firewall filter add chain=input action=accept in-interface=wg-jtm src-address=${config.wireguard.network} comment="jtm-fw allow-tunnel-mgmt"`,
+    `# Management lifeline — paired input/output rules scoped to RADIUS server IP`,
+    `# only (no interface match, no broad subnet). Survives wg-jtm rename.`,
+    `/ip firewall filter add chain=input action=accept src-address=${radiusServerIp} comment="jtm-fw allow-tunnel-mgmt"`,
+    `/ip firewall filter add chain=output action=accept dst-address=${radiusServerIp} comment="jtm-fw allow-tunnel-mgmt"`,
     `# Move all jtm-fw accept rules to top (above any drops). Best-effort.`,
     `:foreach r in=[/ip firewall filter find comment~"jtm-fw allow"] do={`,
     `  :do { /ip firewall filter move \$r destination=0 } on-error={}`,
