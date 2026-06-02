@@ -13,6 +13,21 @@ interface RouterRow {
   last_handshake_at: string | null;
 }
 
+interface DetectedRouter {
+  board: string;
+  version: string;
+  hostname: string;
+  defaultGateway: string;
+  sshPort: number;
+  interfaces: Array<{
+    name: string;
+    type: string;
+    running: boolean;
+    isWan: boolean;
+    inBridge: string | null;
+  }>;
+}
+
 interface ProvisionResult {
   router: RouterRow;
   oneLiner: string;
@@ -75,26 +90,72 @@ export default function Routers() {
     }
   };
 
-  const setupHotspot = async (id: string, name: string) => {
-    const iface = prompt(`LAN interface to put hotspot on for ${name}?\n(e.g. ether2, bridge1, wlan1)`, 'ether2');
-    if (!iface) return;
-    const cidr = prompt(`Hotspot network CIDR? (gateway will be .1)`, '10.5.50.0/24');
-    if (!cidr) return;
+  const [wizard, setWizard] = useState<{
+    id: string; name: string;
+    step: 'detect' | 'select' | 'applying' | 'done';
+    detected: DetectedRouter | null;
+    services: Set<'pppoe' | 'hotspot'>;
+    pppoeIfaces: Set<string>;
+    hotspotIfaces: Set<string>;
+    hotspotNetwork: string;
+    result: { stdout: string; stderr: string; success: boolean } | null;
+  } | null>(null);
+
+  const openConfigure = async (id: string, name: string) => {
+    setWizard({
+      id, name, step: 'detect', detected: null,
+      services: new Set(), pppoeIfaces: new Set(), hotspotIfaces: new Set(),
+      hotspotNetwork: '10.5.50.0/24', result: null,
+    });
     try {
-      const r = await api<{ script: string }>(`/routers/${id}/hotspot-script`, {
-        method: 'POST',
-        body: JSON.stringify({ interfaceName: iface, networkCidr: cidr }),
-      });
-      setResult({
-        router: { id, name } as any,
-        oneLiner: '',
-        mikrotikScript: r.script,
-        vpsAutoAdded: false,
-      } as any);
-      setToast({ ok: true, msg: `Hotspot script generated — paste it on ${name}` });
+      const d = await api<DetectedRouter>(`/routers/${id}/detect`);
+      setWizard((w) => w && { ...w, detected: d, step: 'select' });
+    } catch (e: any) {
+      setToast({ ok: false, msg: `Detect failed: ${e.message}` });
+      setWizard(null);
+    }
+  };
+
+  const applyConfig = async () => {
+    if (!wizard) return;
+    setWizard({ ...wizard, step: 'applying' });
+    try {
+      const services = Array.from(wizard.services);
+      const r = await api<{ stdout: string; stderr: string; success: boolean }>(
+        `/routers/${wizard.id}/configure`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            services,
+            pppoeInterfaces: services.includes('pppoe') ? Array.from(wizard.pppoeIfaces) : undefined,
+            hotspotInterfaces: services.includes('hotspot') ? Array.from(wizard.hotspotIfaces) : undefined,
+            hotspotNetwork: services.includes('hotspot') ? wizard.hotspotNetwork : undefined,
+          }),
+        }
+      );
+      setWizard({ ...wizard, step: 'done', result: r });
+      if (r.success) setToast({ ok: true, msg: `Configured ${wizard.name}` });
     } catch (e: any) {
       setToast({ ok: false, msg: e.message });
+      setWizard({ ...wizard, step: 'select' });
     }
+  };
+
+  const togglePort = (kind: 'pppoeIfaces' | 'hotspotIfaces', name: string) => {
+    setWizard((w) => {
+      if (!w) return w;
+      const next = new Set(w[kind]);
+      next.has(name) ? next.delete(name) : next.add(name);
+      return { ...w, [kind]: next };
+    });
+  };
+  const toggleService = (s: 'pppoe' | 'hotspot') => {
+    setWizard((w) => {
+      if (!w) return w;
+      const next = new Set(w.services);
+      next.has(s) ? next.delete(s) : next.add(s);
+      return { ...w, services: next };
+    });
   };
 
   const deleteRouter = async (id: string, name: string) => {
@@ -265,9 +326,9 @@ export default function Routers() {
                 <button
                   className="ghost"
                   style={{ fontSize: 11, padding: '4px 10px', marginRight: 4 }}
-                  onClick={() => setupHotspot(r.id, r.name)}
+                  onClick={() => openConfigure(r.id, r.name)}
                 >
-                  Hotspot
+                  Configure
                 </button>
                 <button
                   className="ghost"
@@ -284,7 +345,192 @@ export default function Routers() {
           )}
         </tbody>
       </table>
+
+      {wizard && (
+        <ConfigureWizard
+          wizard={wizard}
+          onClose={() => setWizard(null)}
+          onToggleService={toggleService}
+          onTogglePort={togglePort}
+          onCidrChange={(v) => setWizard((w) => w && { ...w, hotspotNetwork: v })}
+          onApply={applyConfig}
+        />
+      )}
     </div>
+  );
+}
+
+function ConfigureWizard(props: {
+  wizard: NonNullable<Parameters<typeof Routers>[0]> extends never ? never : any;
+  onClose: () => void;
+  onToggleService: (s: 'pppoe' | 'hotspot') => void;
+  onTogglePort: (kind: 'pppoeIfaces' | 'hotspotIfaces', name: string) => void;
+  onCidrChange: (v: string) => void;
+  onApply: () => void;
+}) {
+  const { wizard, onClose, onToggleService, onTogglePort, onCidrChange, onApply } = props;
+  const w = wizard as {
+    id: string; name: string;
+    step: 'detect' | 'select' | 'applying' | 'done';
+    detected: DetectedRouter | null;
+    services: Set<'pppoe' | 'hotspot'>;
+    pppoeIfaces: Set<string>;
+    hotspotIfaces: Set<string>;
+    hotspotNetwork: string;
+    result: { stdout: string; stderr: string; success: boolean } | null;
+  };
+  const overlay: React.CSSProperties = {
+    position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
+    display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50,
+  };
+  const panel: React.CSSProperties = {
+    background: 'var(--card)', border: '1px solid var(--border)',
+    borderRadius: 8, padding: 24, maxWidth: 640, width: '90%',
+    maxHeight: '85vh', overflow: 'auto',
+  };
+  const usablePorts = (w.detected?.interfaces ?? []).filter((i) => !i.isWan);
+  const canApply =
+    w.services.size > 0 &&
+    (!w.services.has('pppoe') || w.pppoeIfaces.size > 0) &&
+    (!w.services.has('hotspot') || (w.hotspotIfaces.size > 0 && /^\d+\.\d+\.\d+\.\d+\/\d+$/.test(w.hotspotNetwork)));
+
+  return (
+    <div style={overlay} onClick={onClose}>
+      <div style={panel} onClick={(e) => e.stopPropagation()}>
+        <h2 style={{ marginTop: 0 }}>Configure {w.name}</h2>
+
+        {w.step === 'detect' && (
+          <p className="sub">Detecting model + interfaces via the tunnel…</p>
+        )}
+
+        {w.step === 'select' && w.detected && (
+          <>
+            <p className="sub" style={{ marginBottom: 16 }}>
+              <strong>{w.detected.board}</strong> · RouterOS {w.detected.version} ·
+              hostname <code>{w.detected.hostname}</code> ·
+              WAN: <code>{w.detected.defaultGateway || '—'}</code>
+            </p>
+
+            <h3 style={{ fontSize: 14, marginBottom: 8 }}>Select services</h3>
+            <div className="row" style={{ marginBottom: 16 }}>
+              <label style={{ flex: 1 }}>
+                <input
+                  type="checkbox"
+                  checked={w.services.has('pppoe')}
+                  onChange={() => onToggleService('pppoe')}
+                /> PPPoE (subscribers)
+              </label>
+              <label style={{ flex: 1 }}>
+                <input
+                  type="checkbox"
+                  checked={w.services.has('hotspot')}
+                  onChange={() => onToggleService('hotspot')}
+                /> Hotspot (captive portal)
+              </label>
+            </div>
+
+            {w.services.has('pppoe') && (
+              <PortPicker
+                title="PPPoE ports"
+                ports={usablePorts}
+                selected={w.pppoeIfaces}
+                otherSelected={w.hotspotIfaces}
+                onToggle={(p) => onTogglePort('pppoeIfaces', p)}
+              />
+            )}
+
+            {w.services.has('hotspot') && (
+              <>
+                <PortPicker
+                  title="Hotspot ports"
+                  ports={usablePorts}
+                  selected={w.hotspotIfaces}
+                  otherSelected={w.pppoeIfaces}
+                  onToggle={(p) => onTogglePort('hotspotIfaces', p)}
+                />
+                <label>Hotspot network (CIDR)</label>
+                <input
+                  value={w.hotspotNetwork}
+                  onChange={(e) => onCidrChange(e.target.value)}
+                  placeholder="10.5.50.0/24"
+                />
+              </>
+            )}
+
+            <div style={{ display: 'flex', gap: 8, marginTop: 24, justifyContent: 'flex-end' }}>
+              <button className="ghost" onClick={onClose}>Cancel</button>
+              <button onClick={onApply} disabled={!canApply}>Complete configuration</button>
+            </div>
+          </>
+        )}
+
+        {w.step === 'applying' && (
+          <p className="sub">Pushing config via tunnel SSH…</p>
+        )}
+
+        {w.step === 'done' && w.result && (
+          <>
+            <div className={`toast ${w.result.success ? 'ok' : 'err'}`}>
+              {w.result.success ? '✓ Applied successfully' : '✗ Apply failed'}
+            </div>
+            <pre style={{
+              background: 'var(--bg2,#0e1118)', padding: 10, borderRadius: 6,
+              fontSize: 11, marginTop: 12, maxHeight: 300, overflow: 'auto',
+            }}>{w.result.stdout || w.result.stderr || '(no output)'}</pre>
+            <div style={{ textAlign: 'right', marginTop: 16 }}>
+              <button onClick={onClose}>Close</button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PortPicker({
+  title, ports, selected, otherSelected, onToggle,
+}: {
+  title: string;
+  ports: DetectedRouter['interfaces'];
+  selected: Set<string>;
+  otherSelected: Set<string>;
+  onToggle: (port: string) => void;
+}) {
+  return (
+    <>
+      <h4 style={{ fontSize: 13, marginTop: 12, marginBottom: 6 }}>{title}</h4>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 12 }}>
+        {ports.length === 0 && <span className="sub">No usable ports detected.</span>}
+        {ports.map((p) => {
+          const isOther = otherSelected.has(p.name);
+          return (
+            <label
+              key={p.name}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 6,
+                padding: '6px 10px', borderRadius: 4,
+                background: selected.has(p.name) ? 'rgba(56,189,248,0.15)' : 'transparent',
+                border: '1px solid var(--border)', cursor: isOther ? 'not-allowed' : 'pointer',
+                opacity: isOther ? 0.4 : 1,
+              }}
+            >
+              <input
+                type="checkbox"
+                disabled={isOther}
+                checked={selected.has(p.name)}
+                onChange={() => onToggle(p.name)}
+              />
+              <span style={{ fontFamily: 'ui-monospace', fontSize: 12 }}>
+                {p.name}{' '}
+                <span style={{ color: 'var(--muted)' }}>
+                  {p.type}{p.running ? ' · up' : ' · down'}{p.inBridge ? ` · in ${p.inBridge}` : ''}
+                </span>
+              </span>
+            </label>
+          );
+        })}
+      </div>
+    </>
   );
 }
 
