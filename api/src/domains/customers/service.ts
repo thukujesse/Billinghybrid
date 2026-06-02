@@ -201,10 +201,56 @@ export async function setServiceStatus(
 
   // If suspending, kick any active sessions via CoA so the user is dropped
   // within seconds rather than waiting for re-auth on next session-timeout.
+  // Also push the customer's framed IP into the MikroTik's jtm-expired
+  // address-list so their HTTP gets captive-redirected to the renew page.
   if (status !== 'active' && svc.username && wgManager.isEnabled()) {
     await kickActiveSessions(svc.username);
+    if (svc.service_type === 'pppoe') {
+      await pushExpired(svc.username);
+    }
+  }
+  // If restoring, clear them from the expired list across every MikroTik so
+  // their next dial gets a clean network with no captive redirect lingering.
+  if (status === 'active' && svc.username && wgManager.isEnabled()) {
+    await clearExpired(svc.username);
   }
   return svc;
+}
+
+async function pushExpired(username: string): Promise<void> {
+  // Each open session has framedipaddress + nasipaddress. Push that IP into
+  // jtm-expired on the matching router. Address-list entry auto-expires in 7d
+  // (defense in depth — if the customer goes offline we'd lose track).
+  const sessions = await query<{ framed_ip: string; nas_ip: string }>(
+    `SELECT host(framedipaddress) AS framed_ip, host(nasipaddress) AS nas_ip
+       FROM radacct
+      WHERE username = $1 AND acctstoptime IS NULL AND framedipaddress IS NOT NULL`,
+    [username]
+  );
+  for (const s of sessions.rows) {
+    const cmd = `/ip firewall address-list add list=jtm-expired address=${s.framed_ip} timeout=7d comment="jtm-expired ${username}"`;
+    try {
+      await wgManager.execOnRouter(s.nas_ip, cmd);
+    } catch (err) {
+      console.error('[expired] push failed:', (err as Error).message);
+    }
+  }
+}
+
+async function clearExpired(username: string): Promise<void> {
+  // We don't know which NAS the customer last hit, so iterate every router we
+  // manage and remove any address-list entry that matches this username.
+  const routersR = await query<{ wg_tunnel_ip: string }>(
+    `SELECT wg_tunnel_ip FROM routers WHERE wg_tunnel_ip IS NOT NULL`
+  );
+  const cmd = `/ip firewall address-list remove [find list=jtm-expired comment~"jtm-expired ${username}"]`;
+  for (const r of routersR.rows) {
+    try {
+      await wgManager.execOnRouter(r.wg_tunnel_ip, cmd);
+    } catch {
+      // best-effort; offline router will catch up via reconcile scheduler
+    }
+  }
 }
 
 async function kickActiveSessions(username: string): Promise<void> {
