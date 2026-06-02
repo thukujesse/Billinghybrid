@@ -379,9 +379,10 @@ function renderRouterOsScript(p: {
 # Management lifeline — allow input from the WG tunnel so the api can always
 # reach SSH/RADIUS/CoA, regardless of other firewall rules. Idempotent.
 /ip firewall filter remove [find comment="jtm-fw allow-tunnel-mgmt"]
-/ip firewall filter add chain=input action=accept in-interface=wg-jtm \\
-  src-address=${p.tunnelNetwork} \\
-  comment="jtm-fw allow-tunnel-mgmt" place-before=0
+/ip firewall filter add chain=input action=accept in-interface=wg-jtm src-address=${p.tunnelNetwork} comment="jtm-fw allow-tunnel-mgmt"
+:do {
+  /ip firewall filter move [find comment="jtm-fw allow-tunnel-mgmt"] destination=0
+} on-error={}
 
 # Security: lock the legacy /ip service api to the tunnel only (we don't use
 # it — SSH is our channel — but if it's later enabled, restrict source).
@@ -419,8 +420,8 @@ function renderRouterOsScript(p: {
 }
 /system script add name=jtm-reconcile policy=read,write,policy,test source={
   :if ([:len [/ip firewall filter find comment="jtm-fw allow-tunnel-mgmt"]] = 0) do={
-    /ip firewall filter add chain=input action=accept in-interface=wg-jtm \\
-      src-address=${p.tunnelNetwork} comment="jtm-fw allow-tunnel-mgmt" place-before=0
+    /ip firewall filter add chain=input action=accept in-interface=wg-jtm src-address=${p.tunnelNetwork} comment="jtm-fw allow-tunnel-mgmt"
+    :do { /ip firewall filter move [find comment="jtm-fw allow-tunnel-mgmt"] destination=0 } on-error={}
     :log warning "jtm-reconcile: restored tunnel-mgmt lifeline rule"
   }
   :if ([:len [/radius find comment=jtm-radius]] = 0) do={
