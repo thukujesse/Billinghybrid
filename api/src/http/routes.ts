@@ -436,6 +436,58 @@ api.post('/hotspot/redeem', ah(async (req, res) => {
   res.json(await hotspot.redeemVoucher(body));
 }));
 
+// Hotspot plan list — only active plans of type=hotspot, returned to the portal.
+api.get('/hotspot/plans', ah(async (_req, res) => {
+  res.json(await routers.listHotspotPlans?.() ?? await listHotspotPlansInline());
+}));
+
+// Kick off an M-Pesa STK push for a hotspot plan.
+api.post('/hotspot/pay', ah(async (req, res) => {
+  const body = parse(z.object({
+    plan_id: z.string().uuid(),
+    phone: z.string().min(7),
+    mac: z.string().optional(),
+  }), req.body);
+  res.status(201).json(await hotspot.initPurchase({
+    planId: body.plan_id, phone: body.phone, mac: body.mac,
+  }));
+}));
+
+// Portal polls this every few seconds while waiting for the STK callback.
+api.get('/hotspot/pay/:checkoutRequestId', ah(async (req, res) => {
+  res.json(await hotspot.getPurchaseStatus(req.params.checkoutRequestId));
+}));
+
+// Daraja callback for hotspot purchases. Daraja-required ack format.
+api.post('/hotspot/mpesa/callback', ah(async (req, res) => {
+  await hotspot.handleDarajaCallback(req.body);
+  res.json({ ResultCode: 0, ResultDesc: 'Accepted' });
+}));
+
+// Simulation-only: when M-Pesa creds aren't configured, the portal calls this
+// to mark a fake purchase successful and trigger the radcheck grant. Useful
+// for end-to-end testing without real Safaricom keys.
+api.post('/hotspot/pay/:checkoutRequestId/confirm-test', ah(async (req, res) => {
+  await hotspot.completePurchase({
+    checkoutRequestId: req.params.checkoutRequestId,
+    success: true,
+    receipt: 'SIMULATED',
+  });
+  res.json(await hotspot.getPurchaseStatus(req.params.checkoutRequestId));
+}));
+
+async function listHotspotPlansInline() {
+  const r = await (await import('../db/pool.js')).query<{
+    id: string; name: string; price_cents: number; validity_days: number;
+    speed_down_kbps: number | null; speed_up_kbps: number | null;
+  }>(
+    `SELECT id, name, price_cents, validity_days, speed_down_kbps, speed_up_kbps
+       FROM plans WHERE type='hotspot' AND active=TRUE
+       ORDER BY price_cents ASC`
+  );
+  return r.rows;
+}
+
 // ---------------------- RADIUS sessions ----------------------
 api.get('/radius/sessions/active', ah(async (_req, res) => {
   res.json(await radius.listActiveSessions());
