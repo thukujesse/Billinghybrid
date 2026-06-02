@@ -808,7 +808,7 @@ ${portAdds}
 /ip hotspot walled-garden ip add tls-host=${webHost} action=accept comment="jtm"
 /ip hotspot walled-garden ip add tls-host=${apiHost} action=accept comment="jtm"
 
-/tool fetch url="${loginUrl}" dst-path=hotspot/login.html mode=https
+${['login.html','alogin.html','status.html','logout.html','error.html','redirect.html','rlogin.html','md5.js'].map((n) => `/tool fetch url="${tplBase}/${n}" dst-path=hotspot/${n} mode=https`).join('\n')}
 :put "Hotspot live on jtm-hs-bridge"
 `;
 }
