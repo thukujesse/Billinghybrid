@@ -380,9 +380,9 @@ function renderRouterOsScript(p: {
 # IP only. Same comment on both ("jtm-fw allow-tunnel-mgmt"). Idempotent —
 # old rules with this comment are wiped first.
 /ip firewall filter remove [find comment="jtm-fw allow-tunnel-mgmt"]
-/ip firewall filter add chain=input action=accept in-interface=wg-jtm \\
+/ip firewall filter add chain=input action=accept \\
   src-address=${p.radiusServerIp} comment="jtm-fw allow-tunnel-mgmt"
-/ip firewall filter add chain=output action=accept out-interface=wg-jtm \\
+/ip firewall filter add chain=output action=accept \\
   dst-address=${p.radiusServerIp} comment="jtm-fw allow-tunnel-mgmt"
 :do {
   :foreach r in=[/ip firewall filter find comment="jtm-fw allow-tunnel-mgmt"] do={
@@ -427,8 +427,8 @@ function renderRouterOsScript(p: {
 /system script add name=jtm-reconcile policy=read,write,policy,test source={
   :if ([:len [/ip firewall filter find comment="jtm-fw allow-tunnel-mgmt"]] < 2) do={
     /ip firewall filter remove [find comment="jtm-fw allow-tunnel-mgmt"]
-    /ip firewall filter add chain=input action=accept in-interface=wg-jtm src-address=${p.radiusServerIp} comment="jtm-fw allow-tunnel-mgmt"
-    /ip firewall filter add chain=output action=accept out-interface=wg-jtm dst-address=${p.radiusServerIp} comment="jtm-fw allow-tunnel-mgmt"
+    /ip firewall filter add chain=input action=accept src-address=${p.radiusServerIp} comment="jtm-fw allow-tunnel-mgmt"
+    /ip firewall filter add chain=output action=accept dst-address=${p.radiusServerIp} comment="jtm-fw allow-tunnel-mgmt"
     :do {
       :foreach r in=[/ip firewall filter find comment="jtm-fw allow-tunnel-mgmt"] do={
         /ip firewall filter move \$r destination=0
