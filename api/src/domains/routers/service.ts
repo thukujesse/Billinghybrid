@@ -495,34 +495,36 @@ export async function detectRouter(routerId: string): Promise<DetectedRouter> {
 
 export interface ConfigureServicesInput {
   services: ('pppoe' | 'hotspot')[];
-  pppoeInterfaces?: string[];
-  hotspotInterfaces?: string[];
+  /** Single port list — applies to all selected services. Both PPPoE and
+   * Hotspot bind to the same bridge containing these ports. */
+  ports: string[];
   hotspotNetwork?: string;
 }
 
 /** Build + push (via SSH) the combined RouterOS config for the selected
- *  services. Each service gets its own bridge (jtm-ppp-bridge / jtm-hs-bridge)
- *  so the configuration is composable and the WAN port is left alone. */
+ *  services. Single jtm-edge-bridge contains all selected ports; both PPPoE
+ *  and Hotspot bind to it. They coexist on the same L2 because PPPoE operates
+ *  on Ethernet frames while Hotspot intercepts on IP. */
 export async function configureServices(
   routerId: string,
   input: ConfigureServicesInput
 ): Promise<{ stdout: string; stderr: string; success: boolean }> {
   if (!input.services.length) throw badRequest('no services selected');
+  if (!input.ports.length) throw badRequest('ports required');
+  if (input.services.includes('hotspot') && !input.hotspotNetwork) {
+    throw badRequest('hotspotNetwork required when hotspot is selected');
+  }
 
   const router = await getRouter(routerId);
   if (!router.wg_tunnel_ip) throw badRequest('router has no tunnel IP');
   const sshPort = await resolveSshPort(router);
 
-  let script = '';
-  if (input.services.includes('pppoe')) {
-    if (!input.pppoeInterfaces?.length) throw badRequest('pppoeInterfaces required');
-    script += renderPppoeScript(input.pppoeInterfaces) + '\n';
-  }
-  if (input.services.includes('hotspot')) {
-    if (!input.hotspotInterfaces?.length) throw badRequest('hotspotInterfaces required');
-    if (!input.hotspotNetwork) throw badRequest('hotspotNetwork required');
-    script += renderHotspotMultiPort(router.name, input.hotspotInterfaces, input.hotspotNetwork);
-  }
+  const script = renderUnifiedConfig(
+    router.name,
+    input.services,
+    input.ports,
+    input.hotspotNetwork ?? ''
+  );
 
   const result = await wgManager.execOnRouter(router.wg_tunnel_ip, script, { sshPort });
   return {
@@ -530,6 +532,99 @@ export async function configureServices(
     stderr: result.stderr,
     success: result.returncode === 0,
   };
+}
+
+function renderUnifiedConfig(
+  routerName: string,
+  services: string[],
+  ports: string[],
+  hotspotCidr: string
+): string {
+  const wantsPppoe = services.includes('pppoe');
+  const wantsHotspot = services.includes('hotspot');
+
+  // Single bridge that hosts every selected port. Both services bind here.
+  const portAdds = ports
+    .map((i) => `/interface bridge port add bridge=jtm-edge-bridge interface=${i}`)
+    .join('\n');
+
+  // ---- shared bridge cleanup + create ----
+  const lines: string[] = [
+    `# --- JTM edge config for "${routerName}" — services: ${services.join('+')}, ports: ${ports.join(',')} ---`,
+    `# Idempotent: removes prior JTM bridge + services, then provisions fresh.`,
+    ``,
+    `/ip hotspot remove [find name=jtm-hs]`,
+    `/ip hotspot profile remove [find name=jtm-hotspot]`,
+    `/ip dhcp-server remove [find name=jtm-hs-dhcp]`,
+    `/ip dhcp-server network remove [find comment="jtm-hs"]`,
+    `/ip pool remove [find name=jtm-hs-pool]`,
+    `/ip hotspot walled-garden remove [find comment="jtm"]`,
+    `/ip hotspot walled-garden ip remove [find comment="jtm"]`,
+    `/interface pppoe-server server remove [find service-name=jtm]`,
+    `/ppp profile remove [find name=jtm-ppp]`,
+    `/ip pool remove [find name=jtm-ppp-pool]`,
+    `/ip address remove [find comment="jtm-edge"]`,
+    `# Legacy cleanup (older split-bridge configs)`,
+    `/interface bridge port remove [find bridge=jtm-hs-bridge]`,
+    `/interface bridge remove [find name=jtm-hs-bridge]`,
+    `/interface bridge port remove [find bridge=jtm-ppp-bridge]`,
+    `/interface bridge remove [find name=jtm-ppp-bridge]`,
+    `/interface bridge port remove [find bridge=jtm-edge-bridge]`,
+    `/interface bridge remove [find name=jtm-edge-bridge]`,
+    ``,
+    `/interface bridge add name=jtm-edge-bridge protocol-mode=none auto-mac=yes`,
+    portAdds,
+    ``,
+  ];
+
+  // ---- Hotspot (if selected) ----
+  if (wantsHotspot) {
+    const [base, prefixStr] = hotspotCidr.split('/');
+    const prefix = Number(prefixStr);
+    const octets = base.split('.').map(Number);
+    if (octets.length !== 4 || octets.some(isNaN) || isNaN(prefix)) {
+      throw badRequest('invalid hotspotNetwork');
+    }
+    const gateway = `${octets[0]}.${octets[1]}.${octets[2]}.1`;
+    const poolStart = `${octets[0]}.${octets[1]}.${octets[2]}.10`;
+    const poolEnd = `${octets[0]}.${octets[1]}.${octets[2]}.250`;
+    const apiHost = new URL(config.publicApiUrl).host;
+    const webHost = apiHost.replace(/^jtm-api/, 'jtm-web');
+    const loginUrl = `${config.publicApiUrl}/api/hotspot/login.html`;
+
+    lines.push(
+      `# ===== Hotspot =====`,
+      `/ip pool add name=jtm-hs-pool ranges=${poolStart}-${poolEnd}`,
+      `/ip address add interface=jtm-edge-bridge address=${gateway}/${prefix} comment="jtm-edge"`,
+      `/ip dhcp-server network add address=${hotspotCidr} gateway=${gateway} dns-server=${gateway} comment="jtm-hs"`,
+      `/ip dhcp-server add name=jtm-hs-dhcp interface=jtm-edge-bridge address-pool=jtm-hs-pool lease-time=1h disabled=no`,
+      `/ip dns set allow-remote-requests=yes servers=1.1.1.1,8.8.8.8`,
+      `/ip hotspot profile add name=jtm-hotspot hotspot-address=${gateway} dns-name=jtm-hotspot use-radius=yes login-by=http-pap`,
+      `/ip hotspot add name=jtm-hs interface=jtm-edge-bridge address-pool=jtm-hs-pool profile=jtm-hotspot disabled=no`,
+      `/ip hotspot walled-garden add dst-host=${webHost} action=allow comment="jtm"`,
+      `/ip hotspot walled-garden add dst-host=${apiHost} action=allow comment="jtm"`,
+      `/ip hotspot walled-garden ip add tls-host=${webHost} action=accept comment="jtm"`,
+      `/ip hotspot walled-garden ip add tls-host=${apiHost} action=accept comment="jtm"`,
+      `/tool fetch url="${loginUrl}" dst-path=hotspot/login.html mode=https`,
+      ``,
+    );
+  }
+
+  // ---- PPPoE (if selected) ----
+  if (wantsPppoe) {
+    lines.push(
+      `# ===== PPPoE =====`,
+      `/ip pool add name=jtm-ppp-pool ranges=10.7.0.10-10.7.255.250`,
+      `/ppp profile add name=jtm-ppp local-address=10.7.0.1 remote-address=jtm-ppp-pool dns-server=1.1.1.1,8.8.8.8 only-one=yes`,
+      `/interface pppoe-server server add service-name=jtm interface=jtm-edge-bridge default-profile=jtm-ppp authentication=pap,chap one-session-per-host=yes disabled=no`,
+      ``,
+    );
+  }
+
+  lines.push(
+    `:put "JTM edge configured: services=${services.join('+')}, ports=${ports.join(',')} on jtm-edge-bridge"`
+  );
+  return lines.join('\n');
 }
 
 function renderPppoeScript(interfaces: string[]): string {

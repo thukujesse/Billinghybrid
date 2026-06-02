@@ -555,8 +555,7 @@ api.get('/routers/:id/detect', requireAuth('admin', 'staff'), ah(async (req, res
 api.post('/routers/:id/configure', requireAuth('admin', 'staff'), ah(async (req, res) => {
   const body = parse(z.object({
     services: z.array(z.enum(['pppoe', 'hotspot'])).min(1),
-    pppoeInterfaces: z.array(z.string()).optional(),
-    hotspotInterfaces: z.array(z.string()).optional(),
+    ports: z.array(z.string()).min(1),
     hotspotNetwork: z.string().optional(),
   }), req.body);
   res.json(await routers.configureServices(req.params.id, body));

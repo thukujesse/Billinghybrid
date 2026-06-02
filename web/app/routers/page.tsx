@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 import { useEffect, useRef, useState } from 'react';
 import { api } from '@/lib/api';
 
@@ -34,8 +34,7 @@ interface WizardState {
   step: 'detect' | 'select' | 'applying' | 'done';
   detected: DetectedRouter | null;
   services: Set<'pppoe' | 'hotspot'>;
-  pppoeIfaces: Set<string>;
-  hotspotIfaces: Set<string>;
+  ports: Set<string>;
   hotspotNetwork: string;
   result: { stdout: string; stderr: string; success: boolean } | null;
 }
@@ -107,7 +106,7 @@ export default function Routers() {
   const openConfigure = async (id: string, name: string) => {
     setWizard({
       id, name, step: 'detect', detected: null,
-      services: new Set(), pppoeIfaces: new Set(), hotspotIfaces: new Set(),
+      services: new Set(), ports: new Set(),
       hotspotNetwork: '10.5.50.0/24', result: null,
     });
     try {
@@ -130,8 +129,7 @@ export default function Routers() {
           method: 'POST',
           body: JSON.stringify({
             services,
-            pppoeInterfaces: services.includes('pppoe') ? Array.from(wizard.pppoeIfaces) : undefined,
-            hotspotInterfaces: services.includes('hotspot') ? Array.from(wizard.hotspotIfaces) : undefined,
+            ports: Array.from(wizard.ports),
             hotspotNetwork: services.includes('hotspot') ? wizard.hotspotNetwork : undefined,
           }),
         }
@@ -144,12 +142,12 @@ export default function Routers() {
     }
   };
 
-  const togglePort = (kind: 'pppoeIfaces' | 'hotspotIfaces', name: string) => {
+  const togglePort = (name: string) => {
     setWizard((w) => {
       if (!w) return w;
-      const next = new Set(w[kind]);
+      const next = new Set(w.ports);
       next.has(name) ? next.delete(name) : next.add(name);
-      return { ...w, [kind]: next };
+      return { ...w, ports: next };
     });
   };
   const toggleService = (s: 'pppoe' | 'hotspot') => {
@@ -180,7 +178,7 @@ export default function Routers() {
         mikrotikScript: string; router: RouterRow;
       }>(`/routers/${id}/reprovision`, { method: 'POST' });
       if (r.autoApplied) {
-        setToast({ ok: true, msg: `Reprovisioned ${name} — pushed via SSH, MikroTik self-applied` });
+        setToast({ ok: true, msg: `Reprovisioned ${name} â€” pushed via SSH, MikroTik self-applied` });
       } else {
         // Fall back: show the one-liner for manual paste via the success card.
         setResult({
@@ -201,7 +199,7 @@ export default function Routers() {
   const copy = async (text: string, preEl: HTMLElement | null) => {
     const result = await copyToClipboard(text, preEl);
     if (result === 'copied') setToast({ ok: true, msg: 'Copied to clipboard' });
-    else if (result === 'selected') setToast({ ok: true, msg: 'Text selected — press Ctrl+C to copy' });
+    else if (result === 'selected') setToast({ ok: true, msg: 'Text selected â€” press Ctrl+C to copy' });
     else setToast({ ok: false, msg: 'Could not copy. Click the box and use Ctrl+A then Ctrl+C.' });
   };
 
@@ -235,7 +233,7 @@ export default function Routers() {
           </div>
           <div style={{ flex: '0 0 auto' }}>
             <button disabled={!form.name || provisioning} onClick={provision}>
-              {provisioning ? 'Provisioning…' : 'Provision'}
+              {provisioning ? 'Provisioningâ€¦' : 'Provision'}
             </button>
           </div>
         </div>
@@ -244,15 +242,15 @@ export default function Routers() {
       {result && (
         <div className="card" style={{ borderColor: 'var(--ok)' }}>
           <h3 style={{ marginTop: 0 }}>
-            ✓ Router provisioned — tunnel IP <code>{result.router.wg_tunnel_ip}</code>
+            âœ“ Router provisioned â€” tunnel IP <code>{result.router.wg_tunnel_ip}</code>
           </h3>
           {result.vpsAutoAdded ? (
             <p className="sub" style={{ marginTop: 4 }}>
-              ✓ Peer added to VPS automatically. Paste ONE line on the MikroTik below.
+              âœ“ Peer added to VPS automatically. Paste ONE line on the MikroTik below.
             </p>
           ) : (
             <p className="sub" style={{ marginTop: 4 }}>
-              ⚠ wg-manager not configured on API — falling back to manual VPS paste.
+              âš  wg-manager not configured on API â€” falling back to manual VPS paste.
             </p>
           )}
 
@@ -307,8 +305,8 @@ export default function Routers() {
           {list.map((r) => (
             <tr key={r.id}>
               <td>{r.name}</td>
-              <td>{r.site ?? '—'}</td>
-              <td><code>{r.wg_tunnel_ip ?? '—'}</code></td>
+              <td>{r.site ?? 'â€”'}</td>
+              <td><code>{r.wg_tunnel_ip ?? 'â€”'}</code></td>
               <td><VpnPill status={r.vpn_status} /></td>
               <td title={r.last_handshake_at ?? ''}>{formatLastSeen(r.last_handshake_at)}</td>
               <td>
@@ -367,7 +365,7 @@ function ConfigureWizard(props: {
   wizard: WizardState;
   onClose: () => void;
   onToggleService: (s: 'pppoe' | 'hotspot') => void;
-  onTogglePort: (kind: 'pppoeIfaces' | 'hotspotIfaces', name: string) => void;
+  onTogglePort: (port: string) => void;
   onCidrChange: (v: string) => void;
   onApply: () => void;
 }) {
@@ -384,8 +382,8 @@ function ConfigureWizard(props: {
   const usablePorts = (w.detected?.interfaces ?? []).filter((i) => !i.isWan);
   const canApply =
     w.services.size > 0 &&
-    (!w.services.has('pppoe') || w.pppoeIfaces.size > 0) &&
-    (!w.services.has('hotspot') || (w.hotspotIfaces.size > 0 && /^\d+\.\d+\.\d+\.\d+\/\d+$/.test(w.hotspotNetwork)));
+    w.ports.size > 0 &&
+    (!w.services.has('hotspot') || /^\d+\.\d+\.\d+\.\d+\/\d+$/.test(w.hotspotNetwork));
 
   return (
     <div style={overlay} onClick={onClose}>
@@ -393,18 +391,22 @@ function ConfigureWizard(props: {
         <h2 style={{ marginTop: 0 }}>Configure {w.name}</h2>
 
         {w.step === 'detect' && (
-          <p className="sub">Detecting model + interfaces via the tunnel…</p>
+          <p className="sub">Detecting model + interfaces via the tunnelâ€¦</p>
         )}
 
         {w.step === 'select' && w.detected && (
           <>
             <p className="sub" style={{ marginBottom: 16 }}>
-              <strong>{w.detected.board}</strong> · RouterOS {w.detected.version} ·
-              hostname <code>{w.detected.hostname}</code> ·
-              WAN: <code>{w.detected.defaultGateway || '—'}</code>
+              <strong>{w.detected.board}</strong> Â· RouterOS {w.detected.version} Â·
+              hostname <code>{w.detected.hostname}</code> Â·
+              WAN: <code>{w.detected.defaultGateway || 'â€”'}</code>
             </p>
 
-            <h3 style={{ fontSize: 14, marginBottom: 8 }}>Select services</h3>
+            <h3 style={{ fontSize: 14, marginBottom: 8 }}>Services</h3>
+            <p className="sub" style={{ marginBottom: 8, fontSize: 12 }}>
+              Pick one or both. They share the same ports â€” PPPoE handles
+              subscriber dial-up; Hotspot intercepts walk-up browsers.
+            </p>
             <div className="row" style={{ marginBottom: 16 }}>
               <label style={{ flex: 1 }}>
                 <input
@@ -422,25 +424,40 @@ function ConfigureWizard(props: {
               </label>
             </div>
 
-            {w.services.has('pppoe') && (
-              <PortPicker
-                title="PPPoE ports"
-                ports={usablePorts}
-                selected={w.pppoeIfaces}
-                otherSelected={w.hotspotIfaces}
-                onToggle={(p) => onTogglePort('pppoeIfaces', p)}
-              />
-            )}
+            <h3 style={{ fontSize: 14, marginBottom: 8 }}>Ports</h3>
+            <p className="sub" style={{ marginBottom: 8, fontSize: 12 }}>
+              All ports below will be bridged together as <code>jtm-edge-bridge</code>.
+              WAN port is excluded. Pick the port(s) customers connect to.
+            </p>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 16 }}>
+              {usablePorts.length === 0 && <span className="sub">No usable ports detected.</span>}
+              {usablePorts.map((p) => (
+                <label
+                  key={p.name}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 6,
+                    padding: '6px 10px', borderRadius: 4,
+                    background: w.ports.has(p.name) ? 'rgba(56,189,248,0.15)' : 'transparent',
+                    border: '1px solid var(--border)', cursor: 'pointer',
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={w.ports.has(p.name)}
+                    onChange={() => onTogglePort(p.name)}
+                  />
+                  <span style={{ fontFamily: 'ui-monospace', fontSize: 12 }}>
+                    {p.name}{' '}
+                    <span style={{ color: 'var(--muted)' }}>
+                      {p.type}{p.running ? ' Â· up' : ' Â· down'}{p.inBridge ? ` Â· in ${p.inBridge}` : ''}
+                    </span>
+                  </span>
+                </label>
+              ))}
+            </div>
 
             {w.services.has('hotspot') && (
               <>
-                <PortPicker
-                  title="Hotspot ports"
-                  ports={usablePorts}
-                  selected={w.hotspotIfaces}
-                  otherSelected={w.pppoeIfaces}
-                  onToggle={(p) => onTogglePort('hotspotIfaces', p)}
-                />
                 <label>Hotspot network (CIDR)</label>
                 <input
                   value={w.hotspotNetwork}
@@ -458,13 +475,13 @@ function ConfigureWizard(props: {
         )}
 
         {w.step === 'applying' && (
-          <p className="sub">Pushing config via tunnel SSH…</p>
+          <p className="sub">Pushing config via tunnel SSHâ€¦</p>
         )}
 
         {w.step === 'done' && w.result && (
           <>
             <div className={`toast ${w.result.success ? 'ok' : 'err'}`}>
-              {w.result.success ? '✓ Applied successfully' : '✗ Apply failed'}
+              {w.result.success ? 'âœ“ Applied successfully' : 'âœ— Apply failed'}
             </div>
             <pre style={{
               background: 'var(--bg2,#0e1118)', padding: 10, borderRadius: 6,
@@ -480,53 +497,6 @@ function ConfigureWizard(props: {
   );
 }
 
-function PortPicker({
-  title, ports, selected, otherSelected, onToggle,
-}: {
-  title: string;
-  ports: DetectedRouter['interfaces'];
-  selected: Set<string>;
-  otherSelected: Set<string>;
-  onToggle: (port: string) => void;
-}) {
-  return (
-    <>
-      <h4 style={{ fontSize: 13, marginTop: 12, marginBottom: 6 }}>{title}</h4>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 12 }}>
-        {ports.length === 0 && <span className="sub">No usable ports detected.</span>}
-        {ports.map((p) => {
-          const isOther = otherSelected.has(p.name);
-          return (
-            <label
-              key={p.name}
-              style={{
-                display: 'flex', alignItems: 'center', gap: 6,
-                padding: '6px 10px', borderRadius: 4,
-                background: selected.has(p.name) ? 'rgba(56,189,248,0.15)' : 'transparent',
-                border: '1px solid var(--border)', cursor: isOther ? 'not-allowed' : 'pointer',
-                opacity: isOther ? 0.4 : 1,
-              }}
-            >
-              <input
-                type="checkbox"
-                disabled={isOther}
-                checked={selected.has(p.name)}
-                onChange={() => onToggle(p.name)}
-              />
-              <span style={{ fontFamily: 'ui-monospace', fontSize: 12 }}>
-                {p.name}{' '}
-                <span style={{ color: 'var(--muted)' }}>
-                  {p.type}{p.running ? ' · up' : ' · down'}{p.inBridge ? ` · in ${p.inBridge}` : ''}
-                </span>
-              </span>
-            </label>
-          );
-        })}
-      </div>
-    </>
-  );
-}
-
 function VpnPill({ status }: { status: string }) {
   const cls =
     status === 'connected' ? 'online' :
@@ -538,7 +508,7 @@ function VpnPill({ status }: { status: string }) {
 }
 
 function formatLastSeen(iso: string | null): string {
-  if (!iso) return '—';
+  if (!iso) return 'â€”';
   const sec = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
   if (sec < 60) return `${sec}s ago`;
   if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
