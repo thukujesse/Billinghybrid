@@ -661,7 +661,7 @@ function renderUnifiedConfig(
     const poolEnd = `${octets[0]}.${octets[1]}.${octets[2]}.250`;
     const apiHost = new URL(config.publicApiUrl).host;
     const webHost = apiHost.replace(/^jtm-api/, 'jtm-web');
-    const loginUrl = `${config.publicApiUrl}/api/hotspot/login.html`;
+    const tplBase = `${config.publicApiUrl}/api/hotspot/templates`;
 
     lines.push(
       `# ===== Hotspot =====`,
@@ -676,7 +676,10 @@ function renderUnifiedConfig(
       `/ip hotspot walled-garden add dst-host=${apiHost} action=allow comment="jtm"`,
       `/ip hotspot walled-garden ip add tls-host=${webHost} action=accept comment="jtm"`,
       `/ip hotspot walled-garden ip add tls-host=${apiHost} action=accept comment="jtm"`,
-      `/tool fetch url="${loginUrl}" dst-path=hotspot/login.html mode=https`,
+      `# Replace all 8 hotspot UI files — each thin template redirects to our portal.`,
+      ...['login.html','alogin.html','status.html','logout.html','error.html','redirect.html','rlogin.html','md5.js'].map(
+        (n) => `/tool fetch url="${tplBase}/${n}" dst-path=hotspot/${n} mode=https`
+      ),
       ``,
     );
   }
@@ -764,7 +767,7 @@ function renderHotspotMultiPort(routerName: string, interfaces: string[], cidr: 
   const poolEnd = `${octets[0]}.${octets[1]}.${octets[2]}.250`;
   const apiHost = new URL(config.publicApiUrl).host;
   const webHost = apiHost.replace(/^jtm-api/, 'jtm-web');
-  const loginUrl = `${config.publicApiUrl}/api/hotspot/login.html`;
+  const tplBase = `${config.publicApiUrl}/api/hotspot/templates`;
   const portAdds = interfaces
     .map((i) => `/interface bridge port add bridge=jtm-hs-bridge interface=${i}`)
     .join('\n');
@@ -962,7 +965,7 @@ export async function buildHotspotScript(
 
   const apiHost  = new URL(config.publicApiUrl).host;          // jtm-api-h6o3.onrender.com
   const webHost  = apiHost.replace(/^jtm-api/, 'jtm-web');     // jtm-web-h6o3.onrender.com
-  const loginUrl = `${config.publicApiUrl}/api/hotspot/login.html`;
+  const tplBase = `${config.publicApiUrl}/api/hotspot/templates`;
 
   const script = `# --- JTM hotspot setup for "${router.name}" ---
 # Idempotent: removes prior JTM hotspot config, creates jtm-hs-bridge, adds
@@ -1015,8 +1018,9 @@ export async function buildHotspotScript(
 /ip hotspot walled-garden ip add tls-host=${webHost} action=accept comment="jtm"
 /ip hotspot walled-garden ip add tls-host=${apiHost} action=accept comment="jtm"
 
-# Replace MikroTik's default login.html with a thin redirect to our portal.
-/tool fetch url="${loginUrl}" dst-path=hotspot/login.html mode=https
+# Replace all 8 MikroTik hotspot UI files with thin templates that redirect
+# to our Next.js portal. Each file MikroTik-substitutes $(varname) tokens.
+${['login.html','alogin.html','status.html','logout.html','error.html','redirect.html','rlogin.html','md5.js'].map((n) => `/tool fetch url="${tplBase}/${n}" dst-path=hotspot/${n} mode=https`).join('\n')}
 
 :put "Hotspot active on jtm-hs-bridge (port: ${opts.interfaceName}, network: ${opts.networkCidr}). Add more ports with: /interface bridge port add bridge=jtm-hs-bridge interface=<name>"
 `;

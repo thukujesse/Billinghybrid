@@ -35,6 +35,7 @@ import { config } from '../config.js';
 import * as radius from '../domains/radius/service.js';
 import * as customers from '../domains/customers/service.js';
 import * as hotspot from '../domains/hotspot/service.js';
+import { getTemplate as getHotspotTemplate, TEMPLATE_NAMES as HOTSPOT_TEMPLATE_NAMES } from '../domains/hotspot/templates.js';
 
 export const api = Router();
 
@@ -569,27 +570,27 @@ api.post('/routers/:id/hotspot-script', requireAuth('admin', 'staff'), ah(async 
 }));
 
 // Captive portal landing page that MikroTik serves to unauthenticated clients.
-// Public — gets fetched by the MikroTik itself and by client browsers via the
-// hotspot redirect. The HTML JS-redirects to our actual portal at /hotspot.
-api.get('/hotspot/login.html', ah(async (_req, res) => {
-  const webHost = new URL(config.publicApiUrl).host.replace(/^jtm-api/, 'jtm-web');
-  // $(varname) is MikroTik's hotspot variable substitution — replaced by the
-  // MikroTik when it serves this file. We pass them through to our portal.
-  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Connecting</title>
-<style>body{font-family:system-ui,sans-serif;text-align:center;padding-top:30vh;color:#444}</style>
-</head><body><p>Redirecting to login&hellip;</p>
-<script>
-var p = new URLSearchParams({
-  'link-login-only': '$(link-login-only)',
-  'link-orig': '$(link-orig)',
-  'mac': '$(mac)',
-  'ip': '$(ip)'
-});
-location.href = 'https://${webHost}/hotspot?' + p.toString();
-</script></body></html>`;
-  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+// Public — MikroTik fetches each of the 8 hotspot UI files from here during
+// provisioning. Each template MikroTik-substitutes $(varname) tokens then
+// JS-redirects the client browser to our Next.js portal at /hotspot. See
+// domains/hotspot/templates.ts for the per-file content.
+api.get('/hotspot/templates/:name', ah(async (req, res) => {
+  const tpl = getHotspotTemplate(req.params.name);
+  if (!tpl) {
+    res.status(404).type('text/plain').send('unknown template');
+    return;
+  }
+  res.setHeader('Content-Type', tpl.contentType);
   res.setHeader('Cache-Control', 'no-store');
-  res.send(html);
+  res.send(tpl.body);
+}));
+// Back-compat: routers provisioned before the bundle existed fetch
+// /api/hotspot/login.html. Serve the new login template at that path too.
+api.get('/hotspot/login.html', ah(async (_req, res) => {
+  const tpl = getHotspotTemplate('login.html');
+  res.setHeader('Content-Type', tpl!.contentType);
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(tpl!.body);
 }));
 
 // Identify: called by the MikroTik itself (no auth — gated by the unguessable
