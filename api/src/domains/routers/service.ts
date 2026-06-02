@@ -468,7 +468,8 @@ export async function detectRouter(routerId: string): Promise<DetectedRouter> {
 
   // Build wan candidates: the default-route gateway itself, and the bridge
   // it's in (so we exclude both from the picker).
-  const ifaceLines = [...out.matchAll(/^IFACE:([^|]+)\|([^|]+)\|(true|false)\s*$/gm)];
+  // Some RouterOS versions emit boolean as true/false, others as yes/no.
+  const ifaceLines = [...out.matchAll(/^IFACE:([^|]+)\|([^|]+)\|(\S+)\s*$/gm)];
   const bridgeOf = new Map<string, string>();
   for (const m of out.matchAll(/^BRPORT:([^=]+)=(.+)$/gm)) {
     bridgeOf.set(m[1].trim(), m[2].trim());
@@ -481,7 +482,7 @@ export async function detectRouter(routerId: string): Promise<DetectedRouter> {
     .map((m) => {
       const name = m[1].trim();
       const type = m[2].trim();
-      const running = m[3] === 'true';
+      const running = m[3] === 'true' || m[3] === 'yes';
       const inBridge = bridgeOf.get(name) ?? null;
       const isWan = name === defaultGateway || (!!wanBridge && inBridge === wanBridge);
       return { name, type, running, isWan, inBridge };
