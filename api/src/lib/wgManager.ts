@@ -64,7 +64,11 @@ export async function execOnRouter(
   const r = await fetch(`${config.wireguard.managerUrl}/routers/${tunnelIp}/exec`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeader() },
-    body: JSON.stringify({ command, sshPort: opts.sshPort, user: opts.user }),
+    body: JSON.stringify({
+      command,
+      sshPort: opts.sshPort,
+      user: opts.user ?? 'jtm-mgmt',
+    }),
   });
   const body = (await r.json()) as ExecResult & { error?: string };
   if (!r.ok && r.status !== 502) {
