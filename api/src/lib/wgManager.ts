@@ -67,7 +67,7 @@ export async function execOnRouter(
     body: JSON.stringify({
       command,
       sshPort: opts.sshPort,
-      user: opts.user ?? 'jtm-mgmt',
+      user: opts.user ?? 'hub-mgmt',
     }),
   });
   const body = (await r.json()) as ExecResult & { error?: string };
@@ -78,12 +78,12 @@ export async function execOnRouter(
 }
 
 /**
- * Probe SSH ports (22, 21, 2222, 8022) for one that accepts our jtm-mgmt key
+ * Probe SSH ports (22, 21, 2222, 8022) for one that accepts our hub-mgmt key
  * auth. Returns the working port or null if none respond.
  */
 export async function probeSshPort(
   tunnelIp: string,
-  user = 'jtm-mgmt'
+  user = 'hub-mgmt'
 ): Promise<number | null> {
   const r = await fetch(
     `${config.wireguard.managerUrl}/routers/${tunnelIp}/probe-ssh`,

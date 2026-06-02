@@ -205,7 +205,7 @@ class Handler(BaseHTTPRequestHandler):
             except (json.JSONDecodeError, ValueError) as e:
                 return self._send_json(400, {'error': str(e)})
 
-        # POST /routers/<tunnel-ip>/probe-ssh  body: {"user": "jtm-mgmt"}
+        # POST /routers/<tunnel-ip>/probe-ssh  body: {"user": "hub-mgmt"}
         # Probe common SSH ports (22, 21, 2222, 8022) for one that accepts our
         # key-auth. Returns the port + result or null.
         m = re.match(r'^/routers/([\d.]+)/probe-ssh$', self.path)

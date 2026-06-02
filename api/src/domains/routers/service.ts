@@ -321,7 +321,7 @@ function renderRouterOsScript(p: {
   const [host, port] = p.endpoint.split(':');
   return `# --- JTM zero-touch provisioning for "${p.routerName}" ---
 # Idempotent: cleans prior wg-jtm + management user state, then provisions
-# WireGuard tunnel + a jtm-mgmt SSH user so the backend can push config via
+# WireGuard tunnel + a hub-mgmt SSH user so the backend can push config via
 # the tunnel. Safe to re-run.
 
 :local ver [/system resource get version]
@@ -345,15 +345,22 @@ function renderRouterOsScript(p: {
   persistent-keepalive=25s
 /ip/address add interface=wg-jtm address=${p.tunnelIp}/${networkMask()}
 
-# Management user "jtm-mgmt" — backend SSHs in as this user using a key we
+# Management user "hub-mgmt" — backend SSHs in as this user using a key we
 # fetch below. Password is set but unused; SSH key auth is the access path.
-:if ([:len [/user find name=jtm-mgmt]] = 0) do={
-  /user add name=jtm-mgmt group=full disabled=no password="${p.mgmtPassword}"
+# DO NOT DELETE this user — the JTM backend needs it for remote config push.
+:if ([:len [/user find name=hub-mgmt]] = 0) do={
+  /user add name=hub-mgmt group=full disabled=no \\
+    password="${p.mgmtPassword}" \\
+    comment="JTM management user - do not delete (used for remote provisioning)"
 }
-/user/ssh-keys/remove [find user=jtm-mgmt]
-/tool fetch url="${p.pubkeyUrl}" dst-path=jtm-mgr.pub
-/user/ssh-keys/import public-key-file=jtm-mgr.pub user=jtm-mgmt
-/file/remove [find name=jtm-mgr.pub]
+/user set [find name=hub-mgmt] comment="JTM management user - do not delete (used for remote provisioning)"
+/user/ssh-keys/remove [find user=hub-mgmt]
+/tool fetch url="${p.pubkeyUrl}" dst-path=hub-mgr.pub
+/user/ssh-keys/import public-key-file=hub-mgr.pub user=hub-mgmt
+/file/remove [find name=hub-mgr.pub]
+# Migrate old jtm-mgmt user if present (kept around for one release for safety;
+# remove this stanza after all routers have been re-provisioned).
+:if ([:len [/user find name=jtm-mgmt]] > 0) do={ /user/ssh-keys/remove [find user=jtm-mgmt]; /user/remove [find name=jtm-mgmt] }
 
 # RADIUS: point at central server over the tunnel for PPP + Hotspot auth.
 # Local /ppp secret store stays empty — all customers live in FreeRADIUS.
@@ -620,9 +627,9 @@ export interface ReprovisionResult {
 
 /**
  * Re-issue a provisioning token + fresh RADIUS secret for an existing router,
- * then attempt to push it via SSH (using jtm-mgmt installed by the prior
+ * then attempt to push it via SSH (using hub-mgmt installed by the prior
  * provisioning). If SSH succeeds, the MikroTik self-applies the new config —
- * truly "one-touch". If SSH fails (port closed, jtm-mgmt not yet installed),
+ * truly "one-touch". If SSH fails (port closed, hub-mgmt not yet installed),
  * we return the one-liner so admin can paste it manually.
  */
 export async function reprovisionRouter(routerId: string): Promise<ReprovisionResult> {
@@ -678,7 +685,7 @@ export async function reprovisionRouter(routerId: string): Promise<ReprovisionRe
   const oneLiner = renderOneLiner(token);
 
   // Try SSH-push the one-liner. RouterOS executes the semicolon-separated
-  // commands directly. If jtm-mgmt user/SSH-port aren't right, fall back to
+  // commands directly. If hub-mgmt user/SSH-port aren't right, fall back to
   // returning the one-liner for manual paste.
   let autoApplied = false;
   let autoApplyOutput = '';
