@@ -384,15 +384,9 @@ function renderRouterOsScript(p: {
 # IP only. Same comment on both ("jtm-fw allow-tunnel-mgmt"). Idempotent —
 # old rules with this comment are wiped first.
 /ip firewall filter remove [find comment="jtm-fw allow-tunnel-mgmt"]
-/ip firewall filter add chain=input action=accept \\
-  src-address=${p.radiusServerIp} comment="jtm-fw allow-tunnel-mgmt"
-/ip firewall filter add chain=output action=accept \\
-  dst-address=${p.radiusServerIp} comment="jtm-fw allow-tunnel-mgmt"
-:do {
-  :foreach r in=[/ip firewall filter find comment="jtm-fw allow-tunnel-mgmt"] do={
-    /ip firewall filter move \$r destination=0
-  }
-} on-error={}
+/ip firewall filter add chain=input action=accept src-address=${p.radiusServerIp} comment="jtm-fw allow-tunnel-mgmt"
+/ip firewall filter add chain=output action=accept dst-address=${p.radiusServerIp} comment="jtm-fw allow-tunnel-mgmt"
+:foreach r in=[/ip firewall filter find comment="jtm-fw allow-tunnel-mgmt"] do={ :do { /ip firewall filter move $r destination=0 } on-error={} }
 
 # Security: lock the legacy /ip service api to the tunnel only (we don't use
 # it — SSH is our channel — but if it's later enabled, restrict source).
@@ -433,11 +427,7 @@ function renderRouterOsScript(p: {
     /ip firewall filter remove [find comment="jtm-fw allow-tunnel-mgmt"]
     /ip firewall filter add chain=input action=accept src-address=${p.radiusServerIp} comment="jtm-fw allow-tunnel-mgmt"
     /ip firewall filter add chain=output action=accept dst-address=${p.radiusServerIp} comment="jtm-fw allow-tunnel-mgmt"
-    :do {
-      :foreach r in=[/ip firewall filter find comment="jtm-fw allow-tunnel-mgmt"] do={
-        /ip firewall filter move \$r destination=0
-      }
-    } on-error={}
+    :foreach r in=[/ip firewall filter find comment="jtm-fw allow-tunnel-mgmt"] do={ :do { /ip firewall filter move $r destination=0 } on-error={} }
     :log warning "jtm-reconcile: restored tunnel-mgmt lifeline rules"
   }
   :if ([:len [/radius find comment=jtm-radius]] = 0) do={
@@ -674,7 +664,7 @@ function renderUnifiedConfig(
       `/ip dhcp-server network add address=${hotspotCidr} gateway=${gateway} dns-server=${gateway} comment="jtm-hs"`,
       `/ip dhcp-server add name=jtm-hs-dhcp interface=jtm-edge-bridge address-pool=jtm-hs-pool lease-time=1h disabled=no`,
       `/ip dns set allow-remote-requests=yes servers=1.1.1.1,8.8.8.8`,
-      `/ip hotspot profile add name=jtm-hotspot hotspot-address=${gateway} dns-name=jtm-hotspot use-radius=yes login-by=http-pap`,
+      `/ip hotspot profile add name=jtm-hotspot hotspot-address=${gateway} dns-name=hotspot.jtm use-radius=yes login-by=http-pap`,
       `/ip hotspot add name=jtm-hs interface=jtm-edge-bridge address-pool=jtm-hs-pool profile=jtm-hotspot disabled=no`,
       `/ip hotspot walled-garden add dst-host=${webHost} action=allow comment="jtm"`,
       `/ip hotspot walled-garden add dst-host=${apiHost} action=allow comment="jtm"`,
@@ -720,10 +710,8 @@ function renderUnifiedConfig(
     `# only (no interface match, no broad subnet). Survives wg-jtm rename.`,
     `/ip firewall filter add chain=input action=accept src-address=${radiusServerIp} comment="jtm-fw allow-tunnel-mgmt"`,
     `/ip firewall filter add chain=output action=accept dst-address=${radiusServerIp} comment="jtm-fw allow-tunnel-mgmt"`,
-    `# Move all jtm-fw accept rules to top (above any drops). Best-effort.`,
-    `:foreach r in=[/ip firewall filter find comment~"jtm-fw allow"] do={`,
-    `  :do { /ip firewall filter move \$r destination=0 } on-error={}`,
-    `}`,
+    `# Move all jtm-fw accept rules to top (above any drops). Best-effort, single-line so SSH treats it as one command.`,
+    `:foreach r in=[/ip firewall filter find comment~"jtm-fw allow"] do={ :do { /ip firewall filter move $r destination=0 } on-error={} }`,
     `:put "[Firewall] done"`,
     ``,
   );
@@ -812,7 +800,7 @@ ${portAdds}
 /ip dns set allow-remote-requests=yes servers=1.1.1.1,8.8.8.8
 
 /ip hotspot profile add name=jtm-hotspot \\
-  hotspot-address=${gateway} dns-name=jtm-hotspot \\
+  hotspot-address=${gateway} dns-name=hotspot.jtm \\
   use-radius=yes login-by=http-pap
 
 /ip hotspot add name=jtm-hs interface=jtm-hs-bridge \\
@@ -1024,7 +1012,7 @@ export async function buildHotspotScript(
 /ip dns set allow-remote-requests=yes servers=1.1.1.1,8.8.8.8
 
 /ip hotspot profile add name=jtm-hotspot \\
-  hotspot-address=${gateway} dns-name=jtm-hotspot \\
+  hotspot-address=${gateway} dns-name=hotspot.jtm \\
   use-radius=yes login-by=http-pap
 
 /ip hotspot add name=jtm-hs \\
