@@ -57,6 +57,9 @@ export async function stkPush(input: {
   amountKes: number;
   accountReference: string;
   description?: string;
+  /** Per-call callback override. Hotspot purchases route to a different
+   * endpoint than subscriber-linked payments, so each caller specifies. */
+  callbackUrl?: string;
 }): Promise<StkPushResult> {
   const token = await getAccessToken();
   const ts = timestamp();
@@ -74,7 +77,7 @@ export async function stkPush(input: {
       PartyA: normalizeMsisdn(input.phone),
       PartyB: config.mpesa.shortcode,
       PhoneNumber: normalizeMsisdn(input.phone),
-      CallBackURL: config.mpesa.callbackUrl,
+      CallBackURL: input.callbackUrl ?? config.mpesa.callbackUrl,
       AccountReference: input.accountReference.slice(0, 12),
       TransactionDesc: (input.description ?? 'Payment').slice(0, 13),
     }),

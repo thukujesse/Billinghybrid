@@ -158,6 +158,7 @@ export async function initPurchase(input: {
       amountKes,
       accountReference: phone.slice(-9),
       description: plan.name.slice(0, 13),
+      callbackUrl: `${config.publicApiUrl}/api/hotspot/mpesa/callback`,
     });
     checkoutRequestId = res.checkoutRequestId;
     customerMessage = res.customerMessage;
