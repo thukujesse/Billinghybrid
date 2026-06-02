@@ -227,32 +227,58 @@ export async function completePurchase(input: {
   receipt?: string;
   failureReason?: string;
 }): Promise<void> {
-  await withTransaction(async (c) => {
-    const r = await c.query<{
-      id: string; plan_id: string; phone: string;
-      validity_days: number;
-      speed_down_kbps: number | null; speed_up_kbps: number | null;
-      status: string;
-    }>(
-      `SELECT hp.id, hp.plan_id, hp.phone, hp.status,
-              p.validity_days, p.speed_down_kbps, p.speed_up_kbps
-         FROM hotspot_purchases hp
-         JOIN plans p ON p.id = hp.plan_id
-        WHERE hp.checkout_request_id = $1 FOR UPDATE OF hp`,
-      [input.checkoutRequestId]
-    );
-    const row = r.rows[0];
-    if (!row) return; // unknown checkoutRequestId, ignore (might be a non-hotspot payment)
-    if (row.status !== 'pending') return; // idempotent — already settled
+  // Pull out of the transaction so we can call setServiceStatus (which has its
+  // own transactions) for renew-flow purchases.
+  const r = await query<{
+    id: string; plan_id: string; phone: string;
+    validity_days: number;
+    speed_down_kbps: number | null; speed_up_kbps: number | null;
+    status: string;
+    service_id: string | null;
+  }>(
+    `SELECT hp.id, hp.plan_id, hp.phone, hp.status, hp.service_id,
+            p.validity_days, p.speed_down_kbps, p.speed_up_kbps
+       FROM hotspot_purchases hp
+       JOIN plans p ON p.id = hp.plan_id
+      WHERE hp.checkout_request_id = $1`,
+    [input.checkoutRequestId]
+  );
+  const row = r.rows[0];
+  if (!row) return; // unknown checkoutRequestId, ignore (might be non-hotspot)
+  if (row.status !== 'pending') return; // idempotent — already settled
 
-    if (!input.success) {
-      await c.query(
-        `UPDATE hotspot_purchases SET status='failed', failure_reason=$2, completed_at=now()
-          WHERE id=$1`,
-        [row.id, input.failureReason ?? 'STK push rejected']
-      );
-      return;
+  if (!input.success) {
+    await query(
+      `UPDATE hotspot_purchases SET status='failed', failure_reason=$2, completed_at=now()
+        WHERE id=$1`,
+      [row.id, input.failureReason ?? 'STK push rejected']
+    );
+    return;
+  }
+
+  // Renew flow: payment restores an existing service. Mark purchase paid,
+  // then setServiceStatus -> active (which syncs radcheck + clears jtm-expired
+  // address-list across all managed MikroTiks).
+  if (row.service_id) {
+    await query(
+      `UPDATE hotspot_purchases
+          SET status='success', receipt=$2, completed_at=now()
+        WHERE id=$1`,
+      [row.id, input.receipt ?? null]
+    );
+    // Dynamic import to avoid circular dependency (customers/service.ts also
+    // pushes radius things via this same callback path).
+    const { setServiceStatus } = await import('../customers/service.js');
+    try {
+      await setServiceStatus(row.service_id, 'active');
+    } catch (err) {
+      console.error('[renew] setServiceStatus failed:', (err as Error).message);
     }
+    return;
+  }
+
+  // Guest hotspot flow (original): finalize by minting fresh credentials.
+  await withTransaction(async (c) => {
 
     // Success: generate session credentials + radcheck/radreply.
     const username = 'hs-' + crypto.randomBytes(4).toString('hex');

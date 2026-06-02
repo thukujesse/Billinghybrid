@@ -35,6 +35,7 @@ import { config } from '../config.js';
 import * as radius from '../domains/radius/service.js';
 import * as customers from '../domains/customers/service.js';
 import * as hotspot from '../domains/hotspot/service.js';
+import * as renew from '../domains/renew/service.js';
 import { getTemplate as getHotspotTemplate, TEMPLATE_NAMES as HOTSPOT_TEMPLATE_NAMES } from '../domains/hotspot/templates.js';
 
 export const api = Router();
@@ -448,6 +449,30 @@ api.put('/settings/mpesa', requireAuth('admin'), ah(async (req, res) => {
 // ---------------------- Hotspot captive portal ----------------------
 // Public endpoint — gated by the voucher code being unguessable, not auth.
 // The captive portal page calls this with the voucher code from the customer.
+// ---------------------- Expired captive renew ----------------------
+// Public — customer reaches /renew via the captive redirect. We look up
+// their service and offer M-Pesa pay to restore it.
+api.get('/renew/info', ah(async (req, res) => {
+  res.json(await renew.getInfo({
+    customer: typeof req.query.customer === 'string' ? req.query.customer : undefined,
+    service: typeof req.query.service === 'string' ? req.query.service : undefined,
+    username: typeof req.query.username === 'string' ? req.query.username : undefined,
+    ip: typeof req.query.ip === 'string' ? req.query.ip : undefined,
+  }));
+}));
+api.post('/renew/pay', ah(async (req, res) => {
+  const body = parse(z.object({
+    plan_id: z.string().uuid(),
+    phone: z.string().min(7),
+    service_id: z.string().uuid(),
+  }), req.body);
+  res.json(await renew.pay({
+    planId: body.plan_id,
+    phone: body.phone,
+    serviceId: body.service_id,
+  }));
+}));
+
 api.post('/hotspot/redeem', ah(async (req, res) => {
   const body = parse(z.object({
     code: z.string().min(1),
