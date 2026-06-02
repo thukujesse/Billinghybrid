@@ -541,8 +541,12 @@ export async function buildHotspotScript(
   const webHost  = apiHost.replace(/^jtm-api/, 'jtm-web');     // jtm-web-h6o3.onrender.com
   const loginUrl = `${config.publicApiUrl}/api/hotspot/login.html`;
 
-  const script = `# --- JTM hotspot setup for "${router.name}" on ${opts.interfaceName} ---
-# Idempotent: removes prior JTM hotspot config, then provisions fresh.
+  const script = `# --- JTM hotspot setup for "${router.name}" ---
+# Idempotent: removes prior JTM hotspot config, creates jtm-hs-bridge, adds
+# ${opts.interfaceName} as the first port, runs DHCP + hotspot on the bridge.
+# Add more bridge ports later (Wi-Fi/Ethernet) via:
+#   /interface bridge port add bridge=jtm-hs-bridge interface=<other>
+# IMPORTANT: ${opts.interfaceName} must NOT already be in another bridge.
 
 /ip hotspot remove [find name=jtm-hs]
 /ip hotspot profile remove [find name=jtm-hotspot]
@@ -552,15 +556,21 @@ export async function buildHotspotScript(
 /ip hotspot walled-garden remove [find comment="jtm"]
 /ip hotspot walled-garden ip remove [find comment="jtm"]
 /ip address remove [find comment="jtm-hs"]
+/interface bridge port remove [find bridge=jtm-hs-bridge]
+/interface bridge remove [find name=jtm-hs-bridge]
 
+# Bridge — hotspot binds here so we can add more ports later without rework.
+/interface bridge add name=jtm-hs-bridge protocol-mode=none auto-mac=yes
+/interface bridge port add bridge=jtm-hs-bridge interface=${opts.interfaceName}
+
+# IP, pool, DHCP, DNS all hang off the bridge.
 /ip pool add name=jtm-hs-pool ranges=${poolStart}-${poolEnd}
-/ip address add interface=${opts.interfaceName} address=${gateway}/${prefix} comment="jtm-hs"
+/ip address add interface=jtm-hs-bridge address=${gateway}/${prefix} comment="jtm-hs"
 
-# DHCP so devices connecting to the hotspot interface actually get an IP.
-# Without this the captive portal can never intercept — devices wouldn't
-# even know what gateway to talk to.
+# DHCP — devices connecting to any bridge port get an IP from the pool.
+# Without this the captive portal never intercepts (no IP = no gateway).
 /ip dhcp-server network add address=${opts.networkCidr} gateway=${gateway} dns-server=${gateway} comment="jtm-hs"
-/ip dhcp-server add name=jtm-hs-dhcp interface=${opts.interfaceName} \\
+/ip dhcp-server add name=jtm-hs-dhcp interface=jtm-hs-bridge \\
   address-pool=jtm-hs-pool lease-time=1h disabled=no
 
 # Make MikroTik resolve DNS for hotspot clients (so the redirect to the
@@ -572,7 +582,7 @@ export async function buildHotspotScript(
   use-radius=yes login-by=http-pap
 
 /ip hotspot add name=jtm-hs \\
-  interface=${opts.interfaceName} \\
+  interface=jtm-hs-bridge \\
   address-pool=jtm-hs-pool \\
   profile=jtm-hotspot disabled=no
 
@@ -585,7 +595,7 @@ export async function buildHotspotScript(
 # Replace MikroTik's default login.html with a thin redirect to our portal.
 /tool fetch url="${loginUrl}" dst-path=hotspot/login.html mode=https
 
-:put "Hotspot active on ${opts.interfaceName} (${opts.networkCidr}). Connect a device + open any HTTP page."
+:put "Hotspot active on jtm-hs-bridge (port: ${opts.interfaceName}, network: ${opts.networkCidr}). Add more ports with: /interface bridge port add bridge=jtm-hs-bridge interface=<name>"
 `;
   return { script };
 }
