@@ -19,6 +19,10 @@ export interface Router {
   vpn_status: 'pending' | 'connected' | 'disconnected';
   last_handshake_at: string | null;
   ssh_port: number;
+  brand_slug: string | null;
+  brand_name: string | null;
+  brand_color: string | null;
+  brand_tagline: string | null;
 }
 
 export interface DetectedRouter {
@@ -42,6 +46,7 @@ export interface DetectedRouter {
 // derived from last_handshake_at freshness so it's always current.
 const SAFE_COLS = `id, name, host, api_port, type, site, status, created_at,
   wg_public_key, wg_tunnel_ip, last_handshake_at, ssh_port,
+  brand_slug, brand_name, brand_color, brand_tagline,
   CASE
     WHEN last_handshake_at IS NULL THEN 'pending'
     WHEN last_handshake_at > now() - interval '3 minutes' THEN 'connected'
@@ -591,7 +596,8 @@ export async function configureServices(
     router.name,
     input.services,
     input.ports,
-    input.hotspotNetwork ?? ''
+    input.hotspotNetwork ?? '',
+    router.brand_slug ?? router.id
   );
 
   const result = await wgManager.execOnRouter(router.wg_tunnel_ip, script, { sshPort });
@@ -606,7 +612,8 @@ function renderUnifiedConfig(
   routerName: string,
   services: string[],
   ports: string[],
-  hotspotCidr: string
+  hotspotCidr: string,
+  brandSlug: string
 ): string {
   const wantsPppoe = services.includes('pppoe');
   const wantsHotspot = services.includes('hotspot');
@@ -660,8 +667,8 @@ function renderUnifiedConfig(
     const gateway = `${octets[0]}.${octets[1]}.${octets[2]}.1`;
     const poolStart = `${octets[0]}.${octets[1]}.${octets[2]}.10`;
     const poolEnd = `${octets[0]}.${octets[1]}.${octets[2]}.250`;
-    const apiHost = new URL(config.publicApiUrl).host;
-    const webHost = apiHost.replace(/^jtm-api/, 'jtm-web');
+    const portalHost = config.portal.host;
+    const portalIp = config.portal.ip;
     const tplBase = `${config.publicApiUrl}/api/hotspot/templates`;
 
     lines.push(
@@ -673,13 +680,15 @@ function renderUnifiedConfig(
       `/ip dns set allow-remote-requests=yes servers=1.1.1.1,8.8.8.8`,
       `/ip hotspot profile add name=jtm-hotspot hotspot-address=${gateway} dns-name=hotspot.jtm use-radius=yes login-by=http-pap`,
       `/ip hotspot add name=jtm-hs interface=jtm-edge-bridge address-pool=jtm-hs-pool profile=jtm-hotspot disabled=no`,
-      `/ip hotspot walled-garden add dst-host=${webHost} action=allow comment="jtm"`,
-      `/ip hotspot walled-garden add dst-host=${apiHost} action=allow comment="jtm"`,
-      `/ip hotspot walled-garden ip add tls-host=${webHost} action=accept comment="jtm"`,
-      `/ip hotspot walled-garden ip add tls-host=${apiHost} action=accept comment="jtm"`,
+      `# Walled-garden by stable VPS IP — works on every RouterOS version`,
+      `# (tls-host needs 7.7+). dst-host rule allows HTTP for older clients.`,
+      `/ip hotspot walled-garden add dst-host=${portalHost} action=allow comment="jtm"`,
+      `/ip hotspot walled-garden ip add dst-address=${portalIp} dst-port=443 protocol=tcp action=accept comment="jtm"`,
+      `/ip hotspot walled-garden ip add dst-address=${portalIp} dst-port=80 protocol=tcp action=accept comment="jtm"`,
       `# Replace all 8 hotspot UI files — each thin template redirects to our portal.`,
+      `# slug=${brandSlug} is baked in so the portal page knows which venue's branding to apply.`,
       ...['login.html','alogin.html','status.html','logout.html','error.html','redirect.html','rlogin.html','md5.js'].map(
-        (n) => `/tool fetch url="${tplBase}/${n}" dst-path=hotspot/${n} mode=https`
+        (n) => `/tool fetch url="${tplBase}/${n}?slug=${encodeURIComponent(brandSlug)}" dst-path=hotspot/${n} mode=https`
       ),
       `# NAT masquerade for hotspot pool — without this, hotspot clients have no internet.`,
       `/ip firewall nat remove [find comment="jtm-nat hotspot"]`,
@@ -691,15 +700,15 @@ function renderUnifiedConfig(
   // ---- JTM-tagged firewall rules (walled-garden + expired block) ----
   // Always added (regardless of services) so suspend/restore has teeth. All
   // are commented "jtm-fw" so cleanup-on-reapply finds them.
-  const apiHost = new URL(config.publicApiUrl).host;
-  const webHost = apiHost.replace(/^jtm-api/, 'jtm-web');
+  const portalHost = config.portal.host;
+  const portalIp = config.portal.ip;
   const radiusServerIp = config.wireguard.network.split('/')[0].replace(/0\.0$/, '0.1');
   lines.push(
     `:put "[Firewall] portal allow-list + DNS + expired-reject + mgmt lifeline..."`,
-    `# Resolved portal hostnames into address-list so HTTPS (no SNI inspection)`,
-    `# is allowed unconditionally even when other rules would reject.`,
-    `/ip firewall address-list add list=jtm-portal address=${webHost} comment="jtm-fw portal"`,
-    `/ip firewall address-list add list=jtm-portal address=${apiHost} comment="jtm-fw portal"`,
+    `# Portal IP into address-list so HTTPS (no SNI inspection) is allowed`,
+    `# unconditionally even when other rules would reject. Single stable IP`,
+    `# (VPS Caddy proxy) — Render's edge IPs rotate, this one doesn't.`,
+    `/ip firewall address-list add list=jtm-portal address=${portalIp} comment="jtm-fw portal"`,
     `# ORDER MATTERS: allow rules MUST be above reject rules. We add reject`,
     `# first so the allows can use place-before=<reject-id> to land above them.`,
     `# reject-expired-up blocks NEW outbound connections from expired customers.`,
@@ -727,7 +736,7 @@ function renderUnifiedConfig(
     `# Catch-all access rule — anything that reaches the proxy gets the 302.`,
     `# The DST-NAT above ensures ONLY expired customers' tcp/80 reaches it.`,
     `# /ip proxy access has no src-address-list option — filtering happens in NAT.`,
-    `/ip proxy access add action=deny redirect-to=https://${webHost}/renew comment="jtm-expired captive"`,
+    `/ip proxy access add action=deny redirect-to=https://${portalHost}/renew comment="jtm-expired captive"`,
     `/ip firewall nat remove [find comment~"jtm-expired"]`,
     `/ip firewall nat add chain=dstnat src-address-list=jtm-expired protocol=tcp dst-port=80 action=redirect to-ports=8181 comment="jtm-expired captive"`,
     `# Management lifeline — paired input/output rules scoped to RADIUS server IP`,
@@ -802,8 +811,8 @@ function renderHotspotMultiPort(routerName: string, interfaces: string[], cidr: 
   const gateway = `${octets[0]}.${octets[1]}.${octets[2]}.1`;
   const poolStart = `${octets[0]}.${octets[1]}.${octets[2]}.10`;
   const poolEnd = `${octets[0]}.${octets[1]}.${octets[2]}.250`;
-  const apiHost = new URL(config.publicApiUrl).host;
-  const webHost = apiHost.replace(/^jtm-api/, 'jtm-web');
+  const portalHost = config.portal.host;
+  const portalIp = config.portal.ip;
   const tplBase = `${config.publicApiUrl}/api/hotspot/templates`;
   const portAdds = interfaces
     .map((i) => `/interface bridge port add bridge=jtm-hs-bridge interface=${i}`)
@@ -840,10 +849,9 @@ ${portAdds}
 /ip hotspot add name=jtm-hs interface=jtm-hs-bridge \\
   address-pool=jtm-hs-pool profile=jtm-hotspot disabled=no
 
-/ip hotspot walled-garden add dst-host=${webHost} action=allow comment="jtm"
-/ip hotspot walled-garden add dst-host=${apiHost} action=allow comment="jtm"
-/ip hotspot walled-garden ip add tls-host=${webHost} action=accept comment="jtm"
-/ip hotspot walled-garden ip add tls-host=${apiHost} action=accept comment="jtm"
+/ip hotspot walled-garden add dst-host=${portalHost} action=allow comment="jtm"
+/ip hotspot walled-garden ip add dst-address=${portalIp} dst-port=443 protocol=tcp action=accept comment="jtm"
+/ip hotspot walled-garden ip add dst-address=${portalIp} dst-port=80 protocol=tcp action=accept comment="jtm"
 
 ${['login.html','alogin.html','status.html','logout.html','error.html','redirect.html','rlogin.html','md5.js'].map((n) => `/tool fetch url="${tplBase}/${n}" dst-path=hotspot/${n} mode=https`).join('\n')}
 :put "Hotspot live on jtm-hs-bridge"
@@ -1013,8 +1021,8 @@ export async function buildHotspotScript(
   const poolStart = `${octets[0]}.${octets[1]}.${octets[2]}.10`;
   const poolEnd   = `${octets[0]}.${octets[1]}.${octets[2]}.250`;
 
-  const apiHost  = new URL(config.publicApiUrl).host;          // jtm-api-h6o3.onrender.com
-  const webHost  = apiHost.replace(/^jtm-api/, 'jtm-web');     // jtm-web-h6o3.onrender.com
+  const portalHost = config.portal.host;
+  const portalIp = config.portal.ip;
   const tplBase = `${config.publicApiUrl}/api/hotspot/templates`;
 
   const script = `# --- JTM hotspot setup for "${router.name}" ---
@@ -1062,11 +1070,12 @@ export async function buildHotspotScript(
   address-pool=jtm-hs-pool \\
   profile=jtm-hotspot disabled=no
 
-# Walled garden — let unauthenticated clients reach the captive portal.
-/ip hotspot walled-garden add dst-host=${webHost} action=allow comment="jtm"
-/ip hotspot walled-garden add dst-host=${apiHost} action=allow comment="jtm"
-/ip hotspot walled-garden ip add tls-host=${webHost} action=accept comment="jtm"
-/ip hotspot walled-garden ip add tls-host=${apiHost} action=accept comment="jtm"
+# Walled garden — allow unauthenticated clients to reach the captive portal.
+# IP-based (dst-address) works on every RouterOS version; tls-host needs 7.7+.
+# Portal traffic goes through the VPS (stable IP), not Render (rotating IPs).
+/ip hotspot walled-garden add dst-host=${portalHost} action=allow comment="jtm"
+/ip hotspot walled-garden ip add dst-address=${portalIp} dst-port=443 protocol=tcp action=accept comment="jtm"
+/ip hotspot walled-garden ip add dst-address=${portalIp} dst-port=80 protocol=tcp action=accept comment="jtm"
 
 # Replace all 8 MikroTik hotspot UI files with thin templates that redirect
 # to our Next.js portal. Each file MikroTik-substitutes $(varname) tokens.

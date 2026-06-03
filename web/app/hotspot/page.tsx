@@ -26,9 +26,20 @@ interface PurchaseInit {
   simulated: boolean;
 }
 
+interface Branding {
+  name: string;
+  color: string;
+  tagline: string;
+}
+
 type Tab = 'voucher' | 'pay';
 
 const PHONE_KEY = 'jtm_hotspot_phone';
+const DEFAULT_BRANDING: Branding = {
+  name: 'HUB Networks',
+  color: '#2563eb',
+  tagline: 'Connect to Wi-Fi',
+};
 
 function normalizePhone(raw: string): string | null {
   const digits = raw.replace(/\D/g, '');
@@ -64,6 +75,13 @@ function formatSpeed(kbps: number | null): string | null {
   return `${kbps} Kbps`;
 }
 
+// Hex → "r,g,b" so we can use rgba() with alpha for soft tints.
+function hexToRgb(hex: string): string {
+  const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+  if (!m) return '37,99,235';
+  return `${parseInt(m[1], 16)},${parseInt(m[2], 16)},${parseInt(m[3], 16)}`;
+}
+
 export default function HotspotPortal() {
   const [tab, setTab] = useState<Tab>('voucher');
   const [code, setCode] = useState('');
@@ -78,22 +96,25 @@ export default function HotspotPortal() {
   const [purchase, setPurchase] = useState<PurchaseInit | null>(null);
   const [purchaseStatus, setPurchaseStatus] = useState<string>('');
   const [pollElapsed, setPollElapsed] = useState(0);
+  const [brand, setBrand] = useState<Branding>(DEFAULT_BRANDING);
   const [mtikParams, setMtikParams] = useState<{
     linkLogin: string; mac: string; ip: string; orig: string;
     mode: 'login' | 'status' | 'logout' | 'error' | 'rlogin';
     username: string; sessionTimeLeft: string; uptime: string;
     bytesIn: string; bytesOut: string; linkLogout: string;
-    mikrotikError: string;
+    mikrotikError: string; tenant: string;
   } | null>(null);
   const formRef = useRef<HTMLFormElement>(null);
 
   const phoneNormalized = normalizePhone(phone);
   const phoneValid = phoneNormalized !== null;
   const selectedPlan = plans.find((p) => p.id === planId) ?? null;
+  const brandRgb = hexToRgb(brand.color);
 
   useEffect(() => {
     const q = new URLSearchParams(window.location.search);
     const mode = (q.get('mode') ?? 'login') as 'login' | 'status' | 'logout' | 'error' | 'rlogin';
+    const tenant = q.get('tenant') ?? '';
     setMtikParams({
       linkLogin: q.get('link-login-only') ?? q.get('link-login') ?? '',
       mac: q.get('mac') ?? '',
@@ -107,9 +128,15 @@ export default function HotspotPortal() {
       bytesOut: q.get('bytes-out') ?? '',
       linkLogout: q.get('link-logout') ?? '',
       mikrotikError: q.get('error') ?? '',
+      tenant,
     });
     const saved = window.localStorage.getItem(PHONE_KEY);
     if (saved) setPhone(saved);
+    if (tenant) {
+      api<Branding>(`/hotspot/branding/${encodeURIComponent(tenant)}`)
+        .then(setBrand)
+        .catch(() => {/* fall through to default */});
+    }
     loadPlans();
   }, []);
 
@@ -215,92 +242,213 @@ export default function HotspotPortal() {
     payMpesa();
   };
 
+  // CSS variables drive the theme — only the brand colour changes per tenant.
+  // Light, minimal palette: white card on a soft tinted background.
+  const styles: Record<string, React.CSSProperties> = {
+    page: {
+      minHeight: '100vh',
+      width: '100%',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: 16,
+      background: `linear-gradient(180deg, rgba(${brandRgb},0.04) 0%, #f8fafc 100%)`,
+      color: '#0f172a',
+      fontFamily: "'Inter', system-ui, -apple-system, 'Plus Jakarta Sans', sans-serif",
+    },
+    card: {
+      maxWidth: 440,
+      width: '100%',
+      background: '#ffffff',
+      border: '1px solid #e2e8f0',
+      borderRadius: 16,
+      padding: 28,
+      boxShadow: '0 1px 3px rgba(15,23,42,0.04), 0 8px 24px rgba(15,23,42,0.04)',
+    },
+    wordmark: {
+      fontSize: 28,
+      fontWeight: 800,
+      letterSpacing: '-0.02em',
+      color: brand.color,
+      margin: 0,
+    },
+    tagline: {
+      fontSize: 14,
+      color: '#64748b',
+      marginTop: 4,
+      marginBottom: 24,
+    },
+    tabs: {
+      display: 'flex',
+      gap: 4,
+      marginBottom: 20,
+      background: '#f1f5f9',
+      padding: 4,
+      borderRadius: 10,
+    },
+    tab: (active: boolean) => ({
+      flex: 1,
+      background: active ? '#ffffff' : 'transparent',
+      color: active ? brand.color : '#64748b',
+      fontSize: 13,
+      fontWeight: 600,
+      padding: '8px 12px',
+      borderRadius: 7,
+      border: 'none',
+      cursor: 'pointer',
+      boxShadow: active ? '0 1px 2px rgba(15,23,42,0.08)' : 'none',
+    }),
+    label: {
+      display: 'block',
+      fontSize: 12,
+      fontWeight: 500,
+      color: '#475569',
+      marginTop: 12,
+      marginBottom: 6,
+    },
+    input: {
+      width: '100%',
+      background: '#ffffff',
+      border: '1px solid #e2e8f0',
+      borderRadius: 8,
+      padding: '11px 14px',
+      fontSize: 14,
+      color: '#0f172a',
+      outline: 'none',
+    },
+    voucherInput: {
+      textAlign: 'center' as const,
+      fontSize: 18,
+      letterSpacing: 2,
+      fontWeight: 600,
+    },
+    btnPrimary: {
+      width: '100%',
+      background: brand.color,
+      color: '#ffffff',
+      border: 'none',
+      borderRadius: 8,
+      padding: 13,
+      fontSize: 14,
+      fontWeight: 600,
+      cursor: 'pointer',
+      marginTop: 16,
+    },
+    btnGhost: {
+      width: '100%',
+      background: 'transparent',
+      color: '#475569',
+      border: '1px solid #e2e8f0',
+      borderRadius: 8,
+      padding: 11,
+      fontSize: 13,
+      fontWeight: 500,
+      cursor: 'pointer',
+      marginTop: 12,
+    },
+    planCard: (active: boolean) => ({
+      background: active ? `rgba(${brandRgb},0.06)` : '#ffffff',
+      border: `1px solid ${active ? brand.color : '#e2e8f0'}`,
+      borderRadius: 10,
+      padding: 14,
+      display: 'flex',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      gap: 10,
+      cursor: 'pointer',
+      textAlign: 'left' as const,
+      fontFamily: 'inherit',
+    }),
+    okToast: {
+      background: 'rgba(22,163,74,0.10)',
+      color: '#15803d',
+      borderRadius: 8,
+      padding: '10px 14px',
+      fontSize: 13,
+      marginBottom: 12,
+    },
+    errToast: {
+      background: 'rgba(220,38,38,0.08)',
+      color: '#b91c1c',
+      borderRadius: 8,
+      padding: '10px 14px',
+      fontSize: 13,
+      marginTop: 12,
+    },
+    sub: { fontSize: 12, color: '#64748b', margin: 0 },
+    code: { fontFamily: 'ui-monospace, monospace', background: '#f1f5f9', padding: '1px 6px', borderRadius: 4, fontSize: 12 },
+    footer: { marginTop: 24, textAlign: 'center' as const, fontSize: 11, color: '#94a3b8' },
+  };
+
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
-      <div className="card" style={{ maxWidth: 460, width: '100%' }}>
-        <h1 style={{ marginBottom: 4 }}>HUB Networks Wi-Fi</h1>
-        <p className="sub" style={{ marginBottom: 20 }}>
-          Connect with a voucher code or buy a plan via M-Pesa.
-        </p>
+    <div style={styles.page}>
+      <div style={styles.card}>
+        <h1 style={styles.wordmark}>{brand.name}</h1>
+        <p style={styles.tagline}>{brand.tagline}</p>
 
         {mtikParams?.mode === 'status' ? (
           <>
-            <div className="toast ok" style={{ marginBottom: 12 }}>You're connected</div>
-            <table style={{ width: '100%', fontSize: 13, marginBottom: 16 }}>
+            <div style={styles.okToast}>You're connected</div>
+            <table style={{ width: '100%', fontSize: 13 }}>
               <tbody>
-                {mtikParams.username && <tr><td className="sub">User</td><td><code>{mtikParams.username}</code></td></tr>}
-                {mtikParams.ip && <tr><td className="sub">IP</td><td><code>{mtikParams.ip}</code></td></tr>}
-                {mtikParams.uptime && <tr><td className="sub">Uptime</td><td>{mtikParams.uptime}</td></tr>}
-                {mtikParams.sessionTimeLeft && <tr><td className="sub">Time left</td><td>{mtikParams.sessionTimeLeft}</td></tr>}
-                {mtikParams.bytesIn && <tr><td className="sub">Down</td><td>{mtikParams.bytesIn}</td></tr>}
-                {mtikParams.bytesOut && <tr><td className="sub">Up</td><td>{mtikParams.bytesOut}</td></tr>}
+                {mtikParams.username && <tr><td style={styles.sub}>User</td><td><code style={styles.code}>{mtikParams.username}</code></td></tr>}
+                {mtikParams.ip && <tr><td style={styles.sub}>IP</td><td><code style={styles.code}>{mtikParams.ip}</code></td></tr>}
+                {mtikParams.uptime && <tr><td style={styles.sub}>Uptime</td><td>{mtikParams.uptime}</td></tr>}
+                {mtikParams.sessionTimeLeft && <tr><td style={styles.sub}>Time left</td><td>{mtikParams.sessionTimeLeft}</td></tr>}
+                {mtikParams.bytesIn && <tr><td style={styles.sub}>Down</td><td>{mtikParams.bytesIn}</td></tr>}
+                {mtikParams.bytesOut && <tr><td style={styles.sub}>Up</td><td>{mtikParams.bytesOut}</td></tr>}
               </tbody>
             </table>
             {mtikParams.linkLogout && (
-              <a href={mtikParams.linkLogout} className="btn" style={{ display: 'block', textAlign: 'center', textDecoration: 'none' }}>Log out</a>
+              <a href={mtikParams.linkLogout} style={{ ...styles.btnPrimary, display: 'block', textAlign: 'center', textDecoration: 'none', marginTop: 16 }}>Log out</a>
             )}
           </>
         ) : mtikParams?.mode === 'logout' ? (
           <>
-            <div className="toast ok" style={{ marginBottom: 12 }}>Logged out</div>
+            <div style={styles.okToast}>Logged out</div>
             {(mtikParams.bytesIn || mtikParams.bytesOut || mtikParams.uptime) && (
-              <table style={{ width: '100%', fontSize: 13, marginBottom: 16 }}>
+              <table style={{ width: '100%', fontSize: 13, marginBottom: 12 }}>
                 <tbody>
-                  {mtikParams.uptime && <tr><td className="sub">Session length</td><td>{mtikParams.uptime}</td></tr>}
-                  {mtikParams.bytesIn && <tr><td className="sub">Downloaded</td><td>{mtikParams.bytesIn}</td></tr>}
-                  {mtikParams.bytesOut && <tr><td className="sub">Uploaded</td><td>{mtikParams.bytesOut}</td></tr>}
+                  {mtikParams.uptime && <tr><td style={styles.sub}>Session length</td><td>{mtikParams.uptime}</td></tr>}
+                  {mtikParams.bytesIn && <tr><td style={styles.sub}>Downloaded</td><td>{mtikParams.bytesIn}</td></tr>}
+                  {mtikParams.bytesOut && <tr><td style={styles.sub}>Uploaded</td><td>{mtikParams.bytesOut}</td></tr>}
                 </tbody>
               </table>
             )}
-            <p className="sub">Reconnect anytime with a new voucher or M-Pesa payment.</p>
+            <p style={styles.sub}>Reconnect anytime with a new voucher or M-Pesa payment.</p>
           </>
         ) : grant ? (
           <>
-            <div className="toast ok" style={{ marginBottom: 12 }}>
+            <div style={styles.okToast}>
               <strong>{grant.planName}</strong> · {Math.round(grant.validitySeconds / 3600)}h
               {grant.rateLimit ? ` · ${grant.rateLimit}` : ''}
             </div>
-            <p className="sub">Connecting you to the network…</p>
+            <p style={styles.sub}>Connecting you to the network…</p>
             <form ref={formRef} method="post" action={mtikParams?.linkLogin || '#'} style={{ display: 'none' }}>
               <input type="hidden" name="username" value={grant.username} />
               <input type="hidden" name="password" value={grant.password} />
               <input type="hidden" name="dst" value={mtikParams?.orig ?? ''} />
             </form>
             {!mtikParams?.linkLogin && (
-              <div className="toast err" style={{ marginTop: 12 }}>
-                No MikroTik login URL — preview mode. On a real hotspot you'd be
-                logged in now.
+              <div style={styles.errToast}>
+                No MikroTik login URL — preview mode. On a real hotspot you'd be logged in now.
               </div>
             )}
           </>
         ) : (
           <>
             {mtikParams?.mikrotikError && (
-              <div className="toast err" style={{ marginBottom: 12 }}>
-                Login error: {mtikParams.mikrotikError}
-              </div>
+              <div style={styles.errToast}>Login error: {mtikParams.mikrotikError}</div>
             )}
 
-            <div style={{ display: 'flex', gap: 4, marginBottom: 16, background: 'var(--surface)', padding: 4, borderRadius: 6 }}>
-              <button
-                onClick={() => { setTab('voucher'); setError(null); }}
-                style={{
-                  flex: 1, background: tab === 'voucher' ? 'var(--accent)' : 'transparent',
-                  color: tab === 'voucher' ? '#04121f' : 'var(--text)', fontSize: 13,
-                }}
-              >Voucher</button>
-              <button
-                onClick={() => { setTab('pay'); setError(null); }}
-                style={{
-                  flex: 1, background: tab === 'pay' ? 'var(--accent)' : 'transparent',
-                  color: tab === 'pay' ? '#04121f' : 'var(--text)', fontSize: 13,
-                }}
-              >Pay via M-Pesa</button>
+            <div style={styles.tabs}>
+              <button onClick={() => { setTab('voucher'); setError(null); }} style={styles.tab(tab === 'voucher')}>Voucher</button>
+              <button onClick={() => { setTab('pay'); setError(null); }} style={styles.tab(tab === 'pay')}>Pay via M-Pesa</button>
             </div>
 
             {tab === 'voucher' ? (
               <>
-                <label>Voucher code</label>
+                <label style={styles.label}>Voucher code</label>
                 <input
                   autoFocus
                   value={code}
@@ -310,78 +458,56 @@ export default function HotspotPortal() {
                   autoCapitalize="characters"
                   autoCorrect="off"
                   spellCheck={false}
-                  style={{ fontSize: 18, textAlign: 'center', letterSpacing: 2 }}
+                  style={{ ...styles.input, ...styles.voucherInput }}
                 />
                 <button
                   onClick={redeemVoucher}
                   disabled={code.replace(/-/g, '').length < 6 || submitting}
-                  style={{ width: '100%', marginTop: 16, padding: '12px' }}
+                  style={{ ...styles.btnPrimary, opacity: code.replace(/-/g, '').length < 6 || submitting ? 0.5 : 1 }}
                 >
                   {submitting ? 'Activating…' : 'Connect'}
                 </button>
               </>
             ) : purchase ? (
               <>
-                <div className="toast ok">
+                <div style={styles.okToast}>
                   {purchaseStatus}
                   <br />
                   <small>{purchase.customerMessage}</small>
                 </div>
-                <p className="sub" style={{ textAlign: 'center', marginTop: 12 }}>
+                <p style={{ ...styles.sub, textAlign: 'center', marginTop: 12 }}>
                   Waiting for M-Pesa… <strong>{pollElapsed}s</strong>
                 </p>
                 {pollElapsed >= 30 && (
-                  <button
-                    onClick={resendStk}
-                    className="ghost"
-                    style={{ width: '100%', marginTop: 12 }}
-                  >
-                    Didn't receive prompt? Resend
-                  </button>
+                  <button onClick={resendStk} style={styles.btnGhost}>Didn't receive prompt? Resend</button>
                 )}
               </>
             ) : (
               <>
-                <label>Choose a plan</label>
+                <label style={styles.label}>Choose a plan</label>
                 {plansLoading ? (
-                  <p className="sub">Loading plans…</p>
+                  <p style={styles.sub}>Loading plans…</p>
                 ) : plansError ? (
                   <>
-                    <div className="toast err">{plansError}</div>
-                    <button onClick={loadPlans} className="ghost" style={{ width: '100%', marginTop: 8 }}>Retry</button>
+                    <div style={styles.errToast}>{plansError}</div>
+                    <button onClick={loadPlans} style={styles.btnGhost}>Retry</button>
                   </>
                 ) : plans.length === 0 ? (
-                  <p className="sub">No hotspot plans configured. Please ask staff to set up plans.</p>
+                  <p style={styles.sub}>No hotspot plans configured. Please ask staff to set up plans.</p>
                 ) : (
                   <div style={{ display: 'grid', gap: 8 }}>
                     {plans.map((p) => {
                       const active = p.id === planId;
                       const speed = formatSpeed(p.speed_down_kbps);
                       return (
-                        <button
-                          key={p.id}
-                          onClick={() => setPlanId(p.id)}
-                          style={{
-                            background: active ? 'rgba(56,189,248,0.10)' : 'var(--surface)',
-                            border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
-                            color: 'var(--text)',
-                            padding: 14,
-                            borderRadius: 8,
-                            textAlign: 'left',
-                            fontWeight: 400,
-                            display: 'flex',
-                            justifyContent: 'space-between',
-                            alignItems: 'center',
-                            gap: 10,
-                          }}
-                        >
+                        <button key={p.id} onClick={() => setPlanId(p.id)} style={styles.planCard(active)}>
                           <div style={{ flex: 1, minWidth: 0 }}>
-                            <div style={{ fontWeight: 600, fontSize: 14 }}>{p.name}</div>
-                            <div className="sub" style={{ fontSize: 12, marginTop: 2, marginBottom: 0 }}>
+                            <div style={{ fontWeight: 600, fontSize: 14, color: '#0f172a' }}>{p.name}</div>
+                            <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
                               {formatValidity(p.validity_days)}{speed ? ` · ${speed}` : ''}
                             </div>
                           </div>
-                          <div style={{ fontWeight: 700, fontSize: 16, color: active ? 'var(--accent)' : 'var(--text)' }}>
+                          <div style={{ fontWeight: 700, fontSize: 16, color: active ? brand.color : '#0f172a' }}>
                             KES {(p.price_cents / 100).toFixed(0)}
                           </div>
                         </button>
@@ -392,44 +518,45 @@ export default function HotspotPortal() {
 
                 {plans.length > 0 && (
                   <>
-                    <label style={{ marginTop: 16 }}>M-Pesa phone</label>
+                    <label style={styles.label}>M-Pesa phone</label>
                     <input
                       value={phone}
                       placeholder="07XX XXX XXX"
                       onChange={(e) => setPhone(e.target.value)}
                       inputMode="tel"
                       autoComplete="tel"
+                      style={styles.input}
                     />
                     {phone && !phoneValid && (
-                      <p className="sub" style={{ color: 'var(--orange)', marginTop: 4, fontSize: 11 }}>
+                      <p style={{ ...styles.sub, color: '#d97706', marginTop: 6 }}>
                         Enter a Safaricom number (07XX or 2547XX).
                       </p>
                     )}
                     {phoneValid && selectedPlan && (
-                      <p className="sub" style={{ marginTop: 4, fontSize: 11 }}>
-                        STK push to <code>{phoneNormalized}</code> · KES {(selectedPlan.price_cents / 100).toFixed(0)}
+                      <p style={{ ...styles.sub, marginTop: 6 }}>
+                        STK push to <code style={styles.code}>{phoneNormalized}</code> · KES {(selectedPlan.price_cents / 100).toFixed(0)}
                       </p>
                     )}
                     <button
                       onClick={payMpesa}
                       disabled={!planId || !phoneValid || submitting}
-                      style={{ width: '100%', marginTop: 12, padding: '12px' }}
+                      style={{ ...styles.btnPrimary, opacity: !planId || !phoneValid || submitting ? 0.5 : 1 }}
                     >
-                      {submitting ? 'Sending STK push…' : `Pay & Connect`}
+                      {submitting ? 'Sending STK push…' : 'Pay & Connect'}
                     </button>
                   </>
                 )}
               </>
             )}
 
-            {error && <div className="toast err" style={{ marginTop: 12 }}>{error}</div>}
-            {mtikParams?.mac && (
-              <p className="sub" style={{ marginTop: 16, fontSize: 11, textAlign: 'center' }}>
-                Device: <code>{mtikParams.mac}</code>
-              </p>
-            )}
+            {error && <div style={styles.errToast}>{error}</div>}
           </>
         )}
+
+        <div style={styles.footer}>
+          Powered by HUB Networks
+          {mtikParams?.mac && <> · <code style={styles.code}>{mtikParams.mac}</code></>}
+        </div>
       </div>
     </div>
   );

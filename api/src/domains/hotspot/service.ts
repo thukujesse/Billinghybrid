@@ -110,6 +110,46 @@ export async function redeemVoucher(input: {
   });
 }
 
+export interface HotspotBranding {
+  name: string;
+  color: string;
+  tagline: string;
+}
+
+const DEFAULT_BRANDING: HotspotBranding = {
+  name: 'HUB Networks',
+  color: '#2563eb',
+  tagline: 'Connect to Wi-Fi',
+};
+
+/**
+ * Resolve the branding for a captive-portal request. Slug is either the
+ * router's `brand_slug` (admin-set) or its UUID — both work as lookup keys.
+ * Returns default HUB branding when the slug is empty or unrecognized.
+ */
+export async function getBranding(slug: string): Promise<HotspotBranding> {
+  const s = slug.trim();
+  if (!s) return DEFAULT_BRANDING;
+  const r = await query<{
+    brand_name: string | null;
+    brand_color: string | null;
+    brand_tagline: string | null;
+  }>(
+    `SELECT brand_name, brand_color, brand_tagline
+       FROM routers
+      WHERE brand_slug = $1 OR id::text = $1
+      LIMIT 1`,
+    [s]
+  );
+  const row = r.rows[0];
+  if (!row) return DEFAULT_BRANDING;
+  return {
+    name: row.brand_name ?? DEFAULT_BRANDING.name,
+    color: row.brand_color ?? DEFAULT_BRANDING.color,
+    tagline: row.brand_tagline ?? DEFAULT_BRANDING.tagline,
+  };
+}
+
 export interface PurchaseInitResult {
   checkoutRequestId: string;
   amountKes: number;

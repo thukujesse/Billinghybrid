@@ -8,3 +8,54 @@ vpn.hubnetwifi.co.ke {
     }
     respond "JTM VPN endpoint" 404
 }
+
+# Customer-facing captive portal at a stable hostname/IP. MikroTik
+# walled-garden allows this hostname/IP so unauthenticated clients can
+# reach /hotspot and /renew. We reverse-proxy ONLY the customer-facing
+# paths to Render — the admin dashboard (/customers, /plans, /routers,
+# etc.) is explicitly NOT exposed here, so an unauthenticated phone
+# can't reach it via the walled-garden bypass.
+#
+# Allowed:
+#   /hotspot, /renew                — customer pages
+#   /_next/*, /favicon.ico          — Next.js assets needed to render them
+#   /api/hotspot/*, /api/renew/*    — customer-facing APIs
+# Everything else                    — 404
+#
+# tls_server_name pins SNI to Render's hostname so Render's edge routes
+# correctly. Host header is overridden to match.
+portal.hubnetwifi.co.ke {
+    # Public API: hotspot (voucher / M-Pesa / branding) and renew (info / pay).
+    @public_api path /api/hotspot/* /api/renew/*
+    handle @public_api {
+        reverse_proxy https://jtm-api-h6o3.onrender.com {
+            header_up Host jtm-api-h6o3.onrender.com
+            transport http {
+                tls
+                tls_server_name jtm-api-h6o3.onrender.com
+            }
+        }
+    }
+
+    # Public web pages + their static assets. Anything outside these paths
+    # hits the catch-all 404 below — admin dashboard stays private.
+    @public_web path /hotspot /hotspot/* /renew /renew/* /_next/* /favicon.ico /robots.txt
+    handle @public_web {
+        reverse_proxy https://jtm-web-h6o3.onrender.com {
+            header_up Host jtm-web-h6o3.onrender.com
+            transport http {
+                tls
+                tls_server_name jtm-web-h6o3.onrender.com
+            }
+        }
+    }
+
+    # Optional UX nicety: bare https://portal.hubnetwifi.co.ke/ redirects
+    # to /hotspot so a phone visiting the root lands on the captive portal.
+    redir / /hotspot 302
+
+    # Everything else (dashboard pages, admin APIs, auth) — refused.
+    handle {
+        respond "Not Found" 404
+    }
+}
