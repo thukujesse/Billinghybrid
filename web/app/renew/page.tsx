@@ -24,6 +24,20 @@ export default function RenewPage() {
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+  const [usernameInput, setUsernameInput] = useState('');
+  const [lookingUp, setLookingUp] = useState(false);
+
+  const lookupCustomer = (params: Record<string, string>) => {
+    setLookingUp(true);
+    return api<RenewInfo>(`/renew/info?${new URLSearchParams(params)}`)
+      .then((r) => {
+        setInfo(r);
+        if (r.customer?.phone) setPhone(r.customer.phone);
+        if (r.plans[0]) setPlanId(r.plans[0].id);
+      })
+      .catch((e) => setError(e.message))
+      .finally(() => setLookingUp(false));
+  };
 
   useEffect(() => {
     const q = new URLSearchParams(window.location.search);
@@ -32,14 +46,18 @@ export default function RenewPage() {
       const v = q.get(k);
       if (v) params[k] = v;
     }
-    api<RenewInfo>(`/renew/info?${new URLSearchParams(params)}`)
-      .then((r) => {
-        setInfo(r);
-        if (r.customer?.phone) setPhone(r.customer.phone);
-        if (r.plans[0]) setPlanId(r.plans[0].id);
-      })
-      .catch((e) => setError(e.message));
+    // Only auto-lookup if URL has one of these. Otherwise wait for user input.
+    if (Object.keys(params).length > 0) {
+      lookupCustomer(params);
+    }
   }, []);
+
+  const lookupByUsername = (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!usernameInput.trim()) return;
+    setError(null);
+    lookupCustomer({ username: usernameInput.trim() });
+  };
 
   const pay = async () => {
     if (!planId || !phone) return;
@@ -116,11 +134,32 @@ export default function RenewPage() {
             <br /><small className="sub">{info.customer.account_number}</small>
           </div>
         )}
-        {!info && !error && <p className="sub">Looking up your account…</p>}
+        {!info && !error && !lookingUp && (
+          <form onSubmit={lookupByUsername} style={{ marginBottom: 16 }}>
+            <label>PPPoE Username</label>
+            <input
+              autoFocus
+              value={usernameInput}
+              placeholder="e.g. jwanjiku"
+              onChange={(e) => setUsernameInput(e.target.value)}
+            />
+            <button type="submit" style={{ width: '100%', marginTop: 8 }}>
+              Find my account
+            </button>
+          </form>
+        )}
+        {lookingUp && <p className="sub">Looking up your account…</p>}
         {info && !info.customer && (
           <div className="toast err" style={{ marginBottom: 16 }}>
-            {info.reason || "We couldn't match your IP to a customer record."}
-            <br /><small>Contact support with your account number.</small>
+            {info.reason || "We couldn't find that username."}
+            <br />
+            <button
+              onClick={() => { setInfo(null); setUsernameInput(''); }}
+              className="ghost"
+              style={{ marginTop: 8, fontSize: 12 }}
+            >
+              Try again
+            </button>
           </div>
         )}
 
