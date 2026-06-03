@@ -292,13 +292,27 @@ async function kickActiveSessions(username: string): Promise<void> {
     [username]
   );
   for (const s of sessions.rows) {
-    if (!s.secret) continue; // NAS not in our table — can't CoA
+    // CoA Disconnect via RADIUS — the standards-compliant way.
+    if (s.secret) {
+      try {
+        await wgManager.coaDisconnect({
+          nasIp: s.nas_ip, sessionId: s.session_id, secret: s.secret, username,
+        });
+      } catch (err) {
+        console.error('[coa] disconnect failed:', (err as Error).message);
+      }
+    }
+    // Belt-and-suspenders: SSH-force-remove the PPP session. RouterOS sometimes
+    // leaves residual PPPoE state after CoA that prevents the customer's client
+    // from re-establishing without a manual router reboot. Explicit /ppp active
+    // remove clears it. Quiet on failure.
     try {
-      await wgManager.coaDisconnect({
-        nasIp: s.nas_ip, sessionId: s.session_id, secret: s.secret, username,
-      });
+      await wgManager.execOnRouter(
+        s.nas_ip,
+        `:do { /ppp active remove [find name="${username}"] } on-error={}`
+      );
     } catch (err) {
-      console.error('[coa] disconnect failed:', (err as Error).message);
+      console.error('[ssh-kick] failed:', (err as Error).message);
     }
   }
 }
