@@ -223,9 +223,13 @@ export async function setServiceStatus(
   // within seconds rather than waiting for re-auth on next session-timeout.
   // Also push the customer's framed IP into the MikroTik's jtm-expired
   // address-list so their HTTP gets captive-redirected to the renew page.
-  if (status !== 'active' && svc.username && wgManager.isEnabled()) {
+  // Kick active sessions on ANY status change. Without this, Restore leaves
+  // the customer stuck on their previous PPP session with the OLD reply
+  // attributes (e.g., still in expired pool with 512k cap) until something
+  // else disconnects them. CoA Disconnect → re-auth → new attributes apply.
+  if (svc.username && wgManager.isEnabled()) {
     await kickActiveSessions(svc.username);
-    if (svc.service_type === 'pppoe') {
+    if (status !== 'active' && svc.service_type === 'pppoe') {
       await pushExpired(svc.username);
     }
   }
