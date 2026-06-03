@@ -69,25 +69,24 @@ export async function syncServiceToRadius(svc: Service): Promise<void> {
         );
       }
     } else if (svc.service_type === 'pppoe' && svc.password) {
-      // PPPoE LIMP MODE: keep credentials so customer CAN authenticate, but
-      // direct them to the EXPIRED pool (different /16 from active) via the
-      // Framed-Pool reply attribute. Their framed IP comes from 10.8.0.0/16
-      // automatically — no dynamic address-list needed. Firewall + DST-NAT
-      // match on that subnet to redirect HTTP to the renew portal. When admin
-      // Restores them, they get an IP from the active pool (10.7.0.0/16)
-      // on next dial → no captive rules match → full speed.
+      // PPPoE limp mode (hybrid approach for INSTANT suspend/restore):
+      // Keep auth credentials intact (no pool override, no rate downgrade) so
+      // we don't need to kick the customer's PPP session — they stay connected
+      // continuously. Captive redirect is driven entirely by their framed-IP
+      // being in the jtm-expired address-list (push/pull via SSH on status
+      // change). The DST-NAT + proxy rules on the MikroTik catch HTTP from
+      // that list and 302-redirect to /renew. When restored, removing them
+      // from the list is enough — no reconnect needed.
       await client.query(
         `INSERT INTO radcheck (username, attribute, op, value) VALUES ($1, $2, $3, $4)`,
         [svc.username, 'Cleartext-Password', ':=', svc.password]
       );
-      await client.query(
-        `INSERT INTO radreply (username, attribute, op, value) VALUES ($1, $2, $3, $4)`,
-        [svc.username, 'Framed-Pool', '=', 'jtm-ppp-expired-pool']
-      );
-      await client.query(
-        `INSERT INTO radreply (username, attribute, op, value) VALUES ($1, $2, $3, $4)`,
-        [svc.username, 'Mikrotik-Rate-Limit', '=', '512k/512k']
-      );
+      if (svc.rate_limit) {
+        await client.query(
+          `INSERT INTO radreply (username, attribute, op, value) VALUES ($1, $2, $3, $4)`,
+          [svc.username, 'Mikrotik-Rate-Limit', '=', svc.rate_limit]
+        );
+      }
     } else {
       // Hotspot or other: hard-reject (hotspot has its own captive portal flow).
       await client.query(
@@ -223,12 +222,12 @@ export async function setServiceStatus(
   // within seconds rather than waiting for re-auth on next session-timeout.
   // Also push the customer's framed IP into the MikroTik's jtm-expired
   // address-list so their HTTP gets captive-redirected to the renew page.
-  // Kick active sessions on ANY status change. Without this, Restore leaves
-  // the customer stuck on their previous PPP session with the OLD reply
-  // attributes (e.g., still in expired pool with 512k cap) until something
-  // else disconnects them. CoA Disconnect → re-auth → new attributes apply.
+  // Hybrid path: NO kick on suspend/restore. Customer's PPP session stays
+  // alive across status changes. Captive redirect toggles instantly via the
+  // jtm-expired address-list (SSH push on suspend, SSH remove on restore).
+  // The customer keeps their current rate-limit until a natural reconnect —
+  // CoA-Change to update rate on the live session is a separate enhancement.
   if (svc.username && wgManager.isEnabled()) {
-    await kickActiveSessions(svc.username);
     if (status !== 'active' && svc.service_type === 'pppoe') {
       await pushExpired(svc.username);
     }
