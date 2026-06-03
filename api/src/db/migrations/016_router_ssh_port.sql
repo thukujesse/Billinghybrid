@@ -5,4 +5,4 @@
 -- instead of running the slow + flaky `probe-ssh` that hits 4 candidates.
 -- =====================================================================
 
-ALTER TABLE routers ADD COLUMN ssh_port INTEGER;
+ALTER TABLE routers ADD COLUMN IF NOT EXISTS ssh_port INTEGER;
