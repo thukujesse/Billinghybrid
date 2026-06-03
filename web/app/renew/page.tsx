@@ -52,7 +52,7 @@ export default function RenewPage() {
     }
   }, []);
 
-  const lookupByUsername = (e?: React.FormEvent) => {
+  const lookupByUsername = (e?: { preventDefault: () => void }) => {
     e?.preventDefault();
     if (!usernameInput.trim()) return;
     setError(null);
