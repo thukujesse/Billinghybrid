@@ -113,6 +113,20 @@ api.post('/plans', requireAuth('admin', 'staff'), ah(async (req, res) => {
   res.status(201).json(await plans.createPlan(body));
 }));
 api.get('/plans/:id', ah(async (req, res) => res.json(await plans.getPlan(req.params.id))));
+api.patch('/plans/:id', requireAuth('admin', 'staff'), ah(async (req, res) => {
+  const body = parse(z.object({
+    name: z.string().min(1).optional(),
+    price_cents: z.number().int().nonnegative().optional(),
+    billing_cycle: z.enum(['none', 'daily', 'weekly', 'monthly']).optional(),
+    validity_days: z.number().int().positive().optional(),
+    data_cap_mb: z.number().int().positive().nullable().optional(),
+    speed_down_kbps: z.number().int().positive().nullable().optional(),
+    speed_up_kbps: z.number().int().positive().nullable().optional(),
+    fup_threshold_pct: z.number().int().min(1).max(100).optional(),
+    active: z.boolean().optional(),
+  }), req.body);
+  res.json(await plans.updatePlan(req.params.id, body));
+}));
 
 // --------------------------- Subscribers ----------------------------
 api.get('/subscribers', ah(async (req, res) => {
@@ -600,7 +614,8 @@ api.post('/routers/:id/hotspot-script', requireAuth('admin', 'staff'), ah(async 
 // JS-redirects the client browser to our Next.js portal at /hotspot. See
 // domains/hotspot/templates.ts for the per-file content.
 api.get('/hotspot/templates/:name', ah(async (req, res) => {
-  const tpl = getHotspotTemplate(req.params.name);
+  const slug = typeof req.query.slug === 'string' ? req.query.slug : '';
+  const tpl = getHotspotTemplate(req.params.name, slug);
   if (!tpl) {
     res.status(404).type('text/plain').send('unknown template');
     return;
@@ -612,10 +627,16 @@ api.get('/hotspot/templates/:name', ah(async (req, res) => {
 // Back-compat: routers provisioned before the bundle existed fetch
 // /api/hotspot/login.html. Serve the new login template at that path too.
 api.get('/hotspot/login.html', ah(async (_req, res) => {
-  const tpl = getHotspotTemplate('login.html');
+  const tpl = getHotspotTemplate('login.html', '');
   res.setHeader('Content-Type', tpl!.contentType);
   res.setHeader('Cache-Control', 'no-store');
   res.send(tpl!.body);
+}));
+
+// Public — captive portal page calls this to theme itself per venue.
+// Slug = router's brand_slug or UUID. Unknown slug returns default HUB.
+api.get('/hotspot/branding/:slug', ah(async (req, res) => {
+  res.json(await hotspot.getBranding(req.params.slug));
 }));
 
 // Identify: called by the MikroTik itself (no auth — gated by the unguessable

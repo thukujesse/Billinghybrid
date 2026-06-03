@@ -42,6 +42,36 @@ export async function getPlan(id: string): Promise<Plan> {
   return r.rows[0];
 }
 
+export interface UpdatePlanInput {
+  name?: string;
+  price_cents?: number;
+  billing_cycle?: Plan['billing_cycle'];
+  validity_days?: number;
+  data_cap_mb?: number | null;
+  speed_down_kbps?: number | null;
+  speed_up_kbps?: number | null;
+  fup_threshold_pct?: number;
+  active?: boolean;
+}
+
+export async function updatePlan(id: string, input: UpdatePlanInput): Promise<Plan> {
+  const sets: string[] = [];
+  const vals: any[] = [];
+  for (const [k, v] of Object.entries(input)) {
+    if (v === undefined) continue;
+    vals.push(v);
+    sets.push(`${k} = $${vals.length}`);
+  }
+  if (sets.length === 0) return getPlan(id);
+  vals.push(id);
+  const r = await query<Plan>(
+    `UPDATE plans SET ${sets.join(', ')} WHERE id = $${vals.length} RETURNING *`,
+    vals
+  );
+  if (!r.rows[0]) throw notFound('plan');
+  return r.rows[0];
+}
+
 export async function createPlan(input: CreatePlanInput): Promise<Plan> {
   const r = await query<Plan>(
     `INSERT INTO plans
