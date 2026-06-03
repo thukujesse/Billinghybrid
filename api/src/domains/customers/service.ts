@@ -68,8 +68,27 @@ export async function syncServiceToRadius(svc: Service): Promise<void> {
           [svc.username, 'Mikrotik-Rate-Limit', '=', svc.rate_limit]
         );
       }
+    } else if (svc.service_type === 'pppoe' && svc.password) {
+      // PPPoE LIMP MODE: keep credentials so the customer CAN authenticate +
+      // tag their framed IP into jtm-expired via Mikrotik-Address-List reply
+      // attribute. The MikroTik's DST-NAT rule (set up by apply) catches their
+      // HTTP traffic and 302-redirects to the /renew portal. HTTPS dies (no
+      // SNI hijack), which is fine — customer sees "your account is overdue"
+      // on the next HTTP page they try. Rate-limit cap to discourage abuse.
+      await client.query(
+        `INSERT INTO radcheck (username, attribute, op, value) VALUES ($1, $2, $3, $4)`,
+        [svc.username, 'Cleartext-Password', ':=', svc.password]
+      );
+      await client.query(
+        `INSERT INTO radreply (username, attribute, op, value) VALUES ($1, $2, $3, $4)`,
+        [svc.username, 'Mikrotik-Address-List', '=', 'jtm-expired']
+      );
+      await client.query(
+        `INSERT INTO radreply (username, attribute, op, value) VALUES ($1, $2, $3, $4)`,
+        [svc.username, 'Mikrotik-Rate-Limit', '=', '512k/512k']
+      );
     } else {
-      // Insert a Reject so RADIUS positively denies (vs ambiguous unknown user).
+      // Hotspot or other: hard-reject (hotspot has its own captive portal flow).
       await client.query(
         `INSERT INTO radcheck (username, attribute, op, value) VALUES ($1, $2, $3, $4)`,
         [svc.username, 'Auth-Type', ':=', 'Reject']
