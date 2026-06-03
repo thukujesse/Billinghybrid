@@ -679,6 +679,9 @@ function renderUnifiedConfig(
       ...['login.html','alogin.html','status.html','logout.html','error.html','redirect.html','rlogin.html','md5.js'].map(
         (n) => `/tool fetch url="${tplBase}/${n}" dst-path=hotspot/${n} mode=https`
       ),
+      `# NAT masquerade for hotspot pool — without this, hotspot clients have no internet.`,
+      `/ip firewall nat remove [find comment="jtm-nat hotspot"]`,
+      `/ip firewall nat add chain=srcnat action=masquerade src-address=${hotspotCidr} comment="jtm-nat hotspot"`,
       ``,
     );
   }
@@ -728,6 +731,11 @@ function renderUnifiedConfig(
       `/ip pool add name=jtm-ppp-pool ranges=10.7.0.10-10.7.255.250`,
       `/ppp profile add name=jtm-ppp local-address=10.7.0.1 remote-address=jtm-ppp-pool dns-server=1.1.1.1,8.8.8.8 only-one=yes`,
       `/interface pppoe-server server add service-name=jtm interface=jtm-edge-bridge default-profile=jtm-ppp authentication=pap,chap one-session-per-host=yes disabled=no`,
+      `# NAT masquerade so customer's private 10.7.x.x source IP gets rewritten`,
+      `# to the WAN's public IP — replies come back. Without this, customers`,
+      `# connect via PPPoE but have no internet (silent failure mode).`,
+      `/ip firewall nat remove [find comment="jtm-nat pppoe"]`,
+      `/ip firewall nat add chain=srcnat action=masquerade src-address=10.7.0.0/16 comment="jtm-nat pppoe"`,
       ``,
     );
   }
