@@ -69,19 +69,20 @@ export async function syncServiceToRadius(svc: Service): Promise<void> {
         );
       }
     } else if (svc.service_type === 'pppoe' && svc.password) {
-      // PPPoE LIMP MODE: keep credentials so the customer CAN authenticate +
-      // tag their framed IP into jtm-expired via Mikrotik-Address-List reply
-      // attribute. The MikroTik's DST-NAT rule (set up by apply) catches their
-      // HTTP traffic and 302-redirects to the /renew portal. HTTPS dies (no
-      // SNI hijack), which is fine — customer sees "your account is overdue"
-      // on the next HTTP page they try. Rate-limit cap to discourage abuse.
+      // PPPoE LIMP MODE: keep credentials so customer CAN authenticate, but
+      // direct them to the EXPIRED pool (different /16 from active) via the
+      // Framed-Pool reply attribute. Their framed IP comes from 10.8.0.0/16
+      // automatically — no dynamic address-list needed. Firewall + DST-NAT
+      // match on that subnet to redirect HTTP to the renew portal. When admin
+      // Restores them, they get an IP from the active pool (10.7.0.0/16)
+      // on next dial → no captive rules match → full speed.
       await client.query(
         `INSERT INTO radcheck (username, attribute, op, value) VALUES ($1, $2, $3, $4)`,
         [svc.username, 'Cleartext-Password', ':=', svc.password]
       );
       await client.query(
         `INSERT INTO radreply (username, attribute, op, value) VALUES ($1, $2, $3, $4)`,
-        [svc.username, 'Mikrotik-Address-List', '=', 'jtm-expired']
+        [svc.username, 'Framed-Pool', '=', 'jtm-ppp-expired-pool']
       );
       await client.query(
         `INSERT INTO radreply (username, attribute, op, value) VALUES ($1, $2, $3, $4)`,
