@@ -21,7 +21,7 @@
 -- lowercases User-Name. One canonical format everywhere.
 -- =====================================================================
 
-CREATE TABLE active_devices (
+CREATE TABLE IF NOT EXISTS active_devices (
   mac                      TEXT PRIMARY KEY,
   expires_at               TIMESTAMPTZ NOT NULL,
   rate_limit               TEXT,                                -- e.g. "5000k/2000k"
@@ -38,8 +38,14 @@ CREATE TABLE active_devices (
   last_seen                TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Hot path: lookup by mac filtered to live grants only.
-CREATE INDEX active_devices_live ON active_devices (mac) WHERE expires_at > now();
+-- mac is the PRIMARY KEY so its B-tree index already serves the hot
+-- "lookup by MAC" path; no separate index needed. An expires_at index
+-- lets admin "expiring soon" / cleanup queries scan efficiently.
+-- (Postgres rejects now() inside partial-index predicates because it
+-- isn't IMMUTABLE — that's what broke the original active_devices_live
+-- definition. A plain index works equivalently for our query patterns.)
+CREATE INDEX IF NOT EXISTS active_devices_expires ON active_devices (expires_at);
 
--- Rebind path: find the most recent grant for a given phone.
-CREATE INDEX active_devices_phone ON active_devices (phone, last_seen DESC) WHERE phone IS NOT NULL;
+-- Rebind path: find the most recent grant for a given phone. The
+-- `phone IS NOT NULL` filter IS immutable, so this partial index is fine.
+CREATE INDEX IF NOT EXISTS active_devices_phone ON active_devices (phone, last_seen DESC) WHERE phone IS NOT NULL;

@@ -44,10 +44,13 @@ CREATE TABLE device_tokens (
   revoke_reason     TEXT
 );
 
--- Hot path: validate a presented token. Partial index keeps it tiny.
-CREATE INDEX device_tokens_active ON device_tokens (token_hash)
-  WHERE revoked_at IS NULL AND expires_at > now();
+-- token_hash already has a UNIQUE constraint (created above) which gives
+-- us a B-tree index — that's the hot-path lookup for /auto-reconnect.
+-- We can't add a smaller partial index filtered on `expires_at > now()`
+-- because Postgres rejects now() in partial-index predicates (not
+-- IMMUTABLE); the unique index covers it.
 
 -- "What devices does this phone have?" (admin view + Forget All).
-CREATE INDEX device_tokens_phone ON device_tokens (phone, last_used_at DESC)
+-- revoked_at IS NULL is immutable so this partial filter is allowed.
+CREATE INDEX IF NOT EXISTS device_tokens_phone ON device_tokens (phone, last_used_at DESC)
   WHERE revoked_at IS NULL;
