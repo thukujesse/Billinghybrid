@@ -637,6 +637,7 @@ function renderUnifiedConfig(
     `/ip hotspot walled-garden ip remove [find comment="jtm"]`,
     `/ip firewall filter remove [find comment~"jtm-fw"]`,
     `/ip firewall filter remove [find comment~"jtm-antitether"]`,
+    `/ip firewall mangle remove [find comment~"jtm-antitether"]`,
     `/ip firewall address-list remove [find comment~"jtm-fw"]`,
     `/interface pppoe-server server remove [find service-name=jtm]`,
     `/ppp profile remove [find name=jtm-ppp]`,
@@ -701,20 +702,19 @@ function renderUnifiedConfig(
       `/ip firewall nat remove [find comment="jtm-nat hotspot"]`,
       `/ip firewall nat add chain=srcnat action=masquerade src-address=${hotspotCidr} comment="jtm-nat hotspot"`,
       ``,
-      `# ===== Anti-tether (TTL-based) =====`,
-      `# Detect device-sharing by the IP TTL anomaly that tethering produces:`,
-      `# the secondary device's packets traverse the primary's NAT stack and`,
-      `# arrive with TTL decremented by one. Direct (legit) phones send`,
-      `#   Android / iOS / macOS / Linux  -> TTL 64`,
-      `#   Windows                        -> TTL 128`,
-      `# Tethered traffic from those primary devices arrives at TTL 63 / 127.`,
-      `# Dropping ONLY the anomalous values keeps direct connections intact.`,
-      `# These rules use comment "jtm-antitether" so the cleanup at the top of`,
-      `# this script (find comment~"jtm-fw") leaves them alone; we explicitly`,
-      `# remove and re-add below so re-Configure is idempotent.`,
-      `/ip firewall filter remove [find comment~"jtm-antitether"]`,
-      `/ip firewall filter add chain=forward in-interface=jtm-edge-bridge ttl=equal:63 action=drop comment="jtm-antitether iOS/Android tethered"`,
-      `/ip firewall filter add chain=forward in-interface=jtm-edge-bridge ttl=equal:127 action=drop comment="jtm-antitether Windows tethered"`,
+      `# ===== Anti-tether (mangle TTL=1 egress) =====`,
+      `# Rewrite the TTL of every packet leaving the router for the hotspot`,
+      `# bridge to 1. The primary phone is one hop away, so TTL=1 is enough`,
+      `# to reach it. If the phone tethers to a laptop, the phone's NAT`,
+      `# decrements TTL on forward — laptop receives TTL=0, kernel drops it.`,
+      `# Tethered devices simply never see any traffic.`,
+      `#`,
+      `# Why mangle and not filter: mangle's change-ttl runs at packet-level,`,
+      `# rewriting in-place; no need to detect anomalous TTLs or maintain`,
+      `# separate rules for iOS/Android (64) vs Windows (128). One rule,`,
+      `# no false-positives on direct connections.`,
+      `/ip firewall mangle remove [find comment~"jtm-antitether"]`,
+      `/ip firewall mangle add chain=postrouting out-interface=jtm-edge-bridge action=change-ttl new-ttl=set:1 passthrough=yes comment="jtm-antitether egress TTL=1"`,
       ``,
     );
   }
@@ -877,12 +877,12 @@ ${portAdds}
 /ip hotspot walled-garden ip add dst-address=${portalIp} dst-port=443 protocol=tcp action=accept comment="jtm"
 /ip hotspot walled-garden ip add dst-address=${portalIp} dst-port=80 protocol=tcp action=accept comment="jtm"
 
-# Anti-tether (TTL): drop packets whose TTL indicates one NAT hop from a
-# tethered primary device (TTL 63 on iOS/Android/Linux/macOS originals,
-# TTL 127 on Windows). Direct phones send 64 / 128 and pass through.
-/ip firewall filter remove [find comment~"jtm-antitether"]
-/ip firewall filter add chain=forward in-interface=jtm-hs-bridge ttl=equal:63 action=drop comment="jtm-antitether iOS/Android tethered"
-/ip firewall filter add chain=forward in-interface=jtm-hs-bridge ttl=equal:127 action=drop comment="jtm-antitether Windows tethered"
+# Anti-tether (mangle): rewrite egress TTL to 1 for packets leaving the
+# router toward the hotspot bridge. Direct phone receives TTL=1 and reads
+# the packet locally; if the phone NATs to a tethered laptop the TTL
+# decrements to 0 and the kernel drops it.
+/ip firewall mangle remove [find comment~"jtm-antitether"]
+/ip firewall mangle add chain=postrouting out-interface=jtm-hs-bridge action=change-ttl new-ttl=set:1 passthrough=yes comment="jtm-antitether egress TTL=1"
 
 ${['login.html','alogin.html','status.html','logout.html','error.html','redirect.html','rlogin.html','md5.js'].map((n) => `/tool fetch url="${tplBase}/${n}" dst-path=hotspot/${n} mode=https`).join('\n')}
 :put "Hotspot live on jtm-hs-bridge"
@@ -1110,12 +1110,11 @@ export async function buildHotspotScript(
 /ip hotspot walled-garden ip add dst-address=${portalIp} dst-port=443 protocol=tcp action=accept comment="jtm"
 /ip hotspot walled-garden ip add dst-address=${portalIp} dst-port=80 protocol=tcp action=accept comment="jtm"
 
-# Anti-tether (TTL): drop packets whose TTL indicates one NAT hop from a
-# tethered primary device (TTL 63 on iOS/Android/Linux/macOS originals,
-# TTL 127 on Windows). Direct phones send 64 / 128 and pass through.
-/ip firewall filter remove [find comment~"jtm-antitether"]
-/ip firewall filter add chain=forward in-interface=jtm-hs-bridge ttl=equal:63 action=drop comment="jtm-antitether iOS/Android tethered"
-/ip firewall filter add chain=forward in-interface=jtm-hs-bridge ttl=equal:127 action=drop comment="jtm-antitether Windows tethered"
+# Anti-tether (mangle): rewrite egress TTL to 1 for packets leaving the
+# router toward the hotspot bridge. Direct phone reads it locally; a
+# tethered laptop sees TTL=0 after the phone's NAT and the kernel drops.
+/ip firewall mangle remove [find comment~"jtm-antitether"]
+/ip firewall mangle add chain=postrouting out-interface=jtm-hs-bridge action=change-ttl new-ttl=set:1 passthrough=yes comment="jtm-antitether egress TTL=1"
 
 # Replace all 8 MikroTik hotspot UI files with thin templates that redirect
 # to our Next.js portal. Each file MikroTik-substitutes $(varname) tokens.
