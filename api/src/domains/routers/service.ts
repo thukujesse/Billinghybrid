@@ -678,7 +678,10 @@ function renderUnifiedConfig(
       `/ip dhcp-server network add address=${hotspotCidr} gateway=${gateway} dns-server=${gateway} comment="jtm-hs"`,
       `/ip dhcp-server add name=jtm-hs-dhcp interface=jtm-edge-bridge address-pool=jtm-hs-pool lease-time=1h disabled=no`,
       `/ip dns set allow-remote-requests=yes servers=1.1.1.1,8.8.8.8`,
-      `/ip hotspot profile add name=jtm-hotspot hotspot-address=${gateway} dns-name=hotspot.jtm use-radius=yes login-by=http-pap`,
+      `# login-by=mac tries a MAC-as-username RADIUS Access-Request BEFORE serving the captive page.`,
+      `# FreeRADIUS queries.conf override (vps/freeradius/queries.conf) joins this against active_devices`,
+      `# so returning customers with a live grant skip the portal entirely.`,
+      `/ip hotspot profile add name=jtm-hotspot hotspot-address=${gateway} dns-name=hotspot.jtm use-radius=yes login-by=mac,http-pap mac-auth-mode=mac-as-username-and-password`,
       `/ip hotspot add name=jtm-hs interface=jtm-edge-bridge address-pool=jtm-hs-pool profile=jtm-hotspot disabled=no`,
       `# Walled-garden by stable VPS IP — works on every RouterOS version`,
       `# (tls-host needs 7.7+). dst-host rule allows HTTP for older clients.`,
@@ -844,7 +847,8 @@ ${portAdds}
 
 /ip hotspot profile add name=jtm-hotspot \\
   hotspot-address=${gateway} dns-name=hotspot.jtm \\
-  use-radius=yes login-by=http-pap
+  use-radius=yes login-by=mac,http-pap \\
+  mac-auth-mode=mac-as-username-and-password
 
 /ip hotspot add name=jtm-hs interface=jtm-hs-bridge \\
   address-pool=jtm-hs-pool profile=jtm-hotspot disabled=no
@@ -1063,7 +1067,8 @@ export async function buildHotspotScript(
 
 /ip hotspot profile add name=jtm-hotspot \\
   hotspot-address=${gateway} dns-name=hotspot.jtm \\
-  use-radius=yes login-by=http-pap
+  use-radius=yes login-by=mac,http-pap \\
+  mac-auth-mode=mac-as-username-and-password
 
 /ip hotspot add name=jtm-hs \\
   interface=jtm-hs-bridge \\

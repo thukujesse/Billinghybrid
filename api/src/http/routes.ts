@@ -38,6 +38,7 @@ import * as hotspot from '../domains/hotspot/service.js';
 import * as renew from '../domains/renew/service.js';
 import { getTemplate as getHotspotTemplate, TEMPLATE_NAMES as HOTSPOT_TEMPLATE_NAMES } from '../domains/hotspot/templates.js';
 import * as paymentEvents from '../domains/paymentEvents/service.js';
+import * as hotspotDevices from '../domains/hotspotDevices/service.js';
 
 export const api = Router();
 
@@ -519,6 +520,52 @@ api.post('/hotspot/pay', ah(async (req, res) => {
 // Portal polls this every few seconds while waiting for the STK callback.
 api.get('/hotspot/pay/:checkoutRequestId', ah(async (req, res) => {
   res.json(await hotspot.getPurchaseStatus(req.params.checkoutRequestId));
+}));
+
+// ---------------------- Returning-customer auto-auth ----------------------
+// Public lookup: portal calls this on mount with the MikroTik-supplied MAC.
+// Returns {active:true, ...creds} if the MAC has a live grant (paid recently
+// OR rebound via SMS-OTP). Portal short-circuits the captive UI and auto-
+// submits the MikroTik login form with the returned credentials.
+api.get('/hotspot/lookup', ah(async (req, res) => {
+  const mac = typeof req.query.mac === 'string' ? req.query.mac : '';
+  res.json(await hotspotDevices.lookup(mac));
+}));
+
+// Public: SMS-OTP MAC rebind for randomized-MAC recovery. Customer paid
+// yesterday on MAC A, today their phone uses MAC B (iOS Private Wi-Fi
+// Address). Enters their phone, gets SMS OTP, verifies, grant copies
+// onto MAC B and they're online without re-paying.
+api.post('/hotspot/rebind/start', ah(async (req, res) => {
+  const body = parse(z.object({
+    phone: z.string().min(7),
+    mac: z.string().min(11),
+  }), req.body);
+  res.json(await hotspotDevices.rebindStart({
+    phone: body.phone,
+    newMac: body.mac,
+    sourceIp: req.ip,
+    userAgent: req.headers['user-agent'],
+  }));
+}));
+api.post('/hotspot/rebind/verify', ah(async (req, res) => {
+  const body = parse(z.object({
+    otpId: z.string().uuid(),
+    code: z.string().min(4).max(8),
+  }), req.body);
+  res.json(await hotspotDevices.rebindVerify(body));
+}));
+
+// Admin: live device list + manual revoke.
+api.get('/admin/active-devices', requireAuth('admin', 'staff'), ah(async (req, res) => {
+  const liveOnly = req.query.live !== 'false';
+  const phone = typeof req.query.phone === 'string' ? req.query.phone : undefined;
+  const limit = req.query.limit ? Number(req.query.limit) : undefined;
+  res.json(await hotspotDevices.listDevices({ liveOnly, phone, limit }));
+}));
+api.delete('/admin/active-devices/:mac', requireAuth('admin'), ah(async (req, res) => {
+  await hotspotDevices.revoke(req.params.mac);
+  res.json({ ok: true });
 }));
 
 // ---------------------- Payment events queue (admin) ----------------------

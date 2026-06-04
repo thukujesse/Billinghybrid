@@ -97,6 +97,18 @@ export default function HotspotPortal() {
   const [purchaseStatus, setPurchaseStatus] = useState<string>('');
   const [pollElapsed, setPollElapsed] = useState(0);
   const [brand, setBrand] = useState<Branding>(DEFAULT_BRANDING);
+  // Auto-grant fast path: if the connecting MAC is in active_devices we
+  // skip the entire voucher/pay UI and silently log the device in.
+  const [autoCheck, setAutoCheck] = useState<'idle' | 'checking' | 'unknown'>('idle');
+  // Rebind flow for randomized-MAC recovery: customer paid before on a
+  // different MAC; verify via SMS OTP and copy the grant onto this MAC.
+  const [rebind, setRebind] = useState<{
+    phase: 'closed' | 'phone' | 'otp';
+    otpId: string | null;
+    code: string;
+    busy: boolean;
+    notice: string | null;
+  }>({ phase: 'closed', otpId: null, code: '', busy: false, notice: null });
   const [mtikParams, setMtikParams] = useState<{
     linkLogin: string; mac: string; ip: string; orig: string;
     mode: 'login' | 'status' | 'logout' | 'error' | 'rlogin';
@@ -139,6 +151,83 @@ export default function HotspotPortal() {
     }
     loadPlans();
   }, []);
+
+  // Returning-customer auto-grant: if the MAC has a live grant, build a
+  // GrantResult from the lookup response and auto-submit the MikroTik
+  // login form. Customer never sees the voucher/pay UI.
+  useEffect(() => {
+    if (!mtikParams?.mac || mtikParams.mode !== 'login') return;
+    setAutoCheck('checking');
+    api<{
+      active: boolean; username?: string; password?: string;
+      validitySeconds?: number; secondsRemaining?: number; rateLimit?: string | null;
+      phone?: string | null;
+    }>(`/hotspot/lookup?mac=${encodeURIComponent(mtikParams.mac)}`)
+      .then((r) => {
+        if (r.active && r.username && r.password) {
+          setGrant({
+            username: r.username,
+            password: r.password,
+            validitySeconds: r.secondsRemaining ?? r.validitySeconds ?? 0,
+            rateLimit: r.rateLimit ?? null,
+            planName: 'Welcome back',
+          });
+          // Pre-fill phone field too — useful if they tap "Buy more time" later.
+          if (r.phone) setPhone(r.phone);
+          setTimeout(() => formRef.current?.submit(), 400);
+        } else {
+          setAutoCheck('unknown');
+        }
+      })
+      .catch(() => setAutoCheck('unknown'));
+  }, [mtikParams?.mac, mtikParams?.mode]);
+
+  const rebindStart = async () => {
+    if (!phoneNormalized) {
+      setRebind((r) => ({ ...r, notice: 'Enter a valid Safaricom number first.' }));
+      return;
+    }
+    if (!mtikParams?.mac) {
+      setRebind((r) => ({ ...r, notice: 'No device MAC available.' }));
+      return;
+    }
+    setRebind((r) => ({ ...r, busy: true, notice: null }));
+    try {
+      const res = await api<{ otpId: string; message: string }>('/hotspot/rebind/start', {
+        method: 'POST',
+        body: JSON.stringify({ phone: phoneNormalized, mac: mtikParams.mac }),
+      });
+      setRebind({ phase: 'otp', otpId: res.otpId, code: '', busy: false, notice: res.message });
+    } catch (e: any) {
+      setRebind((r) => ({ ...r, busy: false, notice: e.message }));
+    }
+  };
+
+  const rebindVerify = async () => {
+    if (!rebind.otpId || rebind.code.length < 4) return;
+    setRebind((r) => ({ ...r, busy: true, notice: null }));
+    try {
+      const res = await api<{
+        active: boolean; username: string; password: string;
+        validitySeconds: number; rateLimit: string | null;
+      }>('/hotspot/rebind/verify', {
+        method: 'POST',
+        body: JSON.stringify({ otpId: rebind.otpId, code: rebind.code }),
+      });
+      if (res.active) {
+        setGrant({
+          username: res.username,
+          password: res.password,
+          validitySeconds: res.validitySeconds,
+          rateLimit: res.rateLimit,
+          planName: 'Welcome back',
+        });
+        setTimeout(() => formRef.current?.submit(), 400);
+      }
+    } catch (e: any) {
+      setRebind((r) => ({ ...r, busy: false, notice: e.message }));
+    }
+  };
 
   const loadPlans = () => {
     setPlansLoading(true);
@@ -438,10 +527,57 @@ export default function HotspotPortal() {
               </div>
             )}
           </>
+        ) : autoCheck === 'checking' ? (
+          <>
+            <div style={styles.okToast}>Checking for your existing subscription…</div>
+            <p style={styles.sub}>One moment.</p>
+          </>
         ) : (
           <>
             {mtikParams?.mikrotikError && (
               <div style={styles.errToast}>Login error: {mtikParams.mikrotikError}</div>
+            )}
+
+            {rebind.phase !== 'closed' && (
+              <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10, padding: 14, marginBottom: 16 }}>
+                <strong style={{ fontSize: 14 }}>Recover your subscription</strong>
+                <p style={{ ...styles.sub, marginTop: 4, marginBottom: 12 }}>
+                  Phone changed its Wi-Fi address? Enter the M-Pesa number you paid with and we'll re-link this device.
+                </p>
+                {rebind.phase === 'phone' ? (
+                  <>
+                    <label style={styles.label}>M-Pesa phone</label>
+                    <input
+                      value={phone}
+                      placeholder="07XX XXX XXX"
+                      onChange={(e) => setPhone(e.target.value)}
+                      inputMode="tel"
+                      autoComplete="tel"
+                      style={styles.input}
+                    />
+                    <button onClick={rebindStart} disabled={!phoneValid || rebind.busy} style={{ ...styles.btnPrimary, opacity: !phoneValid || rebind.busy ? 0.5 : 1 }}>
+                      {rebind.busy ? 'Sending…' : 'Send code'}
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <label style={styles.label}>Enter the 6-digit code we just sent</label>
+                    <input
+                      autoFocus
+                      value={rebind.code}
+                      placeholder="123456"
+                      onChange={(e) => setRebind((r) => ({ ...r, code: e.target.value.replace(/\D/g, '').slice(0, 6) }))}
+                      inputMode="numeric"
+                      style={{ ...styles.input, fontSize: 18, textAlign: 'center', letterSpacing: 4 }}
+                    />
+                    <button onClick={rebindVerify} disabled={rebind.code.length < 6 || rebind.busy} style={{ ...styles.btnPrimary, opacity: rebind.code.length < 6 || rebind.busy ? 0.5 : 1 }}>
+                      {rebind.busy ? 'Verifying…' : 'Verify & connect'}
+                    </button>
+                  </>
+                )}
+                {rebind.notice && <p style={{ ...styles.sub, marginTop: 8, color: '#0f172a' }}>{rebind.notice}</p>}
+                <button onClick={() => setRebind({ phase: 'closed', otpId: null, code: '', busy: false, notice: null })} style={{ ...styles.btnGhost, marginTop: 8 }}>Cancel</button>
+              </div>
             )}
 
             <div style={styles.tabs}>
@@ -553,6 +689,19 @@ export default function HotspotPortal() {
             )}
 
             {error && <div style={styles.errToast}>{error}</div>}
+
+            {rebind.phase === 'closed' && !purchase && (
+              <p style={{ ...styles.sub, marginTop: 16, textAlign: 'center' }}>
+                Already paid on another device?{' '}
+                <a
+                  href="#"
+                  onClick={(e) => { e.preventDefault(); setRebind({ phase: 'phone', otpId: null, code: '', busy: false, notice: null }); }}
+                  style={{ color: brand.color, textDecoration: 'none', fontWeight: 600 }}
+                >
+                  Recover via SMS
+                </a>
+              </p>
+            )}
           </>
         )}
 

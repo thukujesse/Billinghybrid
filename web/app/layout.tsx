@@ -24,6 +24,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           <a href="/resellers">Resellers</a>
           <a href="/routers">Routers</a>
           <a href="/sessions">Sessions</a>
+          <a href="/active-devices">Devices</a>
           <a href="/plugins">Plugins</a>
           <a href="/settings">Settings</a>
           <a href="/login" style={{ marginLeft: 'auto' }}>Sign in</a>
