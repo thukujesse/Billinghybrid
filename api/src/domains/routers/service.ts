@@ -685,12 +685,16 @@ function renderUnifiedConfig(
       `# (login-by=mac,http-pap is in 6.x baseline). The optional set blocks`,
       `# below upgrade the profile if the local RouterOS supports them.`,
       `/ip hotspot profile add name=jtm-hotspot hotspot-address=${gateway} dns-name=hotspot.jtm use-radius=yes login-by=mac,http-pap`,
-      `# mac-auth-mode (6.46+): tells MikroTik to send User-Name=MAC, User-Password=MAC`,
-      `# for the auto-login Access-Request. Without it the default behaviour varies.`,
-      `:do { /ip hotspot profile set [find name=jtm-hotspot] mac-auth-mode=mac-as-username-and-password } on-error={ :put "mac-auth-mode not supported on this RouterOS — portal still works" }`,
-      `# mac-cookie-timeout (6.48+): router-side cookie keyed by MAC, valid for 3d`,
-      `# after last logout. With it, returning devices skip RADIUS entirely.`,
-      `:do { /ip hotspot profile set [find name=jtm-hotspot] login-by=mac-cookie,mac,http-pap mac-cookie-timeout=3d } on-error={ :put "mac-cookie not supported on this RouterOS — falling back to RADIUS MAC-auth for reconnects" }`,
+      `# mac-auth-mode (6.46+): MikroTik sends User-Name=MAC, User-Password=MAC.`,
+      `:do { /ip hotspot profile set [find name=jtm-hotspot] mac-auth-mode=mac-as-username-and-password } on-error={ :put "[skip] mac-auth-mode not supported" }`,
+      `# mac-cookie in login-by (6.46+): enables router-side cookie auto-login.`,
+      `# Split into its own :do so partial support (login-by works, timeout doesn't`,
+      `# or vice versa) doesn't roll back the whole upgrade.`,
+      `:do { /ip hotspot profile set [find name=jtm-hotspot] login-by=mac-cookie,mac,http-pap } on-error={ :put "[skip] mac-cookie value in login-by not supported" }`,
+      `# mac-cookie-timeout (6.48+): how long the router keeps the cookie around.`,
+      `:do { /ip hotspot profile set [find name=jtm-hotspot] mac-cookie-timeout=3d } on-error={ :put "[skip] mac-cookie-timeout not supported (router will use default)" }`,
+      `# Diagnostic: print the final profile so the operator can confirm.`,
+      `:put ("[profile] login-by=" . [/ip hotspot profile get [find name=jtm-hotspot] login-by])`,
       `/ip hotspot add name=jtm-hs interface=jtm-edge-bridge address-pool=jtm-hs-pool profile=jtm-hotspot disabled=no`,
       `# Walled-garden by stable VPS IP — works on every RouterOS version`,
       `# (tls-host needs 7.7+). dst-host rule allows HTTP for older clients.`,
@@ -889,8 +893,10 @@ ${portAdds}
 /ip hotspot profile add name=jtm-hotspot \\
   hotspot-address=${gateway} dns-name=hotspot.jtm \\
   use-radius=yes login-by=mac,http-pap
-:do { /ip hotspot profile set [find name=jtm-hotspot] mac-auth-mode=mac-as-username-and-password } on-error={ :put "mac-auth-mode not supported on this RouterOS" }
-:do { /ip hotspot profile set [find name=jtm-hotspot] login-by=mac-cookie,mac,http-pap mac-cookie-timeout=3d } on-error={ :put "mac-cookie not supported on this RouterOS" }
+:do { /ip hotspot profile set [find name=jtm-hotspot] mac-auth-mode=mac-as-username-and-password } on-error={ :put "[skip] mac-auth-mode not supported" }
+:do { /ip hotspot profile set [find name=jtm-hotspot] login-by=mac-cookie,mac,http-pap } on-error={ :put "[skip] mac-cookie value in login-by not supported" }
+:do { /ip hotspot profile set [find name=jtm-hotspot] mac-cookie-timeout=3d } on-error={ :put "[skip] mac-cookie-timeout not supported" }
+:put ("[profile] login-by=" . [/ip hotspot profile get [find name=jtm-hotspot] login-by])
 
 /ip hotspot add name=jtm-hs interface=jtm-hs-bridge \\
   address-pool=jtm-hs-pool profile=jtm-hotspot disabled=no
@@ -1117,8 +1123,10 @@ export async function buildHotspotScript(
 /ip hotspot profile add name=jtm-hotspot \\
   hotspot-address=${gateway} dns-name=hotspot.jtm \\
   use-radius=yes login-by=mac,http-pap
-:do { /ip hotspot profile set [find name=jtm-hotspot] mac-auth-mode=mac-as-username-and-password } on-error={ :put "mac-auth-mode not supported on this RouterOS" }
-:do { /ip hotspot profile set [find name=jtm-hotspot] login-by=mac-cookie,mac,http-pap mac-cookie-timeout=3d } on-error={ :put "mac-cookie not supported on this RouterOS" }
+:do { /ip hotspot profile set [find name=jtm-hotspot] mac-auth-mode=mac-as-username-and-password } on-error={ :put "[skip] mac-auth-mode not supported" }
+:do { /ip hotspot profile set [find name=jtm-hotspot] login-by=mac-cookie,mac,http-pap } on-error={ :put "[skip] mac-cookie value in login-by not supported" }
+:do { /ip hotspot profile set [find name=jtm-hotspot] mac-cookie-timeout=3d } on-error={ :put "[skip] mac-cookie-timeout not supported" }
+:put ("[profile] login-by=" . [/ip hotspot profile get [find name=jtm-hotspot] login-by])
 
 /ip hotspot add name=jtm-hs \\
   interface=jtm-hs-bridge \\
