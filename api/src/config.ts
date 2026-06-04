@@ -60,11 +60,28 @@ export const config = {
     },
   },
   sms: {
+    // Which provider to dispatch SMS through. 'africastalking' (default —
+    // backwards compatible) or 'bytwave'. Set via SMS_PROVIDER env var.
+    provider: (process.env.SMS_PROVIDER ?? 'africastalking') as 'africastalking' | 'bytwave',
+    // Africa's Talking creds.
     username: process.env.AT_USERNAME ?? 'sandbox',
     apiKey: process.env.AT_API_KEY ?? '',
     senderId: process.env.AT_SENDER_ID ?? '',
-    // Without an API key, SMS is logged rather than sent.
+    // Bytwave creds. Endpoint is overridable because their docs versions
+    // sometimes route through different hosts (api.bytwave.co.ke,
+    // sms.bytwave.com, etc). Payload format is either JSON (default) or
+    // form-urlencoded depending on what your account expects.
+    bytwave: {
+      apiKey: process.env.BYTWAVE_API_KEY ?? '',
+      endpoint: process.env.BYTWAVE_ENDPOINT ?? 'https://api.bytwave.co.ke/v1/sms/send',
+      senderId: process.env.BYTWAVE_SENDER_ID ?? '',
+      payloadFormat: (process.env.BYTWAVE_PAYLOAD_FORMAT ?? 'json') as 'json' | 'form',
+    },
+    // Without credentials for the SELECTED provider, SMS is logged rather
+    // than sent. This avoids dropping messages when only the OTHER
+    // provider is configured.
     get simulated() {
+      if (this.provider === 'bytwave') return !this.bytwave.apiKey;
       return !this.apiKey;
     },
   },

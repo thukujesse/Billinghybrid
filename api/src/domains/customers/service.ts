@@ -211,6 +211,7 @@ export async function updateCustomer(id: string, fields: {
   address?: string | null;
   notes?: string | null;
   status?: 'active' | 'suspended' | 'closed';
+  notification_channels?: Array<'sms' | 'email' | 'whatsapp'>;
 }): Promise<Customer> {
   const sets: string[] = [];
   const vals: any[] = [];
@@ -223,6 +224,7 @@ export async function updateCustomer(id: string, fields: {
   addField('address', fields.address);
   addField('notes', fields.notes);
   addField('status', fields.status);
+  addField('notification_channels', fields.notification_channels);
   // Snapshot the before-state for the audit log. Skipped when nothing changes.
   const beforeR = await query<Customer>(
     `SELECT ${CUSTOMER_COLS} FROM customers WHERE id = $1`, [id]

@@ -610,8 +610,20 @@ api.put('/customers/:id', ah(async (req, res) => {
     address: z.string().max(200).nullable().optional(),
     notes: z.string().max(2000).nullable().optional(),
     status: z.enum(['active', 'suspended', 'closed']).optional(),
+    notification_channels: z.array(z.enum(['sms', 'email', 'whatsapp'])).optional(),
   }), req.body);
   res.json(await customers.updateCustomer(req.params.id, body));
+}));
+
+// Customer self-serve channel preferences — mirrors the admin PUT but
+// gated by the customer's own JWT, so a customer can opt in/out of
+// channels from /portal without operator help.
+api.put('/portal/notification-channels', requireAuth('customer'), ah(async (req, res) => {
+  const body = parse(z.object({
+    channels: z.array(z.enum(['sms', 'email', 'whatsapp'])),
+  }), req.body);
+  await customers.updateCustomer(req.user!.sub, { notification_channels: body.channels });
+  res.json({ ok: true, channels: body.channels });
 }));
 api.get('/customers/:id/payments', ah(async (req, res) => {
   const limit = req.query.limit ? Math.min(Number(req.query.limit), 200) : 50;

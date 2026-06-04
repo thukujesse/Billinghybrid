@@ -22,17 +22,37 @@ const PORTAL_URL = () => `https://${config.portal.host}/portal`;
 const RENEW_URL  = (username: string) =>
   `https://${config.portal.host}/renew?username=${encodeURIComponent(username)}`;
 
+type Channel = 'sms' | 'email' | 'whatsapp';
+
 interface CustomerRow {
   id: string;
   full_name: string;
   phone: string | null;
+  email: string | null;
+  notification_channels: Channel[];
 }
 
 async function getCustomerForSms(customerId: string): Promise<CustomerRow | null> {
   const r = await query<CustomerRow>(
-    `SELECT id, full_name, phone FROM customers WHERE id = $1`, [customerId]
+    `SELECT id, full_name, phone, email, notification_channels
+       FROM customers WHERE id = $1`,
+    [customerId]
   );
-  return r.rows[0] ?? null;
+  if (!r.rows[0]) return null;
+  return {
+    ...r.rows[0],
+    notification_channels: (r.rows[0].notification_channels ?? ['sms']) as Channel[],
+  };
+}
+
+/** Resolve a recipient address for the channel. Returns null if the
+ *  customer hasn't supplied the address for that channel (e.g. asked
+ *  for email notifications but no email on file). */
+function addressFor(channel: Channel, c: CustomerRow): string | null {
+  if (channel === 'email') return c.email;
+  // SMS + WhatsApp both ride on the phone field. Phone is normalized
+  // E.164 by the customer-create path; both providers accept that.
+  return c.phone;
 }
 
 /**
@@ -70,23 +90,80 @@ async function markFailed(id: string, err: unknown): Promise<void> {
   ).catch(() => {/* best-effort */});
 }
 
+/**
+ * Fan out a single notification across every channel the customer is
+ * opted into. Dedup is per (customer, kind, dedupKey, channel) so a
+ * customer on both SMS + email gets one of each, not two of one and
+ * none of the other.
+ *
+ * For email, the body is prefixed with a Subject line so the
+ * notifications service can split it ("Subject\nBody" convention).
+ */
+async function fireNotification(input: {
+  customerId: string;
+  customer: CustomerRow;
+  kind: string;
+  dedupKey: string;
+  body: string;
+  subject?: string;
+}): Promise<{ sent: number; skipped: number }> {
+  let sent = 0, skipped = 0;
+  const channels = input.customer.notification_channels.length > 0
+    ? input.customer.notification_channels
+    : (['sms'] as Channel[]); // safety net — never silent-drop
+
+  for (const channel of channels) {
+    const addr = addressFor(channel, input.customer);
+    if (!addr) { skipped++; continue; }
+    // Email channel adopts a Subject\nBody envelope so the email module's
+    // splitSubject() helper picks a meaningful subject line.
+    const body = channel === 'email' && input.subject
+      ? `${input.subject}\n${input.body}`
+      : input.body;
+    // Per-channel dedup key so opting into multiple channels doesn't
+    // share a single slot (and accidentally suppress one).
+    const slot = await reserveSlot({
+      customerId: input.customerId,
+      kind: input.kind,
+      dedupKey: `${input.dedupKey}:${channel}`,
+      toAddress: addr,
+      body,
+    });
+    if (slot.alreadySent) { skipped++; continue; }
+    // Record channel on the log row so the operator can see which channel
+    // each delivery used. (The status column tracks success/failure.)
+    await query(
+      `UPDATE customer_notifications_log SET channel = $2 WHERE id = $1`,
+      [slot.id, channel]
+    ).catch(() => {/* best-effort */});
+    try {
+      await notify(channel, addr, body);
+      sent++;
+    } catch (err) {
+      await markFailed(slot.id, err);
+      console.error(`[notify-${channel}:${input.kind}]`, (err as Error).message);
+    }
+  }
+  return { sent, skipped };
+}
+
+// Back-compat shim: keep the old fireSms signature so we don't have to
+// touch every helper. New code should call fireNotification directly.
 async function fireSms(input: {
   customerId: string; kind: string; dedupKey: string;
-  phone: string; body: string;
+  phone: string; body: string; subject?: string;
 }): Promise<{ sent: boolean; deduped: boolean }> {
-  const slot = await reserveSlot({
-    customerId: input.customerId, kind: input.kind,
-    dedupKey: input.dedupKey, toAddress: input.phone, body: input.body,
+  const customer = await getCustomerForSms(input.customerId);
+  if (!customer) return { sent: false, deduped: false };
+  const r = await fireNotification({
+    customerId: input.customerId,
+    customer,
+    kind: input.kind,
+    dedupKey: input.dedupKey,
+    body: input.body,
+    subject: input.subject,
   });
-  if (slot.alreadySent) return { sent: false, deduped: true };
-  try {
-    await notify('sms', input.phone, input.body);
-    return { sent: true, deduped: false };
-  } catch (err) {
-    await markFailed(slot.id, err);
-    console.error(`[notify-sms:${input.kind}]`, (err as Error).message);
-    return { sent: false, deduped: false };
-  }
+  return { sent: r.sent > 0, deduped: r.sent === 0 && r.skipped > 0 };
 }
 
 // =====================================================================

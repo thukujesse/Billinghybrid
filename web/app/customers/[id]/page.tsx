@@ -30,6 +30,7 @@ interface CustomerDetail {
   notes: string | null;
   created_at: string;
   updated_at: string;
+  notification_channels: Array<'sms' | 'email' | 'whatsapp'>;
   services: Service[];
 }
 
@@ -249,6 +250,27 @@ export default function CustomerDetail() {
     }
   };
 
+  const toggleChannel = async (channel: 'sms' | 'email' | 'whatsapp') => {
+    if (!customer) return;
+    const current = customer.notification_channels ?? [];
+    const next = current.includes(channel)
+      ? current.filter((c) => c !== channel)
+      : [...current, channel];
+    setBusy(true);
+    try {
+      await api(`/customers/${customerId}`, {
+        method: 'PUT',
+        body: JSON.stringify({ notification_channels: next }),
+      });
+      setToast({ ok: true, msg: `Channels: ${next.length ? next.join(', ') : 'opted out'}` });
+      load();
+    } catch (e: any) {
+      setToast({ ok: false, msg: e.message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const resendOnboardingSms = async (serviceId: string, username: string) => {
     if (!customer?.phone) {
       setToast({ ok: false, msg: 'No phone on file for this customer.' });
@@ -347,6 +369,27 @@ export default function CustomerDetail() {
               <tr><td style={{ color: 'var(--muted)' }}>Email</td><td>{customer.email ?? '—'}</td></tr>
               <tr><td style={{ color: 'var(--muted)' }}>Address</td><td>{customer.address ?? '—'}</td></tr>
               <tr><td style={{ color: 'var(--muted)' }}>Notes</td><td style={{ whiteSpace: 'pre-wrap' }}>{customer.notes ?? '—'}</td></tr>
+              <tr>
+                <td style={{ color: 'var(--muted)' }}>Notifications</td>
+                <td>
+                  {(['sms','email','whatsapp'] as const).map((ch) => {
+                    const on = (customer.notification_channels ?? []).includes(ch);
+                    return (
+                      <button key={ch} disabled={busy}
+                        onClick={() => toggleChannel(ch)}
+                        className={on ? '' : 'ghost'}
+                        style={{ fontSize: 11, padding: '4px 10px', marginRight: 6, textTransform: 'uppercase', opacity: busy ? 0.5 : 1 }}>
+                        {ch}
+                      </button>
+                    );
+                  })}
+                  {(customer.notification_channels ?? []).length === 0 && (
+                    <span style={{ fontSize: 11, color: 'var(--red, #b91c1c)', marginLeft: 6 }}>
+                      Opted out
+                    </span>
+                  )}
+                </td>
+              </tr>
             </tbody>
           </table>
         </div>

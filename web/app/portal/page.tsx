@@ -18,10 +18,12 @@ interface Service {
   username: string | null;
   plan_id: string | null;
   plan_name: string | null;
+  plan_price_cents: number | null;
   rate_limit: string | null;
   status: 'active' | 'suspended' | 'expired' | 'cancelled';
   expiry_date: string | null;
   seconds_remaining: number | null;
+  auto_renew: boolean;
   current_session: {
     started_at: string;
     framed_ip: string | null;
@@ -39,6 +41,11 @@ interface PortalMe {
     phone: string | null;
     email: string | null;
     status: 'active' | 'suspended' | 'closed';
+    notification_channels: Array<'sms' | 'email' | 'whatsapp'>;
+  };
+  wallet: {
+    balance_cents: number;
+    updated_at: string;
   };
   services: Service[];
   recent_payments: Array<{
@@ -48,6 +55,17 @@ interface PortalMe {
     status: string;
     created_at: string;
   }>;
+}
+
+interface WalletTxn {
+  id: string;
+  kind: 'topup' | 'renewal_debit' | 'adjustment' | 'refund';
+  amount_cents: number;
+  balance_after_cents: number;
+  reference: string | null;
+  notes: string | null;
+  actor: string;
+  created_at: string;
 }
 
 interface Plan {
@@ -115,13 +133,17 @@ function formatRemaining(secs: number | null): { label: string; color: string } 
 }
 
 export default function CustomerPortal() {
-  const [phase, setPhase] = useState<'login_phone' | 'login_code' | 'home' | 'renew' | 'paying'>('login_phone');
+  const [phase, setPhase] = useState<'login_phone' | 'login_code' | 'home' | 'renew' | 'paying' | 'topup' | 'txns'>('login_phone');
   const [phone, setPhone] = useState('');
   const [code, setCode] = useState('');
   const [me, setMe] = useState<PortalMe | null>(null);
   const [plans, setPlans] = useState<Plan[]>([]);
   const [renew, setRenew] = useState<{ service: Service; planId: string; phone: string } | null>(null);
   const [pollState, setPollState] = useState<{ checkoutRequestId: string; status: string; failureReason?: string; elapsedSec: number } | null>(null);
+  // Wallet top-up state: customer picks amount, we STK-push for that exact
+  // amount, then reuse the existing polling flow with a "topup" intent.
+  const [topup, setTopup] = useState<{ amount: number; phone: string }>({ amount: 500, phone: '' });
+  const [txns, setTxns] = useState<WalletTxn[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
@@ -181,6 +203,27 @@ export default function CustomerPortal() {
     }
   };
 
+  const togglePortalChannel = async (channel: 'sms' | 'email' | 'whatsapp') => {
+    if (!me) return;
+    const current = me.customer.notification_channels ?? ['sms'];
+    const next = current.includes(channel)
+      ? current.filter((c) => c !== channel)
+      : [...current, channel];
+    setBusy(true);
+    try {
+      await portalApi('/portal/notification-channels', {
+        method: 'PUT',
+        body: JSON.stringify({ channels: next }),
+      });
+      const m = await portalApi<PortalMe>('/portal/me');
+      setMe(m);
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const logout = () => {
     localStorage.removeItem(TOKEN_KEY);
     setMe(null);
@@ -195,6 +238,89 @@ export default function CustomerPortal() {
       phone: me?.customer.phone ?? phone,
     });
     setPhase('renew');
+  };
+
+  const openTopup = () => {
+    setTopup({ amount: 500, phone: me?.customer.phone ?? phone });
+    setError(null); setInfo(null);
+    setPhase('topup');
+  };
+
+  const submitTopup = async () => {
+    if (!me) return;
+    const norm = normalizePhone(topup.phone);
+    if (!norm) { setError('Enter a valid M-Pesa number.'); return; }
+    if (topup.amount < 10) { setError('Minimum top-up is KES 10.'); return; }
+    setBusy(true); setError(null);
+    try {
+      const r = await portalApi<{ checkoutRequestId: string; customerMessage: string; simulated: boolean }>(
+        '/portal/wallet/topup', {
+          method: 'POST',
+          body: JSON.stringify({ amount_kes: topup.amount, phone: norm }),
+        }
+      );
+      setPollState({ checkoutRequestId: r.checkoutRequestId, status: 'pending', elapsedSec: 0 });
+      setPhase('paying');
+      pollPayment(r.checkoutRequestId, r.simulated);
+      setInfo(r.simulated ? 'Simulation — auto-confirming.' : 'STK push sent. Approve on your phone.');
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Renew straight from wallet — no STK push, no waiting. Server debits +
+  // extends expiry in one transaction; we just refresh /me and the new
+  // expiry shows up on the home screen.
+  const renewFromWallet = async (service: Service) => {
+    if (!confirm(`Use wallet to renew ${service.plan_name}? You'll be charged KES ${((service.plan_price_cents ?? 0) / 100).toFixed(0)}.`)) return;
+    setBusy(true); setError(null);
+    try {
+      await portalApi('/portal/wallet/renew', {
+        method: 'POST',
+        body: JSON.stringify({ service_id: service.id }),
+      });
+      const m = await portalApi<PortalMe>('/portal/me');
+      setMe(m);
+      setInfo(`Renewed from wallet — new expiry ${new Date(m.services.find((s) => s.id === service.id)?.expiry_date ?? '').toLocaleString()}`);
+    } catch (e: any) {
+      // Surface insufficient-balance with a helpful next-action prompt.
+      setError(e.message.includes('insufficient')
+        ? 'Wallet balance too low. Top up first.'
+        : e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggleAutoRenew = async (service: Service) => {
+    setBusy(true); setError(null);
+    try {
+      await portalApi(`/portal/services/${service.id}/auto-renew`, {
+        method: 'POST',
+        body: JSON.stringify({ enabled: !service.auto_renew }),
+      });
+      const m = await portalApi<PortalMe>('/portal/me');
+      setMe(m);
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const openTxns = async () => {
+    setBusy(true); setError(null);
+    try {
+      const t = await portalApi<WalletTxn[]>('/portal/wallet/txns?limit=100');
+      setTxns(t);
+      setPhase('txns');
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
   };
 
   const submitRenew = async () => {
@@ -339,6 +465,65 @@ export default function CustomerPortal() {
               </div>
             </div>
 
+            {/* Wallet balance — large + accent so customers see the headline
+                number first; top-up button beneath, history link to the right. */}
+            <div style={{ ...card, background: 'linear-gradient(135deg, rgba(37,99,235,0.06) 0%, #fff 100%)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
+                <div>
+                  <div style={{ fontSize: 11, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600 }}>Wallet</div>
+                  <div style={{ fontSize: 28, fontWeight: 700, color: '#2563eb', marginTop: 4 }}>
+                    KES {(me.wallet.balance_cents / 100).toFixed(0)}
+                  </div>
+                </div>
+                <button onClick={openTxns} style={{ ...btnGhost, width: 'auto', padding: '6px 10px', fontSize: 11 }}>
+                  History
+                </button>
+              </div>
+              <button onClick={openTopup} style={{ ...btn, marginTop: 12 }}>Top up via M-Pesa</button>
+              <p style={{ ...sub, fontSize: 11, marginTop: 8 }}>
+                Auto-renew enabled services will be paid from this balance when they expire.
+              </p>
+            </div>
+
+            {/* Notification channel preferences — tap a chip to opt in/out.
+                Renewal confirmations, top-up receipts, and expiry warnings
+                fan out to every selected channel. */}
+            <div style={card}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>How we contact you</div>
+                {(me.customer.notification_channels ?? []).length === 0 && (
+                  <span style={{ fontSize: 11, color: '#b91c1c' }}>Opted out — won't receive messages</span>
+                )}
+              </div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {(['sms', 'email', 'whatsapp'] as const).map((ch) => {
+                  const on = (me.customer.notification_channels ?? []).includes(ch);
+                  const disabled = busy ||
+                    (ch === 'email'    && !me.customer.email) ||
+                    ((ch === 'sms' || ch === 'whatsapp') && !me.customer.phone);
+                  return (
+                    <button key={ch} onClick={() => togglePortalChannel(ch)} disabled={disabled}
+                      style={{
+                        ...btn,
+                        flex: '0 0 auto',
+                        background: on ? '#15803d' : 'transparent',
+                        color: on ? '#fff' : '#475569',
+                        border: on ? 'none' : '1px solid #e2e8f0',
+                        padding: '8px 14px',
+                        fontSize: 12,
+                        opacity: disabled ? 0.4 : 1,
+                        textTransform: 'uppercase',
+                      }}>
+                      {ch}
+                    </button>
+                  );
+                })}
+              </div>
+              <p style={{ ...sub, fontSize: 11, marginTop: 8 }}>
+                Email needs a saved address; SMS &amp; WhatsApp use your phone.
+              </p>
+            </div>
+
             {me.services.length === 0 ? (
               <div style={card}>
                 <p style={sub}>No services on file yet. Contact support to set up your internet.</p>
@@ -405,9 +590,42 @@ export default function CustomerPortal() {
                     </div>
                   )}
 
-                  <button onClick={() => openRenew(s)} style={{ ...btn, marginTop: 12 }}>
+                  {/* Wallet-driven renew — only when we know the plan price
+                      AND the wallet covers it. The pure M-Pesa fallback is
+                      always available below. */}
+                  {s.plan_price_cents && me.wallet.balance_cents >= s.plan_price_cents ? (
+                    <button onClick={() => renewFromWallet(s)}
+                      disabled={busy}
+                      style={{ ...btn, marginTop: 12, background: '#15803d' }}>
+                      Renew from wallet · KES {(s.plan_price_cents / 100).toFixed(0)}
+                    </button>
+                  ) : null}
+                  <button onClick={() => openRenew(s)} style={{
+                    ...(s.plan_price_cents && me.wallet.balance_cents >= s.plan_price_cents ? btnGhost : btn),
+                    marginTop: 8,
+                  }}>
                     Renew via M-Pesa
                   </button>
+
+                  {/* Per-service auto-renew toggle. When ON, the worker
+                      debits the wallet 24h before expiry and silently
+                      extends the service. */}
+                  <div style={{ marginTop: 10, padding: 10, background: '#f8fafc', borderRadius: 6, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ fontSize: 12 }}>
+                      <div style={{ fontWeight: 600 }}>Auto-renew</div>
+                      <div style={{ color: '#64748b', fontSize: 11 }}>
+                        {s.auto_renew ? 'On — paid from wallet on expiry' : 'Off — you renew manually'}
+                      </div>
+                    </div>
+                    <button onClick={() => toggleAutoRenew(s)} disabled={busy}
+                      style={{
+                        background: s.auto_renew ? '#15803d' : '#cbd5e1',
+                        color: '#fff', border: 'none', borderRadius: 12,
+                        padding: '4px 10px', fontSize: 11, fontWeight: 600, cursor: 'pointer',
+                      }}>
+                      {s.auto_renew ? 'ON' : 'OFF'}
+                    </button>
+                  </div>
                 </div>
               );
             })}
@@ -466,6 +684,86 @@ export default function CustomerPortal() {
               style={{ ...btnGhost, marginTop: 16 }}>
               I'll check later
             </button>
+          </div>
+        )}
+
+        {phase === 'topup' && me && (
+          <div style={card}>
+            <h2 style={{ marginTop: 0, fontSize: 18 }}>Top up wallet</h2>
+            <p style={sub}>Current balance: <strong>KES {(me.wallet.balance_cents / 100).toFixed(0)}</strong></p>
+
+            <label style={{ ...label, marginTop: 12, display: 'block' }}>Amount (KES)</label>
+            <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+              {[200, 500, 1000, 2000, 5000].map((amt) => (
+                <button key={amt} onClick={() => setTopup({ ...topup, amount: amt })}
+                  style={{
+                    ...btnGhost, padding: '8px 10px', fontSize: 12,
+                    background: topup.amount === amt ? 'rgba(37,99,235,0.12)' : 'transparent',
+                    color: topup.amount === amt ? '#2563eb' : '#475569',
+                    borderColor: topup.amount === amt ? '#2563eb' : '#e2e8f0',
+                  }}>
+                  {amt}
+                </button>
+              ))}
+            </div>
+            <input value={String(topup.amount)} type="number" min={10} max={70000}
+              onChange={(e) => setTopup({ ...topup, amount: Number(e.target.value) || 0 })}
+              style={{ ...input, marginTop: 8, fontSize: 18, textAlign: 'center', fontWeight: 600 }} />
+
+            <label style={{ ...label, marginTop: 12, display: 'block' }}>M-Pesa phone</label>
+            <input value={topup.phone} onChange={(e) => setTopup({ ...topup, phone: e.target.value })}
+              inputMode="tel" placeholder="07XX XXX XXX" style={input} />
+
+            <button onClick={submitTopup} disabled={busy || topup.amount < 10}
+              style={{ ...btn, marginTop: 16, opacity: busy || topup.amount < 10 ? 0.5 : 1 }}>
+              {busy ? 'Sending…' : `Pay KES ${topup.amount} via M-Pesa`}
+            </button>
+            <button onClick={() => { setPhase('home'); setError(null); }} style={{ ...btnGhost, marginTop: 8 }}>
+              Cancel
+            </button>
+          </div>
+        )}
+
+        {phase === 'txns' && me && (
+          <div style={card}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+              <h2 style={{ margin: 0, fontSize: 18 }}>Wallet history</h2>
+              <button onClick={() => setPhase('home')} style={{ ...btnGhost, width: 'auto', padding: '6px 10px', fontSize: 11 }}>
+                Back
+              </button>
+            </div>
+            <div style={{ marginBottom: 12, padding: 10, background: '#f8fafc', borderRadius: 6, fontSize: 13 }}>
+              Current balance: <strong style={{ color: '#2563eb' }}>KES {(me.wallet.balance_cents / 100).toFixed(0)}</strong>
+            </div>
+            {txns.length === 0 ? (
+              <p style={sub}>No wallet activity yet.</p>
+            ) : txns.map((t) => {
+              const amt = t.amount_cents / 100;
+              const isCredit = amt > 0;
+              return (
+                <div key={t.id} style={{
+                  display: 'flex', justifyContent: 'space-between', padding: '10px 0',
+                  borderBottom: '1px solid #f1f5f9', fontSize: 13,
+                }}>
+                  <div>
+                    <div style={{ fontWeight: 600, textTransform: 'capitalize' }}>{t.kind.replace('_', ' ')}</div>
+                    <div style={{ fontSize: 10, color: '#94a3b8' }}>
+                      {new Date(t.created_at).toLocaleString()} · by {t.actor}
+                      {t.reference && <> · {t.reference}</>}
+                    </div>
+                    {t.notes && <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>{t.notes}</div>}
+                  </div>
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{ fontWeight: 700, color: isCredit ? '#15803d' : '#b91c1c' }}>
+                      {isCredit ? '+' : ''}KES {amt.toFixed(0)}
+                    </div>
+                    <div style={{ fontSize: 10, color: '#94a3b8' }}>
+                      bal {(t.balance_after_cents / 100).toFixed(0)}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>

@@ -13,6 +13,7 @@ import { query } from '../../db/pool.js';
 import { notFound, badRequest } from '../../lib/errors.js';
 import { getCustomer, getCustomerPayments } from '../customers/service.js';
 import { pay as renewPay } from '../renew/service.js';
+import { getWallet as getCustomerWallet, listTxns as listWalletTxns } from '../customers/wallet.js';
 
 export interface PortalMe {
   customer: {
@@ -22,6 +23,11 @@ export interface PortalMe {
     phone: string | null;
     email: string | null;
     status: 'active' | 'suspended' | 'closed';
+    notification_channels: Array<'sms' | 'email' | 'whatsapp'>;
+  };
+  wallet: {
+    balance_cents: number;
+    updated_at: string;
   };
   services: Array<{
     id: string;
@@ -29,10 +35,12 @@ export interface PortalMe {
     username: string | null;
     plan_id: string | null;
     plan_name: string | null;
+    plan_price_cents: number | null;
     rate_limit: string | null;
     status: 'active' | 'suspended' | 'expired' | 'cancelled';
     expiry_date: string | null;
     seconds_remaining: number | null;
+    auto_renew: boolean;
     // Live session counters (radacct) — null when no current session.
     current_session: {
       started_at: string;
@@ -55,13 +63,24 @@ export interface PortalMe {
 export async function getPortalMe(customerId: string): Promise<PortalMe> {
   const c = await getCustomer(customerId);
 
-  // Enrich every service with: plan name, live session, period totals.
+  // Enrich every service with: plan name + price, auto-renew flag,
+  // live session, period totals.
   const enriched = await Promise.all(c.services.map(async (s) => {
     let plan_name: string | null = null;
+    let plan_price_cents: number | null = null;
     if (s.plan_id) {
-      const pr = await query<{ name: string }>(`SELECT name FROM plans WHERE id = $1`, [s.plan_id]);
+      const pr = await query<{ name: string; price_cents: number }>(
+        `SELECT name, price_cents FROM plans WHERE id = $1`, [s.plan_id]
+      );
       plan_name = pr.rows[0]?.name ?? null;
+      plan_price_cents = pr.rows[0]?.price_cents ?? null;
     }
+    // auto_renew was added by migration 034 — read via fresh query rather
+    // than threading it through getCustomer for now.
+    const ar = await query<{ auto_renew: boolean }>(
+      `SELECT auto_renew FROM services WHERE id = $1`, [s.id]
+    );
+    const auto_renew = ar.rows[0]?.auto_renew ?? true;
     const secondsRemaining = s.expiry_date
       ? Math.max(0, Math.floor((new Date(s.expiry_date).getTime() - Date.now()) / 1000))
       : null;
@@ -108,16 +127,21 @@ export async function getPortalMe(customerId: string): Promise<PortalMe> {
       username: s.username,
       plan_id: s.plan_id,
       plan_name,
+      plan_price_cents,
       rate_limit: s.rate_limit,
       status: s.status,
       expiry_date: s.expiry_date,
       seconds_remaining: secondsRemaining,
+      auto_renew,
       current_session,
       period_bytes_total,
     };
   }));
 
-  const payments = await getCustomerPayments(customerId, 10);
+  const [payments, wallet] = await Promise.all([
+    getCustomerPayments(customerId, 10),
+    getCustomerWallet(customerId),
+  ]);
 
   return {
     customer: {
@@ -127,6 +151,19 @@ export async function getPortalMe(customerId: string): Promise<PortalMe> {
       phone: c.phone,
       email: c.email,
       status: c.status,
+      // notification_channels lives on the customer row but isn't part of
+      // the `Customer` interface yet — read it via a side query rather
+      // than widening the type globally for this one consumer.
+      notification_channels: await (async () => {
+        const r = await query<{ notification_channels: Array<'sms' | 'email' | 'whatsapp'> }>(
+          `SELECT notification_channels FROM customers WHERE id = $1`, [c.id]
+        );
+        return r.rows[0]?.notification_channels ?? ['sms'];
+      })(),
+    },
+    wallet: {
+      balance_cents: wallet.balance_cents,
+      updated_at: wallet.updated_at,
     },
     services: enriched,
     recent_payments: payments.map((p) => ({
@@ -138,6 +175,9 @@ export async function getPortalMe(customerId: string): Promise<PortalMe> {
     })),
   };
 }
+
+// Re-export so the portal route layer doesn't need its own wallet import.
+export { listWalletTxns };
 
 /**
  * Customer-initiated renewal — wraps the existing hotspot M-Pesa STK
