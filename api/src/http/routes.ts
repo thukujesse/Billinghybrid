@@ -39,6 +39,7 @@ import * as renew from '../domains/renew/service.js';
 import { getTemplate as getHotspotTemplate, TEMPLATE_NAMES as HOTSPOT_TEMPLATE_NAMES } from '../domains/hotspot/templates.js';
 import * as paymentEvents from '../domains/paymentEvents/service.js';
 import * as hotspotDevices from '../domains/hotspotDevices/service.js';
+import * as deviceTokens from '../domains/hotspotDevices/tokens.js';
 
 export const api = Router();
 
@@ -532,6 +533,15 @@ api.get('/hotspot/lookup', ah(async (req, res) => {
   res.json(await hotspotDevices.lookup(mac));
 }));
 
+// Rich session info for the status page: plan name, voucher code, expiry,
+// data cap, bytes used. Public — the data is for the customer's own MAC.
+api.get('/hotspot/session-info', ah(async (req, res) => {
+  const mac = typeof req.query.mac === 'string' ? req.query.mac : '';
+  const info = await hotspotDevices.getSessionInfo(mac);
+  if (!info) return res.json({ found: false });
+  res.json({ found: true, ...info });
+}));
+
 // Public: SMS-OTP MAC rebind for randomized-MAC recovery. Customer paid
 // yesterday on MAC A, today their phone uses MAC B (iOS Private Wi-Fi
 // Address). Enters their phone, gets SMS OTP, verifies, grant copies
@@ -566,6 +576,76 @@ api.get('/admin/active-devices', requireAuth('admin', 'staff'), ah(async (req, r
 api.delete('/admin/active-devices/:mac', requireAuth('admin'), ah(async (req, res) => {
   await hotspotDevices.revoke(req.params.mac);
   res.json({ ok: true });
+}));
+
+// ---------------------- Sprint 2.5: device-token silent re-auth ----------------------
+// Survives MAC randomization without SMS friction. Portal stores a 32-byte
+// opaque token in localStorage on first successful login; presents it on
+// every subsequent connect; server rotates it on every use. Token alone
+// doesn't grant access — the customer's plan still has to be live.
+
+// Speculative call from portal on mount. Heavily rate-limited per IP since
+// it's the obvious target for token enumeration.
+const autoReconnectLimit = rateLimit({ name: 'autoreconnect', windowMs: 60_000, max: 30 });
+api.post('/hotspot/auto-reconnect', autoReconnectLimit, ah(async (req, res) => {
+  const body = parse(z.object({
+    token: z.string().min(20),
+    mac: z.string().min(11),
+    fingerprint: z.string().min(16).max(128).optional(),
+  }), req.body);
+  res.json(await deviceTokens.tryAutoReconnect({
+    rawToken: body.token,
+    newMac: body.mac,
+    fingerprintHash: body.fingerprint ?? null,
+    ip: req.ip,
+    userAgent: req.headers['user-agent'],
+  }));
+}));
+
+// Issue a fresh token after a successful login. Authorization: the caller
+// must reference a live active_devices grant for the MAC — we read the
+// phone from that row so the caller can't bind a token to an arbitrary
+// number they don't own.
+const issueTokenLimit = rateLimit({ name: 'issuetoken', windowMs: 60_000, max: 10 });
+api.post('/hotspot/issue-token', issueTokenLimit, ah(async (req, res) => {
+  const body = parse(z.object({
+    mac: z.string().min(11),
+    fingerprint: z.string().min(16).max(128).optional(),
+  }), req.body);
+  const dev = await hotspotDevices.lookup(body.mac);
+  if (!dev.active || !dev.phone) {
+    return res.status(409).json({ error: 'no_active_grant' });
+  }
+  const tok = await deviceTokens.issueToken({
+    phone: dev.phone,
+    mac: body.mac,
+    fingerprintHash: body.fingerprint ?? null,
+    ip: req.ip,
+    userAgent: req.headers['user-agent'],
+  });
+  res.json({ token: tok.token, expiresAt: tok.expiresAt });
+}));
+
+// "Forget this device" — customer-driven token revoke.
+api.post('/hotspot/forget-device', ah(async (req, res) => {
+  const body = parse(z.object({ token: z.string().min(20) }), req.body);
+  res.json(await deviceTokens.forgetDevice(body.token, 'user_revoked'));
+}));
+
+// Admin observability for the auto-reconnect pipeline.
+api.get('/admin/auto-reconnect-log', requireAuth('admin', 'staff'), ah(async (req, res) => {
+  const phone = typeof req.query.phone === 'string' ? req.query.phone : undefined;
+  const limit = req.query.limit ? Number(req.query.limit) : undefined;
+  res.json(await deviceTokens.listRecent(limit, phone));
+}));
+api.get('/admin/auto-reconnect-stats', requireAuth('admin', 'staff'), ah(async (req, res) => {
+  const hours = req.query.hours ? Number(req.query.hours) : 24;
+  res.json(await deviceTokens.recentStats(hours));
+}));
+api.post('/admin/auto-reconnect/forget-phone', requireAuth('admin'), ah(async (req, res) => {
+  const body = parse(z.object({ phone: z.string().min(7) }), req.body);
+  const n = await deviceTokens.forgetAllForPhone(body.phone, 'admin_revoked');
+  res.json({ revoked: n });
 }));
 
 // ---------------------- Payment events queue (admin) ----------------------

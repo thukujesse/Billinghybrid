@@ -35,11 +35,55 @@ interface Branding {
 type Tab = 'voucher' | 'pay';
 
 const PHONE_KEY = 'jtm_hotspot_phone';
+const TOKEN_KEY = 'jtm_hotspot_token';
+const FP_KEY = 'jtm_hotspot_fp';
 const DEFAULT_BRANDING: Branding = {
   name: 'HUB Networks',
   color: '#2563eb',
   tagline: 'Connect to Wi-Fi',
 };
+
+// ---------- Device-token plumbing (Sprint 2.5 silent re-auth) ----------
+// Tokens survive MAC randomization where MAC-cookies + portal MAC lookup
+// can't. Stored in localStorage (cookies get cleared by "clear browsing
+// data" sweeps; localStorage tends to stick). Server rotates on every use.
+
+async function sha256Hex(input: string): Promise<string> {
+  const buf = new TextEncoder().encode(input);
+  const digest = await crypto.subtle.digest('SHA-256', buf);
+  return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Fingerprint inputs are deliberately the stable subset of common
+ * fingerprinting signals. Excludes canvas/audio (heavy + flaky across
+ * browser updates) and IP (rotates with NAT). Goal: identify the same
+ * physical browser across MAC rotations, not defeat private-browsing.
+ */
+async function computeFingerprint(): Promise<string> {
+  try {
+    const parts = [
+      navigator.userAgent || '',
+      navigator.language || '',
+      String((navigator.languages || []).slice(0, 4).join(',')),
+      String(navigator.hardwareConcurrency || 0),
+      `${screen.width}x${screen.height}x${screen.colorDepth}`,
+      Intl.DateTimeFormat().resolvedOptions().timeZone || '',
+      String((navigator as any).platform || ''),
+    ];
+    return await sha256Hex(parts.join('|'));
+  } catch {
+    return '';
+  }
+}
+
+async function getFingerprint(): Promise<string> {
+  const cached = localStorage.getItem(FP_KEY);
+  if (cached && cached.length === 64) return cached;
+  const fp = await computeFingerprint();
+  if (fp) localStorage.setItem(FP_KEY, fp);
+  return fp;
+}
 
 function normalizePhone(raw: string): string | null {
   const digits = raw.replace(/\D/g, '');
@@ -76,6 +120,31 @@ function formatSpeed(kbps: number | null): string | null {
 }
 
 // Hex → "r,g,b" so we can use rgba() with alpha for soft tints.
+function formatBytes(b: number): string {
+  if (b < 1024) return `${b} B`;
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+  if (b < 1024 * 1024 * 1024) return `${(b / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(b / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+function DataCapBar({ bytesUsed, capMb, brand, brandRgb }: { bytesUsed: number; capMb: number; brand: string; brandRgb: string }) {
+  const usedMb = bytesUsed / (1024 * 1024);
+  const pct = Math.min(100, Math.round((usedMb / capMb) * 100));
+  const remaining = Math.max(0, capMb - usedMb);
+  const color = pct > 90 ? '#dc2626' : pct > 75 ? '#d97706' : brand;
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: '#64748b', marginBottom: 4 }}>
+        <span>{formatBytes(bytesUsed)} of {capMb >= 1024 ? `${(capMb / 1024).toFixed(1)} GB` : `${capMb} MB`}</span>
+        <span><strong style={{ color }}>{pct}%</strong> · {remaining < 1024 ? `${remaining.toFixed(0)} MB` : `${(remaining / 1024).toFixed(1)} GB`} left</span>
+      </div>
+      <div style={{ background: `rgba(${brandRgb},0.10)`, borderRadius: 6, height: 6, overflow: 'hidden' }}>
+        <div style={{ width: `${pct}%`, height: '100%', background: color, transition: 'width 0.4s' }} />
+      </div>
+    </div>
+  );
+}
+
 function hexToRgb(hex: string): string {
   const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
   if (!m) return '37,99,235';
@@ -109,6 +178,19 @@ export default function HotspotPortal() {
     busy: boolean;
     notice: string | null;
   }>({ phase: 'closed', otpId: null, code: '', busy: false, notice: null });
+  // Rich session data fetched from the API for the status tab (plan name,
+  // voucher id, data cap, bytes used). MikroTik's $(var) substitution gives
+  // us uptime/time-left/bytes; the API gives us the plan context.
+  const [sessionInfo, setSessionInfo] = useState<{
+    planName: string | null;
+    voucherId: string | null;
+    expiresAt: string | null;
+    secondsRemaining: number | null;
+    rateLimit: string | null;
+    dataCapMb: number | null;
+    bytesUsed: number;
+    phone: string | null;
+  } | null>(null);
   const [mtikParams, setMtikParams] = useState<{
     linkLogin: string; mac: string; ip: string; orig: string;
     mode: 'login' | 'status' | 'logout' | 'error' | 'rlogin';
@@ -152,34 +234,98 @@ export default function HotspotPortal() {
     loadPlans();
   }, []);
 
-  // Returning-customer auto-grant: if the MAC has a live grant, build a
-  // GrantResult from the lookup response and auto-submit the MikroTik
-  // login form. Customer never sees the voucher/pay UI.
+  // Status-mode enrichment: fetch plan name, voucher id, data cap, bytes
+  // used so the status table is informative, not just a list of bytes.
+  useEffect(() => {
+    if (!mtikParams?.mac || mtikParams.mode !== 'status') return;
+    api<{ found: boolean } & NonNullable<typeof sessionInfo>>(
+      `/hotspot/session-info?mac=${encodeURIComponent(mtikParams.mac)}`
+    )
+      .then((r) => { if (r.found) setSessionInfo(r); })
+      .catch(() => {/* status table still works without enrichment */});
+  }, [mtikParams?.mac, mtikParams?.mode]);
+
+  // Returning-customer auto-grant: tiered fallback.
+  //   1) MAC lookup — fastest, works for stable-MAC devices (most laptops).
+  //   2) Device token (Sprint 2.5) — survives MAC randomization. We hand
+  //      the token + a browser fingerprint; server finds the phone's live
+  //      grant, rebinds onto this MAC, rotates the token.
+  //   3) Fall through to manual UI (voucher / pay / "recover via SMS").
   useEffect(() => {
     if (!mtikParams?.mac || mtikParams.mode !== 'login') return;
     setAutoCheck('checking');
-    api<{
-      active: boolean; username?: string; password?: string;
-      validitySeconds?: number; secondsRemaining?: number; rateLimit?: string | null;
-      phone?: string | null;
-    }>(`/hotspot/lookup?mac=${encodeURIComponent(mtikParams.mac)}`)
-      .then((r) => {
-        if (r.active && r.username && r.password) {
-          setGrant({
-            username: r.username,
-            password: r.password,
-            validitySeconds: r.secondsRemaining ?? r.validitySeconds ?? 0,
-            rateLimit: r.rateLimit ?? null,
-            planName: 'Welcome back',
-          });
-          // Pre-fill phone field too — useful if they tap "Buy more time" later.
-          if (r.phone) setPhone(r.phone);
-          setTimeout(() => formRef.current?.submit(), 400);
-        } else {
-          setAutoCheck('unknown');
+    let cancelled = false;
+
+    const handleGrant = (
+      r: { username?: string; password?: string; validitySeconds?: number; secondsRemaining?: number; rateLimit?: string | null; phone?: string | null },
+      planName: string
+    ) => {
+      if (cancelled) return;
+      setGrant({
+        username: r.username!,
+        password: r.password!,
+        validitySeconds: r.secondsRemaining ?? r.validitySeconds ?? 0,
+        rateLimit: r.rateLimit ?? null,
+        planName,
+      });
+      if (r.phone) setPhone(r.phone);
+      setTimeout(() => formRef.current?.submit(), 400);
+    };
+
+    (async () => {
+      // Step 1: MAC lookup.
+      try {
+        const mac = await api<{
+          active: boolean; username?: string; password?: string;
+          validitySeconds?: number; secondsRemaining?: number; rateLimit?: string | null;
+          phone?: string | null;
+        }>(`/hotspot/lookup?mac=${encodeURIComponent(mtikParams.mac!)}`);
+        if (mac.active && mac.username && mac.password) {
+          handleGrant(mac, 'Welcome back');
+          // Opportunistic: if no token stored yet, mint one for next time.
+          if (!localStorage.getItem(TOKEN_KEY)) {
+            const fp = await getFingerprint();
+            api<{ token: string }>('/hotspot/issue-token', {
+              method: 'POST',
+              body: JSON.stringify({ mac: mtikParams.mac, fingerprint: fp || undefined }),
+            }).then((t) => localStorage.setItem(TOKEN_KEY, t.token)).catch(() => {});
+          }
+          return;
         }
-      })
-      .catch(() => setAutoCheck('unknown'));
+      } catch {/* fall through to token path */}
+
+      // Step 2: device token (silent rebind for randomized MAC).
+      const stored = localStorage.getItem(TOKEN_KEY);
+      if (stored) {
+        try {
+          const fp = await getFingerprint();
+          const tok = await api<{
+            active: boolean; username?: string; password?: string;
+            validitySeconds?: number; secondsRemaining?: number; rateLimit?: string | null;
+            phone?: string | null; token?: string; reason?: string;
+          }>('/hotspot/auto-reconnect', {
+            method: 'POST',
+            body: JSON.stringify({ token: stored, mac: mtikParams.mac, fingerprint: fp || undefined }),
+          });
+          if (tok.active && tok.username && tok.password) {
+            if (tok.token) localStorage.setItem(TOKEN_KEY, tok.token);
+            handleGrant(tok, 'Welcome back');
+            return;
+          }
+          // Server explicitly revoked or expired our token — clear it so we
+          // don't keep retrying. grant_expired leaves the token in place
+          // since the customer can repay and it'll work next time.
+          if (tok.reason === 'no_match' || tok.reason === 'revoked' || tok.reason === 'expired') {
+            localStorage.removeItem(TOKEN_KEY);
+          }
+        } catch {/* fall through to manual UI */}
+      }
+
+      // Step 3: nothing matched — show payment UI.
+      if (!cancelled) setAutoCheck('unknown');
+    })();
+
+    return () => { cancelled = true; };
   }, [mtikParams?.mac, mtikParams?.mode]);
 
   const rebindStart = async () => {
@@ -222,11 +368,44 @@ export default function HotspotPortal() {
           rateLimit: res.rateLimit,
           planName: 'Welcome back',
         });
+        await issueTokenForCurrentMac();
         setTimeout(() => formRef.current?.submit(), 400);
       }
     } catch (e: any) {
       setRebind((r) => ({ ...r, busy: false, notice: e.message }));
     }
+  };
+
+  // Mint a device token bound to this {browser, phone} so the next
+  // reconnection skips the SMS-OTP path even after MAC randomization.
+  // Fire-and-forget: failure here doesn't break the login.
+  const issueTokenForCurrentMac = async () => {
+    if (!mtikParams?.mac) return;
+    try {
+      const fp = await getFingerprint();
+      const t = await api<{ token: string }>('/hotspot/issue-token', {
+        method: 'POST',
+        body: JSON.stringify({ mac: mtikParams.mac, fingerprint: fp || undefined }),
+      });
+      if (t.token) localStorage.setItem(TOKEN_KEY, t.token);
+    } catch {/* not fatal */}
+  };
+
+  const forgetThisDevice = async () => {
+    const tok = localStorage.getItem(TOKEN_KEY);
+    if (!tok) {
+      // Nothing on file — clear local breadcrumbs and bail.
+      localStorage.removeItem(FP_KEY);
+      alert('This device has no saved login.');
+      return;
+    }
+    if (!confirm('Forget this device? Next time you connect you\'ll need to redeem a voucher, pay, or use SMS recovery.')) return;
+    try {
+      await api('/hotspot/forget-device', { method: 'POST', body: JSON.stringify({ token: tok }) });
+    } catch {/* still wipe locally even if server is unreachable */}
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(FP_KEY);
+    alert('Forgotten. You can still use Wi-Fi for the rest of this session.');
   };
 
   const loadPlans = () => {
@@ -250,6 +429,10 @@ export default function HotspotPortal() {
         body: JSON.stringify({ code: code.replace(/-/g, ''), mac: mtikParams?.mac }),
       });
       setGrant(r);
+      // Voucher redemption may or may not have a phone on file; issue-token
+      // is conditional on active_devices.phone, so the call simply 409s if
+      // there's no phone — safe to call unconditionally.
+      await issueTokenForCurrentMac();
       setTimeout(() => formRef.current?.submit(), 400);
     } catch (e: any) {
       setError(e.message);
@@ -300,6 +483,7 @@ export default function HotspotPortal() {
         if (s.status === 'success' && s.grant) {
           setGrant(s.grant);
           setSubmitting(false);
+          await issueTokenForCurrentMac();
           setTimeout(() => formRef.current?.submit(), 400);
           return;
         }
@@ -480,20 +664,41 @@ export default function HotspotPortal() {
 
         {mtikParams?.mode === 'status' ? (
           <>
-            <div style={styles.okToast}>You're connected</div>
+            <div style={styles.okToast}>
+              You're connected
+              {sessionInfo?.planName && <> · <strong>{sessionInfo.planName}</strong></>}
+            </div>
+
+            {sessionInfo?.dataCapMb && (
+              <DataCapBar bytesUsed={sessionInfo.bytesUsed} capMb={sessionInfo.dataCapMb} brand={brand.color} brandRgb={brandRgb} />
+            )}
+
             <table style={{ width: '100%', fontSize: 13 }}>
               <tbody>
-                {mtikParams.username && <tr><td style={styles.sub}>User</td><td><code style={styles.code}>{mtikParams.username}</code></td></tr>}
+                {sessionInfo?.voucherId && <tr><td style={styles.sub}>Voucher</td><td><code style={styles.code}>{sessionInfo.voucherId}</code></td></tr>}
+                {sessionInfo?.phone && <tr><td style={styles.sub}>Phone</td><td><code style={styles.code}>{sessionInfo.phone}</code></td></tr>}
+                {mtikParams.username && <tr><td style={styles.sub}>Login</td><td><code style={styles.code}>{mtikParams.username}</code></td></tr>}
                 {mtikParams.ip && <tr><td style={styles.sub}>IP</td><td><code style={styles.code}>{mtikParams.ip}</code></td></tr>}
                 {mtikParams.uptime && <tr><td style={styles.sub}>Uptime</td><td>{mtikParams.uptime}</td></tr>}
                 {mtikParams.sessionTimeLeft && <tr><td style={styles.sub}>Time left</td><td>{mtikParams.sessionTimeLeft}</td></tr>}
+                {sessionInfo?.expiresAt && !mtikParams.sessionTimeLeft && (
+                  <tr><td style={styles.sub}>Expires</td><td>{new Date(sessionInfo.expiresAt).toLocaleString()}</td></tr>
+                )}
+                {sessionInfo?.rateLimit && <tr><td style={styles.sub}>Speed</td><td>{sessionInfo.rateLimit}</td></tr>}
                 {mtikParams.bytesIn && <tr><td style={styles.sub}>Down</td><td>{mtikParams.bytesIn}</td></tr>}
                 {mtikParams.bytesOut && <tr><td style={styles.sub}>Up</td><td>{mtikParams.bytesOut}</td></tr>}
+                {!mtikParams.bytesIn && sessionInfo && sessionInfo.bytesUsed > 0 && (
+                  <tr><td style={styles.sub}>Used</td><td>{formatBytes(sessionInfo.bytesUsed)}</td></tr>
+                )}
               </tbody>
             </table>
             {mtikParams.linkLogout && (
               <a href={mtikParams.linkLogout} style={{ ...styles.btnPrimary, display: 'block', textAlign: 'center', textDecoration: 'none', marginTop: 16 }}>Log out</a>
             )}
+            <button onClick={forgetThisDevice} style={styles.btnGhost}>Forget this device</button>
+            <p style={{ ...styles.sub, fontSize: 11, marginTop: 6, textAlign: 'center' }}>
+              Removes the saved login so this browser won't auto-reconnect.
+            </p>
           </>
         ) : mtikParams?.mode === 'logout' ? (
           <>
