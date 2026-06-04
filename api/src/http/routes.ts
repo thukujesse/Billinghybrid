@@ -41,6 +41,7 @@ import * as paymentEvents from '../domains/paymentEvents/service.js';
 import * as hotspotDevices from '../domains/hotspotDevices/service.js';
 import * as deviceTokens from '../domains/hotspotDevices/tokens.js';
 import * as portal from '../domains/portal/service.js';
+import * as alerts from '../domains/alerts/service.js';
 
 export const api = Router();
 
@@ -83,6 +84,23 @@ api.post('/portal/auth/verify', otpVerifyLimit, ah(async (req, res) => {
 }));
 api.get('/portal/me', requireAuth('customer'), ah(async (req, res) => {
   res.json(await portal.getPortalMe(req.user!.sub));
+}));
+
+// ----------------------------- Alerts --------------------------------
+// Operator-facing health alerts (DLQ, queue backlog, router offline).
+// Hourly worker fans out to Telegram automatically; these endpoints
+// let the dashboard show / acknowledge alerts and trigger a manual sweep.
+api.get('/admin/alerts', requireAuth('admin', 'staff'), ah(async (req, res) => {
+  const status = (typeof req.query.status === 'string' ? req.query.status : 'open') as any;
+  const limit = req.query.limit ? Number(req.query.limit) : undefined;
+  res.json(await alerts.listAlerts({ status, limit }));
+}));
+api.post('/admin/alerts/:id/ack', requireAuth('admin', 'staff'), ah(async (req, res) => {
+  const by = req.user?.username ? String(req.user.username) : String(req.user?.sub ?? 'admin');
+  res.json(await alerts.ackAlert(req.params.id, by));
+}));
+api.post('/admin/alerts/evaluate', requireAuth('admin'), ah(async (_req, res) => {
+  res.json(await alerts.runEvaluators());
 }));
 api.post('/portal/renew', requireAuth('customer'), ah(async (req, res) => {
   const body = parse(z.object({

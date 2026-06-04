@@ -3,6 +3,8 @@ import { config } from './config.js';
 import { pool } from './db/pool.js';
 import { pollVpsHandshakes } from './domains/routers/service.js';
 import { startPaymentWorker } from './domains/paymentEvents/worker.js';
+import { startExpireWorker, expireWorkerEnabled, expireWorkerIntervalMs } from './domains/customers/expireWorker.js';
+import { startAlertWorker, alertWorkerEnabled, alertWorkerIntervalMs } from './domains/alerts/worker.js';
 
 const app = await createApp();
 
@@ -20,6 +22,19 @@ heartbeatInterval.unref();
 // Disabled with WORKER_ENABLED=false on replicas that shouldn't run jobs.
 const stopPaymentWorker = config.paymentQueue.enabled
   ? startPaymentWorker()
+  : async () => {};
+
+// PPPoE expiry sweeper — hourly job that flips status to 'expired' when
+// expiry_date < now() and pushes affected IPs into jtm-expired on every
+// MikroTik. Shares WORKER_ENABLED with the payment worker.
+const stopExpireWorker = expireWorkerEnabled
+  ? startExpireWorker(expireWorkerIntervalMs)
+  : async () => {};
+
+// Operator alert engine — every 5 min, evaluate DLQ / queue backlog /
+// router offline and fire Telegram to the admin chat on new conditions.
+const stopAlertWorker = alertWorkerEnabled
+  ? startAlertWorker(alertWorkerIntervalMs)
   : async () => {};
 
 const server = app.listen(config.port, () => {
@@ -50,6 +65,16 @@ async function shutdown(signal: string) {
       await stopPaymentWorker(); // let in-flight payment jobs finish
     } catch (e) {
       console.error('[shutdown] payment worker stop failed:', e);
+    }
+    try {
+      await stopExpireWorker(); // let an in-flight expiry sweep finish
+    } catch (e) {
+      console.error('[shutdown] expire worker stop failed:', e);
+    }
+    try {
+      await stopAlertWorker(); // let an in-flight alert sweep finish
+    } catch (e) {
+      console.error('[shutdown] alert worker stop failed:', e);
     }
     try {
       await pool.end();
