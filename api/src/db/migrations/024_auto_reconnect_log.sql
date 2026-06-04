@@ -11,7 +11,7 @@
 -- after exporting if size becomes an issue.
 -- =====================================================================
 
-CREATE TABLE auto_reconnect_log (
+CREATE TABLE IF NOT EXISTS auto_reconnect_log (
   id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
   method            TEXT NOT NULL CHECK (method IN ('mac','token','fingerprint','sms_otp','manual')),
@@ -25,6 +25,6 @@ CREATE TABLE auto_reconnect_log (
   notes             TEXT
 );
 
-CREATE INDEX auto_reconnect_log_created ON auto_reconnect_log (created_at DESC);
-CREATE INDEX auto_reconnect_log_phone   ON auto_reconnect_log (phone, created_at DESC)
+CREATE INDEX IF NOT EXISTS auto_reconnect_log_created ON auto_reconnect_log (created_at DESC);
+CREATE INDEX IF NOT EXISTS auto_reconnect_log_phone   ON auto_reconnect_log (phone, created_at DESC)
   WHERE phone IS NOT NULL;

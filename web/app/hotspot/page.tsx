@@ -37,6 +37,36 @@ type Expanded = 'quick' | 'voucher' | null;
 
 const PHONE_KEY = 'jtm_hotspot_phone';
 const TOKEN_KEY = 'jtm_hotspot_token';
+const AUTO_ATTEMPTS_KEY = 'jtm_hotspot_auto_attempts';
+
+// Loop-guard: count auto-submit attempts in the last 60s. After 3, the
+// auto-grant useEffect bails out and the customer sees the manual UI
+// with an explanation. Without this guard, a RADIUS rejection (e.g.
+// FreeRADIUS authorize_check_query override not deployed, MAC case
+// mismatch, walled-garden block on the API host) traps the browser in
+// an infinite captive→form-submit→captive cycle.
+function recentAutoAttempts(): number {
+  try {
+    const raw = sessionStorage.getItem(AUTO_ATTEMPTS_KEY);
+    if (!raw) return 0;
+    const arr: number[] = JSON.parse(raw);
+    const cutoff = Date.now() - 60_000;
+    return arr.filter((t) => t > cutoff).length;
+  } catch { return 0; }
+}
+function recordAutoAttempt(): void {
+  try {
+    const raw = sessionStorage.getItem(AUTO_ATTEMPTS_KEY);
+    const arr: number[] = raw ? JSON.parse(raw) : [];
+    const cutoff = Date.now() - 60_000;
+    const trimmed = arr.filter((t) => t > cutoff);
+    trimmed.push(Date.now());
+    sessionStorage.setItem(AUTO_ATTEMPTS_KEY, JSON.stringify(trimmed));
+  } catch {}
+}
+function clearAutoAttempts(): void {
+  try { sessionStorage.removeItem(AUTO_ATTEMPTS_KEY); } catch {}
+}
 const DEFAULT_BRANDING: Branding = {
   name: 'HUB Networks',
   color: '#2563eb',
@@ -329,7 +359,12 @@ export default function HotspotPortal() {
 
   // Status-mode enrichment: fetch plan name, voucher id, data cap, bytes
   // used so the status table is informative, not just a list of bytes.
+  // Also: customer is online, so wipe the loop-guard attempts counter —
+  // the next captive load (e.g. tomorrow) starts fresh.
   useEffect(() => {
+    if (mtikParams?.mode === 'status' || mtikParams?.mode === 'logout') {
+      clearAutoAttempts();
+    }
     if (!mtikParams?.mac || mtikParams.mode !== 'status') return;
     api<{ found: boolean } & NonNullable<typeof sessionInfo>>(
       `/hotspot/session-info?mac=${encodeURIComponent(mtikParams.mac)}`
@@ -346,6 +381,25 @@ export default function HotspotPortal() {
   //   3) Fall through to manual UI (voucher / pay / "recover via SMS").
   useEffect(() => {
     if (!mtikParams?.mac || mtikParams.mode !== 'login') return;
+
+    // Loop guard 1: MikroTik told us the previous login attempt failed.
+    // It does this by redirecting back to the captive with ?error=... in
+    // the URL. Don't auto-retry — the same auth will fail the same way.
+    if (mtikParams.mikrotikError) {
+      setAutoCheck('unknown');
+      setError(`Auto-login failed: ${mtikParams.mikrotikError}. Try Quick Connect, a voucher, or pay below.`);
+      return;
+    }
+
+    // Loop guard 2: enough auto-submit attempts in the last 60s indicates
+    // the auth path is broken (RADIUS / walled-garden / MAC format issue).
+    // Stop retrying and show the manual UI instead of trapping the customer.
+    if (recentAutoAttempts() >= 3) {
+      setAutoCheck('unknown');
+      setError('Auto-login keeps failing. Try Quick Connect with your M-Pesa number, a voucher, or pay below.');
+      return;
+    }
+
     setAutoCheck('checking');
     let cancelled = false;
 
@@ -362,6 +416,8 @@ export default function HotspotPortal() {
         planName,
       });
       if (r.phone) setPhone(r.phone);
+      // Record BEFORE the form posts so the next captive load sees the count.
+      recordAutoAttempt();
       setTimeout(() => formRef.current?.submit(), 400);
     };
 
