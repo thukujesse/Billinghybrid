@@ -529,7 +529,13 @@ api.get('/hotspot/pay/:checkoutRequestId', ah(async (req, res) => {
 // Returns {active:true, ...creds} if the MAC has a live grant (paid recently
 // OR rebound via SMS-OTP). Portal short-circuits the captive UI and auto-
 // submits the MikroTik login form with the returned credentials.
-api.get('/hotspot/lookup', ah(async (req, res) => {
+//
+// Rate-limited: an unprotected lookup endpoint lets a LAN attacker enumerate
+// MAC presence + masked phone (privacy leak per security review). 60/min/IP
+// is generous for the legitimate flow (one portal load per reconnect) and
+// hostile to enumeration.
+const hotspotLookupLimit = rateLimit({ name: 'hotspot_lookup', windowMs: 60_000, max: 60 });
+api.get('/hotspot/lookup', hotspotLookupLimit, ah(async (req, res) => {
   const mac = typeof req.query.mac === 'string' ? req.query.mac : '';
   res.json(await hotspotDevices.lookup(mac));
 }));
@@ -603,29 +609,16 @@ api.post('/hotspot/auto-reconnect', autoReconnectLimit, ah(async (req, res) => {
   }));
 }));
 
-// Issue a fresh token after a successful login. Authorization: the caller
-// must reference a live active_devices grant for the MAC — we read the
-// phone from that row so the caller can't bind a token to an arbitrary
-// number they don't own.
-const issueTokenLimit = rateLimit({ name: 'issuetoken', windowMs: 60_000, max: 10 });
-api.post('/hotspot/issue-token', issueTokenLimit, ah(async (req, res) => {
-  const body = parse(z.object({
-    mac: z.string().min(11),
-    fingerprint: z.string().min(16).max(128).optional(),
-  }), req.body);
-  const dev = await hotspotDevices.lookup(body.mac);
-  if (!dev.active || !dev.phone) {
-    return res.status(409).json({ error: 'no_active_grant' });
-  }
-  const tok = await deviceTokens.issueToken({
-    phone: dev.phone,
-    mac: body.mac,
-    fingerprintHash: body.fingerprint ?? null,
-    ip: req.ip,
-    userAgent: req.headers['user-agent'],
-  });
-  res.json({ token: tok.token, expiresAt: tok.expiresAt });
-}));
+// NOTE: The standalone POST /hotspot/issue-token endpoint was removed
+// (security review, sprint 2.5 follow-up). It accepted a MAC from the
+// request body and bound a token to whatever phone that MAC was tied
+// to — letting any LAN attacker who sniffed a victim's MAC mint a
+// token for the victim's phone and ride their plan via auto-reconnect.
+// Token issuance is now inline in the only three authenticated paths:
+//   * /hotspot/pay/:id status flip to 'success' (M-Pesa PIN proves ownership)
+//   * /hotspot/rebind/verify (SMS-OTP proves ownership)
+//   * admin-driven flows
+// Vouchers don't mint tokens since they have no associated phone.
 
 // "Forget this device" — customer-driven token revoke.
 api.post('/hotspot/forget-device', ah(async (req, res) => {
@@ -647,6 +640,30 @@ api.post('/admin/auto-reconnect/forget-phone', requireAuth('admin'), ah(async (r
   const body = parse(z.object({ phone: z.string().min(7) }), req.body);
   const n = await deviceTokens.forgetAllForPhone(body.phone, 'admin_revoked');
   res.json({ revoked: n });
+}));
+
+// ---------------------- DPA-Kenya §40 self-service erasure ----------------------
+// Two-step SMS-OTP gate. Customer enters phone, gets a 6-digit code, then
+// posts it back to confirm. On verify we wipe device_tokens, active_devices,
+// and PII columns of auto_reconnect_log / hotspot_purchases / hotspot_rebind_otps
+// for that phone (sentinel-replacement preserves NOT NULL aggregate rows
+// without leaving an identifying value).
+const eraseStartLimit = rateLimit({ name: 'erase_start', windowMs: 60_000, max: 5 });
+api.post('/hotspot/erase-me/start', eraseStartLimit, ah(async (req, res) => {
+  const body = parse(z.object({ phone: z.string().min(7) }), req.body);
+  res.json(await deviceTokens.eraseStart({
+    phone: body.phone,
+    sourceIp: req.ip,
+    userAgent: req.headers['user-agent'],
+  }));
+}));
+const eraseVerifyLimit = rateLimit({ name: 'erase_vrf', windowMs: 60_000, max: 10 });
+api.post('/hotspot/erase-me/verify', eraseVerifyLimit, ah(async (req, res) => {
+  const body = parse(z.object({
+    otpId: z.string().uuid(),
+    code: z.string().min(4).max(8),
+  }), req.body);
+  res.json(await deviceTokens.eraseVerify(body));
 }));
 
 // ---------------------- Payment events queue (admin) ----------------------

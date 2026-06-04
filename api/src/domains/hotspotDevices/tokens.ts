@@ -26,9 +26,12 @@
  *     auto-reconnect returns active=false and the customer pays.
  */
 import crypto from 'node:crypto';
+import type { PoolClient } from 'pg';
 import { query, withTransaction } from '../../db/pool.js';
 import { normalizeMac } from './service.js';
 import { normalizeMsisdn } from '../payments/daraja.js';
+import { badRequest, notFound } from '../../lib/errors.js';
+import { notify } from '../notifications/service.js';
 
 export interface IssueInput {
   phone: string;
@@ -82,16 +85,28 @@ function newRawToken(): string {
 
 /**
  * Mint a new device token. Caller must already have established that
- * `phone` legitimately owns the connection (just paid, voucher redeemed
- * on this MAC, OTP rebind verified, or MAC lookup matched a grant for
- * this phone). We don't re-verify here.
+ * `phone` legitimately owns the connection — i.e., this is reached only
+ * from a freshly authenticated path: M-Pesa STK success (proves phone
+ * ownership via M-Pesa's PIN prompt), SMS-OTP rebind verify (proves
+ * phone ownership via SMS receipt), or admin grant. We don't re-verify.
+ *
+ * The previous `POST /hotspot/issue-token` endpoint accepted a MAC from
+ * the request body and looked up the phone — that was spoofable by any
+ * connected client who knew a victim's MAC. Removed; all callers must
+ * now go through one of the authenticated flows above.
  */
 export async function issueToken(input: IssueInput): Promise<IssueResult> {
+  return withTransaction((c) => issueTokenInTx(c, input));
+}
+
+/** Same as issueToken but reuses an existing transaction (for callers
+ *  who want the mint to atomically commit with their other writes). */
+export async function issueTokenInTx(c: PoolClient, input: IssueInput): Promise<IssueResult> {
   const phone = normalizeMsisdn(input.phone);
   const mac = input.mac ? normalizeMac(input.mac) : null;
   const ttlDays = input.ttlDays ?? 365;
   const raw = newRawToken();
-  const r = await query<{ id: string; expires_at: string }>(
+  const r = await c.query<{ id: string; expires_at: string }>(
     `INSERT INTO device_tokens (
        token_hash, phone, customer_id, fingerprint_hash,
        last_mac, last_ip, last_user_agent, expires_at
@@ -404,4 +419,124 @@ export async function listRecent(limit = 200, phone?: string): Promise<LogEntry[
     [cap]
   );
   return r.rows;
+}
+
+// =====================================================================
+// DPA-Kenya §40 self-service erasure.
+//
+// Two-step SMS-OTP gate proves the caller possesses the phone, then we
+// wipe every JTM-side identifier tied to that number. Aggregate billing
+// rows survive (amount/timestamp), but the linkage to a real person is
+// destroyed via random sentinels — not a reversible hash.
+// =====================================================================
+
+export async function eraseStart(input: {
+  phone: string;
+  sourceIp?: string | null;
+  userAgent?: string | null;
+}): Promise<{ otpId: string; message: string }> {
+  const phone = normalizeMsisdn(input.phone);
+
+  // Don't reveal whether the phone has data; treat the OTP as advisory.
+  // BUT do rate-limit by phone so we don't double as a generic SMS sender.
+  const recent = await query<{ n: number }>(
+    `SELECT COUNT(*)::int AS n FROM hotspot_rebind_otps
+      WHERE phone = $1 AND created_at > now() - interval '10 minutes'`,
+    [phone]
+  );
+  if ((recent.rows[0]?.n ?? 0) >= 3) {
+    throw badRequest('too many OTP requests — try again in 10 minutes');
+  }
+
+  const code = String(crypto.randomInt(100000, 1_000_000));
+  const ins = await query<{ id: string }>(
+    `INSERT INTO hotspot_rebind_otps
+       (phone, code, new_mac, source_ip, user_agent, expires_at, purpose)
+     VALUES ($1, $2, NULL, $3, $4, now() + interval '10 minutes', 'erase')
+     RETURNING id`,
+    [phone, code, input.sourceIp ?? null, input.userAgent ?? null]
+  );
+
+  notify('sms', phone, `HUB Wi-Fi: erasure code is ${code}. If you didn't request this, ignore.`)
+    .catch((e) => console.error('[erase] sms failed:', e));
+
+  return {
+    otpId: ins.rows[0].id,
+    message: `Code sent to phone ending ${phone.slice(-4)}. Enter to confirm erasure.`,
+  };
+}
+
+export interface EraseSummary {
+  device_tokens: number;
+  active_devices: number;
+  auto_reconnect_log: number;
+  hotspot_purchases: number;
+  hotspot_rebind_otps: number;
+}
+
+export async function eraseVerify(input: { otpId: string; code: string }): Promise<{ erased: EraseSummary }> {
+  return withTransaction(async (c) => {
+    const r = await c.query<{
+      id: string; phone: string; code: string; purpose: string;
+      attempts: number; max_attempts: number; expires_at: string;
+      used_at: string | null;
+    }>(
+      `SELECT id, phone, code, purpose, attempts, max_attempts, expires_at, used_at
+         FROM hotspot_rebind_otps WHERE id = $1 FOR UPDATE`,
+      [input.otpId]
+    );
+    const otp = r.rows[0];
+    if (!otp) throw notFound('otp');
+    if (otp.purpose !== 'erase') throw badRequest('wrong otp purpose');
+    if (otp.used_at) throw badRequest('otp already used');
+    if (new Date(otp.expires_at) < new Date()) throw badRequest('otp expired');
+    if (otp.attempts >= otp.max_attempts) throw badRequest('too many attempts');
+
+    if (otp.code !== input.code.trim()) {
+      await c.query(`UPDATE hotspot_rebind_otps SET attempts = attempts + 1 WHERE id = $1`, [otp.id]);
+      throw badRequest('incorrect code');
+    }
+
+    const phone = otp.phone;
+    const sentinel = 'ERASED-' + crypto.randomUUID();
+
+    // Order matters: wipe linkable rows before mutating their FK targets.
+    // active_devices references hotspot_purchases via purchase_id (ON DELETE
+    // SET NULL), so order is forgiving — but explicit is better.
+    const dt   = await c.query(`DELETE FROM device_tokens   WHERE phone = $1`, [phone]);
+    const ad   = await c.query(`DELETE FROM active_devices  WHERE phone = $1`, [phone]);
+    const arl  = await c.query(
+      `UPDATE auto_reconnect_log
+          SET phone = NULL, mac = NULL, user_agent = NULL, notes = COALESCE(notes,'') || ' [erased]'
+        WHERE phone = $1`,
+      [phone]
+    );
+    // hotspot_purchases.phone is NOT NULL — replace with per-row sentinel
+    // (random UUID, not a hash of the phone — hashes are reversible if the
+    // attacker knows the source set).
+    const hp   = await c.query(
+      `UPDATE hotspot_purchases
+          SET phone = $2, mac_address = NULL, user_agent = NULL
+        WHERE phone = $1`,
+      [phone, sentinel]
+    );
+    // Mark the OTP table the same way (the verify OTP row itself stays for
+    // audit but its phone gets sentinelised).
+    const ot   = await c.query(
+      `UPDATE hotspot_rebind_otps SET phone = $2 WHERE phone = $1`,
+      [phone, sentinel]
+    );
+
+    await c.query(`UPDATE hotspot_rebind_otps SET used_at = now() WHERE id = $1`, [otp.id]);
+
+    return {
+      erased: {
+        device_tokens:        dt.rowCount  ?? 0,
+        active_devices:       ad.rowCount  ?? 0,
+        auto_reconnect_log:   arl.rowCount ?? 0,
+        hotspot_purchases:    hp.rowCount  ?? 0,
+        hotspot_rebind_otps:  ot.rowCount  ?? 0,
+      },
+    };
+  });
 }

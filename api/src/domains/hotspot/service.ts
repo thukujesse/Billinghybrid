@@ -220,6 +220,13 @@ export interface PurchaseStatus {
   status: 'pending' | 'success' | 'failed' | 'expired';
   grant?: HotspotGrant;
   failureReason?: string;
+  // Inline-minted device token for silent re-auth on future visits. Issued
+  // ONLY when status flips to 'success' — proves possession of the
+  // checkoutRequestId, which is server-generated and returned only to the
+  // initiator. Replaces the deprecated /hotspot/issue-token endpoint which
+  // accepted MAC as input (spoofable).
+  token?: string;
+  tokenExpiresAt?: string;
 }
 
 /** Portal polls this every couple of seconds while STK is in flight. */
@@ -231,9 +238,13 @@ export async function getPurchaseStatus(checkoutRequestId: string): Promise<Purc
     rate_limit: string | null;
     plan_name: string;
     failure_reason: string | null;
+    phone: string;
+    mac_address: string | null;
+    user_agent: string | null;
   }>(
     `SELECT hp.status, hp.username, hp.validity_seconds, hp.rate_limit,
-            p.name AS plan_name, hp.failure_reason
+            p.name AS plan_name, hp.failure_reason,
+            hp.phone, hp.mac_address, hp.user_agent
        FROM hotspot_purchases hp
        JOIN plans p ON p.id = hp.plan_id
       WHERE hp.checkout_request_id = $1`,
@@ -243,6 +254,26 @@ export async function getPurchaseStatus(checkoutRequestId: string): Promise<Purc
   const row = r.rows[0];
 
   if (row.status === 'success' && row.username) {
+    // Inline mint: this poll call is authorised by knowledge of the
+    // server-generated checkoutRequestId. The portal stops polling after
+    // first 'success' (see hotspot/page.tsx pollPurchase) so we mint once
+    // per purchase in practice. Idempotent at the DB level — multiple
+    // tokens are fine; only the latest stays in the customer's localStorage.
+    let token: string | undefined;
+    let tokenExpiresAt: string | undefined;
+    try {
+      const { issueToken } = await import('../hotspotDevices/tokens.js');
+      const t = await issueToken({
+        phone: row.phone,
+        mac: row.mac_address,
+        userAgent: row.user_agent,
+      });
+      token = t.token;
+      tokenExpiresAt = t.expiresAt;
+    } catch (e) {
+      // Token mint should never break the login response. Log and move on.
+      console.error('[hotspot] inline token mint failed:', (e as Error).message);
+    }
     return {
       status: 'success',
       grant: {
@@ -252,6 +283,8 @@ export async function getPurchaseStatus(checkoutRequestId: string): Promise<Purc
         rateLimit: row.rate_limit,
         planName: row.plan_name,
       },
+      token,
+      tokenExpiresAt,
     };
   }
   return { status: row.status, failureReason: row.failure_reason ?? undefined };

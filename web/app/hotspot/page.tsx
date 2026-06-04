@@ -78,11 +78,11 @@ async function computeFingerprint(): Promise<string> {
 }
 
 async function getFingerprint(): Promise<string> {
-  const cached = localStorage.getItem(FP_KEY);
-  if (cached && cached.length === 64) return cached;
-  const fp = await computeFingerprint();
-  if (fp) localStorage.setItem(FP_KEY, fp);
-  return fp;
+  // Recompute every call instead of caching in localStorage — an unsalted
+  // cached fingerprint could be exfiltrated and replayed by an attacker on
+  // a different browser, defeating future "fingerprint match" enforcement.
+  // The compute is cheap (no canvas/audio probing), so this costs nothing.
+  return await computeFingerprint();
 }
 
 function normalizePhone(raw: string): string | null {
@@ -282,14 +282,11 @@ export default function HotspotPortal() {
         }>(`/hotspot/lookup?mac=${encodeURIComponent(mtikParams.mac!)}`);
         if (mac.active && mac.username && mac.password) {
           handleGrant(mac, 'Welcome back');
-          // Opportunistic: if no token stored yet, mint one for next time.
-          if (!localStorage.getItem(TOKEN_KEY)) {
-            const fp = await getFingerprint();
-            api<{ token: string }>('/hotspot/issue-token', {
-              method: 'POST',
-              body: JSON.stringify({ mac: mtikParams.mac, fingerprint: fp || undefined }),
-            }).then((t) => localStorage.setItem(TOKEN_KEY, t.token)).catch(() => {});
-          }
+          // No token mint here — /hotspot/lookup accepts a spoofable MAC
+          // and is not an authenticated event. Token mint happens only
+          // on M-Pesa success (proves PIN) or SMS-OTP rebind (proves
+          // possession). Pre-2.5 customers using a stable MAC get
+          // tokenless re-auth and pick up a token on their next purchase.
           return;
         }
       } catch {/* fall through to token path */}
@@ -356,6 +353,7 @@ export default function HotspotPortal() {
       const res = await api<{
         active: boolean; username: string; password: string;
         validitySeconds: number; rateLimit: string | null;
+        token?: string;
       }>('/hotspot/rebind/verify', {
         method: 'POST',
         body: JSON.stringify({ otpId: rebind.otpId, code: rebind.code }),
@@ -368,27 +366,14 @@ export default function HotspotPortal() {
           rateLimit: res.rateLimit,
           planName: 'Welcome back',
         });
-        await issueTokenForCurrentMac();
+        // Inline-minted token comes back from the verify response. We just
+        // store what the server hands us — no separate API call.
+        if (res.token) localStorage.setItem(TOKEN_KEY, res.token);
         setTimeout(() => formRef.current?.submit(), 400);
       }
     } catch (e: any) {
       setRebind((r) => ({ ...r, busy: false, notice: e.message }));
     }
-  };
-
-  // Mint a device token bound to this {browser, phone} so the next
-  // reconnection skips the SMS-OTP path even after MAC randomization.
-  // Fire-and-forget: failure here doesn't break the login.
-  const issueTokenForCurrentMac = async () => {
-    if (!mtikParams?.mac) return;
-    try {
-      const fp = await getFingerprint();
-      const t = await api<{ token: string }>('/hotspot/issue-token', {
-        method: 'POST',
-        body: JSON.stringify({ mac: mtikParams.mac, fingerprint: fp || undefined }),
-      });
-      if (t.token) localStorage.setItem(TOKEN_KEY, t.token);
-    } catch {/* not fatal */}
   };
 
   const forgetThisDevice = async () => {
@@ -406,6 +391,55 @@ export default function HotspotPortal() {
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(FP_KEY);
     alert('Forgotten. You can still use Wi-Fi for the rest of this session.');
+  };
+
+  // DPA-Kenya §40 self-service erasure. Two-step SMS-OTP gate: enter phone,
+  // get code, confirm. Server wipes device_tokens, active_devices, and
+  // sentinelises identifiers on hotspot_purchases + logs. Aggregate billing
+  // rows survive but the linkage to the customer is destroyed.
+  const [erase, setErase] = useState<{
+    phase: 'closed' | 'phone' | 'otp' | 'done';
+    phone: string;
+    otpId: string | null;
+    code: string;
+    busy: boolean;
+    notice: string | null;
+    summary: { device_tokens: number; active_devices: number; auto_reconnect_log: number; hotspot_purchases: number; hotspot_rebind_otps: number } | null;
+  }>({ phase: 'closed', phone: '', otpId: null, code: '', busy: false, notice: null, summary: null });
+
+  const eraseStart = async () => {
+    const norm = normalizePhone(erase.phone);
+    if (!norm) {
+      setErase((e) => ({ ...e, notice: 'Enter a valid Safaricom number first.' }));
+      return;
+    }
+    setErase((e) => ({ ...e, busy: true, notice: null }));
+    try {
+      const r = await api<{ otpId: string; message: string }>('/hotspot/erase-me/start', {
+        method: 'POST', body: JSON.stringify({ phone: norm }),
+      });
+      setErase((e) => ({ ...e, phase: 'otp', otpId: r.otpId, busy: false, notice: r.message }));
+    } catch (e: any) {
+      setErase((s) => ({ ...s, busy: false, notice: e.message }));
+    }
+  };
+
+  const eraseVerify = async () => {
+    if (!erase.otpId || erase.code.length < 4) return;
+    setErase((e) => ({ ...e, busy: true, notice: null }));
+    try {
+      const r = await api<{ erased: typeof erase.summary }>('/hotspot/erase-me/verify', {
+        method: 'POST', body: JSON.stringify({ otpId: erase.otpId, code: erase.code }),
+      });
+      // Wipe local device-token breadcrumbs too — the server-side mint is dead,
+      // and we don't want a stale token sitting in localStorage.
+      localStorage.removeItem(TOKEN_KEY);
+      localStorage.removeItem(FP_KEY);
+      localStorage.removeItem(PHONE_KEY);
+      setErase((e) => ({ ...e, phase: 'done', busy: false, notice: null, summary: r.erased }));
+    } catch (e: any) {
+      setErase((s) => ({ ...s, busy: false, notice: e.message }));
+    }
   };
 
   const loadPlans = () => {
@@ -429,10 +463,8 @@ export default function HotspotPortal() {
         body: JSON.stringify({ code: code.replace(/-/g, ''), mac: mtikParams?.mac }),
       });
       setGrant(r);
-      // Voucher redemption may or may not have a phone on file; issue-token
-      // is conditional on active_devices.phone, so the call simply 409s if
-      // there's no phone — safe to call unconditionally.
-      await issueTokenForCurrentMac();
+      // Vouchers don't mint tokens (no phone associated with redemption).
+      // Voucher customers reconnect via MikroTik MAC cookie / MAC-auth.
       setTimeout(() => formRef.current?.submit(), 400);
     } catch (e: any) {
       setError(e.message);
@@ -483,7 +515,8 @@ export default function HotspotPortal() {
         if (s.status === 'success' && s.grant) {
           setGrant(s.grant);
           setSubmitting(false);
-          await issueTokenForCurrentMac();
+          // Inline-minted token piggybacks on the success poll response.
+          if ((s as any).token) localStorage.setItem(TOKEN_KEY, (s as any).token);
           setTimeout(() => formRef.current?.submit(), 400);
           return;
         }
@@ -699,6 +732,67 @@ export default function HotspotPortal() {
             <p style={{ ...styles.sub, fontSize: 11, marginTop: 6, textAlign: 'center' }}>
               Removes the saved login so this browser won't auto-reconnect.
             </p>
+            <button
+              onClick={() => setErase((e) => ({ ...e, phase: 'phone' }))}
+              style={{ ...styles.btnGhost, color: '#b91c1c', borderColor: '#fecaca', marginTop: 12 }}
+            >
+              Erase my data
+            </button>
+            <p style={{ ...styles.sub, fontSize: 11, marginTop: 6, textAlign: 'center' }}>
+              Deletes every record linking this number to JTM (DPA-Kenya §40).
+            </p>
+
+            {erase.phase !== 'closed' && (
+              <div style={{ marginTop: 16, padding: 14, background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 10 }}>
+                {erase.phase === 'done' ? (
+                  <>
+                    <strong style={{ color: '#b91c1c' }}>Erased.</strong>
+                    <p style={styles.sub}>
+                      Removed {erase.summary?.device_tokens ?? 0} saved logins,&nbsp;
+                      {erase.summary?.active_devices ?? 0} active grants,&nbsp;
+                      anonymised {erase.summary?.hotspot_purchases ?? 0} purchase records.
+                    </p>
+                    <button onClick={() => setErase({ phase: 'closed', phone: '', otpId: null, code: '', busy: false, notice: null, summary: null })} style={styles.btnGhost}>Close</button>
+                  </>
+                ) : erase.phase === 'phone' ? (
+                  <>
+                    <strong style={{ color: '#b91c1c', fontSize: 14 }}>Erase your data</strong>
+                    <p style={{ ...styles.sub, marginTop: 4, marginBottom: 8 }}>
+                      We'll text a code to confirm. Erasure can't be undone.
+                    </p>
+                    <input
+                      value={erase.phone}
+                      onChange={(e) => setErase((s) => ({ ...s, phone: e.target.value }))}
+                      placeholder="07XX XXX XXX"
+                      inputMode="tel"
+                      style={styles.input}
+                    />
+                    <button onClick={eraseStart} disabled={erase.busy} style={{ ...styles.btnPrimary, background: '#b91c1c', opacity: erase.busy ? 0.5 : 1 }}>
+                      {erase.busy ? 'Sending…' : 'Send confirmation code'}
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <strong style={{ color: '#b91c1c', fontSize: 14 }}>Confirm erasure</strong>
+                    <label style={styles.label}>Enter the 6-digit code we just sent</label>
+                    <input
+                      autoFocus
+                      value={erase.code}
+                      onChange={(e) => setErase((s) => ({ ...s, code: e.target.value.replace(/\D/g, '').slice(0, 6) }))}
+                      inputMode="numeric"
+                      style={{ ...styles.input, fontSize: 18, textAlign: 'center', letterSpacing: 4 }}
+                    />
+                    <button onClick={eraseVerify} disabled={erase.code.length < 6 || erase.busy} style={{ ...styles.btnPrimary, background: '#b91c1c', opacity: erase.code.length < 6 || erase.busy ? 0.5 : 1 }}>
+                      {erase.busy ? 'Erasing…' : 'Confirm — erase everything'}
+                    </button>
+                  </>
+                )}
+                {erase.notice && <p style={{ ...styles.sub, marginTop: 8, color: '#0f172a' }}>{erase.notice}</p>}
+                {erase.phase !== 'done' && (
+                  <button onClick={() => setErase({ phase: 'closed', phone: '', otpId: null, code: '', busy: false, notice: null, summary: null })} style={{ ...styles.btnGhost, marginTop: 8 }}>Cancel</button>
+                )}
+              </div>
+            )}
           </>
         ) : mtikParams?.mode === 'logout' ? (
           <>

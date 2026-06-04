@@ -45,6 +45,11 @@ export interface LookupResult {
   secondsRemaining?: number;
   rateLimit?: string | null;
   phone?: string | null;
+  // Inline-minted device token (Sprint 2.5+). Only present on a freshly-
+  // authenticated rebind — never returned from the public /hotspot/lookup
+  // since lookup accepts a spoofable MAC and isn't an authentication event.
+  token?: string;
+  tokenExpiresAt?: string;
 }
 
 /**
@@ -215,15 +220,27 @@ export async function rebindVerify(input: {
 
     await c.query(`UPDATE hotspot_rebind_otps SET used_at = now() WHERE id = $1`, [otp.id]);
 
+    // Inline-mint a device token now that the OTP has proven phone
+    // ownership. Replaces the deprecated /hotspot/issue-token endpoint
+    // (which accepted a spoofable MAC from the body). Mint runs in the
+    // same transaction so a token without a verified OTP is impossible.
+    const tokens = await import('./tokens.js');
+    const tok = await tokens.issueTokenInTx(c, {
+      phone: src.phone!,
+      mac: otp.new_mac,
+    });
+
     const secondsRemaining = Math.max(0, Math.floor((new Date(src.expires_at).getTime() - Date.now()) / 1000));
     return {
       active: true,
-      username: otp.new_mac,
-      password: otp.new_mac,
+      username: otp.new_mac!,
+      password: otp.new_mac!,
       validitySeconds: src.session_timeout_seconds,
       secondsRemaining,
       rateLimit: src.rate_limit,
       phone: src.phone,
+      token: tok.token,
+      tokenExpiresAt: tok.expiresAt,
     };
   });
 }
@@ -326,7 +343,7 @@ export async function listDevices(f: ListFilters): Promise<DeviceListRow[]> {
     ORDER BY ad.last_seen DESC
     LIMIT $${vals.length}`;
   const r = await query<any>(sql, vals);
-  return r.rows.map((row) => ({
+  return r.rows.map((row: any) => ({
     ...row,
     device_model: deviceModelFromUa(row.user_agent),
   }));
