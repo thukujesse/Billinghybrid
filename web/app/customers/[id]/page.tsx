@@ -73,6 +73,14 @@ interface AuditEntry {
   metadata: Record<string, unknown>;
 }
 
+interface WalletState {
+  balance: { customer_id: string; balance_cents: number; updated_at: string };
+  txns: Array<{
+    id: string; kind: string; amount_cents: number; balance_after_cents: number;
+    reference: string | null; notes: string | null; actor: string; created_at: string;
+  }>;
+}
+
 interface Plan {
   id: string;
   name: string;
@@ -128,7 +136,9 @@ export default function CustomerDetail() {
   const [sessions, setSessions] = useState<Record<string, Session[]>>({});
   const [plans, setPlans] = useState<Plan[]>([]);
   const [activity, setActivity] = useState<AuditEntry[]>([]);
-  const [tab, setTab] = useState<'services' | 'payments' | 'sessions' | 'activity'>('services');
+  const [wallet, setWallet] = useState<WalletState | null>(null);
+  const [adjust, setAdjust] = useState<{ amount: string; kind: 'adjustment' | 'refund'; notes: string } | null>(null);
+  const [tab, setTab] = useState<'services' | 'payments' | 'sessions' | 'activity' | 'wallet'>('services');
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState({ full_name: '', phone: '', email: '', address: '', notes: '' });
   const [toast, setToast] = useState<{ ok: boolean; msg: string } | null>(null);
@@ -153,6 +163,36 @@ export default function CustomerDetail() {
     api<AuditEntry[]>(`/customers/${customerId}/audit?limit=100`)
       .then(setActivity)
       .catch(() => {/* non-fatal */});
+    api<WalletState>(`/admin/customers/${customerId}/wallet`)
+      .then(setWallet)
+      .catch(() => {/* non-fatal — wallet may 404 if customer never had one */});
+  };
+
+  const submitAdjust = async () => {
+    if (!adjust) return;
+    const cents = Math.round(Number(adjust.amount) * 100);
+    if (!Number.isFinite(cents) || cents === 0) {
+      setToast({ ok: false, msg: 'Enter a non-zero KES amount (positive credit, negative debit).' });
+      return;
+    }
+    setBusy(true);
+    try {
+      await api(`/admin/customers/${customerId}/wallet/adjust`, {
+        method: 'POST',
+        body: JSON.stringify({
+          amount_cents: cents,
+          kind: adjust.kind,
+          notes: adjust.notes || undefined,
+        }),
+      });
+      setToast({ ok: true, msg: `Wallet ${cents > 0 ? 'credited' : 'debited'} KES ${Math.abs(cents / 100).toFixed(0)}` });
+      setAdjust(null);
+      load();
+    } catch (e: any) {
+      setToast({ ok: false, msg: e.message });
+    } finally {
+      setBusy(false);
+    }
   };
 
   useEffect(() => {
@@ -202,6 +242,23 @@ export default function CustomerDetail() {
       await api(`/services/${svcId}/status`, { method: 'PATCH', body: JSON.stringify({ status }) });
       setToast({ ok: true, msg: status === 'active' ? 'Restored' : 'Suspended' });
       load();
+    } catch (e: any) {
+      setToast({ ok: false, msg: e.message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resendOnboardingSms = async (serviceId: string, username: string) => {
+    if (!customer?.phone) {
+      setToast({ ok: false, msg: 'No phone on file for this customer.' });
+      return;
+    }
+    if (!confirm(`Resend the onboarding SMS for ${username} to ${customer.phone}?`)) return;
+    setBusy(true);
+    try {
+      await api(`/admin/customers/${customerId}/services/${serviceId}/resend-onboarding`, { method: 'POST' });
+      setToast({ ok: true, msg: `SMS resent to ${customer.phone}` });
     } catch (e: any) {
       setToast({ ok: false, msg: e.message });
     } finally {
@@ -296,7 +353,7 @@ export default function CustomerDetail() {
       )}
 
       <div style={{ display: 'flex', gap: 8, marginTop: 24, borderBottom: '1px solid var(--border, #e2e8f0)' }}>
-        {(['services', 'payments', 'sessions', 'activity'] as const).map((t) => (
+        {(['services', 'payments', 'sessions', 'activity', 'wallet'] as const).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -316,6 +373,7 @@ export default function CustomerDetail() {
             {t === 'payments' && `Payments (${payments.length})`}
             {t === 'sessions' && 'Sessions'}
             {t === 'activity' && `Activity (${activity.length})`}
+            {t === 'wallet'   && `Wallet${wallet ? ` (KES ${(wallet.balance.balance_cents / 100).toFixed(0)})` : ''}`}
           </button>
         ))}
       </div>
@@ -360,6 +418,12 @@ export default function CustomerDetail() {
                   ) : (
                     <button className="ghost" style={{ fontSize: 11, padding: '4px 10px' }}
                       disabled={busy} onClick={() => setServiceStatus(s.id, 'active')}>Restore</button>
+                  )}
+                  {s.username && s.password && (
+                    <button className="ghost" style={{ fontSize: 11, padding: '4px 10px' }}
+                      disabled={busy} onClick={() => resendOnboardingSms(s.id, s.username!)}>
+                      Resend creds SMS
+                    </button>
                   )}
                 </div>
               </div>
@@ -498,6 +562,101 @@ export default function CustomerDetail() {
               )}
             </div>
           ))}
+        </div>
+      )}
+
+      {tab === 'wallet' && (
+        <div style={{ marginTop: 16 }}>
+          {!wallet ? (
+            <p className="sub">Loading wallet…</p>
+          ) : (
+            <>
+              <div className="card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                <div>
+                  <div style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600 }}>Balance</div>
+                  <div style={{ fontSize: 32, fontWeight: 700, color: '#2563eb' }}>
+                    KES {(wallet.balance.balance_cents / 100).toFixed(0)}
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--muted)' }}>
+                    Updated {new Date(wallet.balance.updated_at).toLocaleString()}
+                  </div>
+                </div>
+                <button onClick={() => setAdjust({ amount: '', kind: 'adjustment', notes: '' })}>
+                  Adjust balance
+                </button>
+              </div>
+
+              <h3 style={{ fontSize: 14 }}>Transaction history</h3>
+              {wallet.txns.length === 0 ? (
+                <p className="sub">No wallet activity yet.</p>
+              ) : (
+                <table>
+                  <thead><tr><th>When</th><th>Kind</th><th>Amount</th><th>Balance</th><th>By</th><th>Notes</th></tr></thead>
+                  <tbody>
+                    {wallet.txns.map((t) => {
+                      const amt = t.amount_cents / 100;
+                      const credit = amt > 0;
+                      return (
+                        <tr key={t.id}>
+                          <td style={{ fontSize: 11 }}>{new Date(t.created_at).toLocaleString()}</td>
+                          <td><span className="badge">{t.kind}</span></td>
+                          <td style={{ fontWeight: 600, color: credit ? '#15803d' : '#b91c1c' }}>
+                            {credit ? '+' : ''}KES {amt.toFixed(0)}
+                          </td>
+                          <td>KES {(t.balance_after_cents / 100).toFixed(0)}</td>
+                          <td style={{ fontSize: 11 }}>{t.actor}</td>
+                          <td style={{ fontSize: 11, color: 'var(--muted)' }}>
+                            {t.reference}{t.reference && t.notes ? ' · ' : ''}{t.notes}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {adjust && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.4)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100,
+        }} onClick={() => setAdjust(null)}>
+          <div style={{
+            background: '#fff', borderRadius: 12, padding: 24, maxWidth: 420, width: '90%',
+          }} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ marginTop: 0 }}>Adjust wallet balance</h3>
+            <p className="sub">
+              Use positive amount to credit (cash received, promo) and negative to debit
+              (correction, fee). The adjustment shows up in the customer's wallet history.
+            </p>
+
+            <label>Amount (KES) — negative to debit</label>
+            <input type="number" value={adjust.amount}
+              onChange={(e) => setAdjust({ ...adjust, amount: e.target.value })}
+              placeholder="e.g. 1500 or -200" />
+
+            <label>Kind</label>
+            <select value={adjust.kind}
+              onChange={(e) => setAdjust({ ...adjust, kind: e.target.value as any })}>
+              <option value="adjustment">Adjustment (correction / promo)</option>
+              <option value="refund">Refund</option>
+            </select>
+
+            <label>Notes (optional)</label>
+            <input value={adjust.notes}
+              onChange={(e) => setAdjust({ ...adjust, notes: e.target.value })}
+              placeholder="Cash payment at Nakuru office" />
+
+            <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+              <button onClick={submitAdjust} disabled={busy || !adjust.amount}>
+                {busy ? 'Saving…' : 'Confirm adjustment'}
+              </button>
+              <button className="ghost" onClick={() => setAdjust(null)}>Cancel</button>
+            </div>
+          </div>
         </div>
       )}
     </div>

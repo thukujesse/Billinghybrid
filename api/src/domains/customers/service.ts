@@ -4,7 +4,8 @@ import * as wgManager from '../../lib/wgManager.js';
 import { config } from '../../config.js';
 import { notify } from '../notifications/service.js';
 import { logAuditSafe } from '../audit/service.js';
-import { runAsActor } from '../../lib/actor.js';
+import { runAsActor, currentActor } from '../../lib/actor.js';
+import * as customerSms from './notifications.js';
 
 export interface Customer {
   id: string;
@@ -412,6 +413,20 @@ export async function createService(input: {
   );
   const service = r.rows[0];
   await syncServiceToRadius(service);
+  logAuditSafe({
+    kind: 'service.create',
+    entity_type: 'service', entity_id: service.id,
+    after: service,
+    metadata: { customer_id: input.customer_id, plan_id: input.plan_id },
+  });
+  // Onboarding SMS for PPPoE — sends credentials + portal link to the
+  // customer's phone. Fire-and-forget: missing phone, missing creds,
+  // or hotspot service all short-circuit silently inside sendOnboarding.
+  if (service.service_type === 'pppoe') {
+    customerSms.sendOnboarding(input.customer_id, {
+      id: service.id, username: service.username, password: service.password,
+    }).catch((e) => console.error('[onboarding-sms]', (e as Error).message));
+  }
   return service;
 }
 
@@ -530,6 +545,17 @@ export async function changePlan(input: {
     after: { plan_id: input.planId, rate_limit: rateLimit },
     metadata: { customer_id: before.customer_id, username: before.username },
   });
+  // SMS the customer about the new plan name + rate. The pr query above
+  // only returned speed columns; re-fetch the name for the SMS body.
+  const planNameR = await query<{ name: string }>(`SELECT name FROM plans WHERE id = $1`, [input.planId]);
+  customerSms.sendPlanChanged({
+    customerId: before.customer_id,
+    serviceId: input.serviceId,
+    oldPlanId: before.plan_id,
+    newPlanId: input.planId,
+    newPlanName: planNameR.rows[0]?.name ?? 'a new plan',
+    newRateLimit: rateLimit,
+  }).catch((e) => console.error('[plan-change-sms]', (e as Error).message));
   return final.rows[0];
 }
 
@@ -792,6 +818,17 @@ export async function setServiceStatus(
       before: { status: before.status }, after: { status: svc.status },
       metadata: { customer_id: svc.customer_id, username: svc.username },
     });
+    // SMS the customer on suspend or restore (admin-triggered changes only —
+    // the auto-expire worker has its own dedicated SMS that's more useful).
+    if (currentActor().role !== 'system' && (svc.status === 'suspended' || svc.status === 'active')) {
+      customerSms.sendStatusChange({
+        customerId: svc.customer_id,
+        serviceId: svc.id,
+        serviceName: svc.username ?? 'your service',
+        newStatus: svc.status,
+        username: svc.username,
+      }).catch((e) => console.error('[status-sms]', (e as Error).message));
+    }
   }
 
   // If suspending, kick any active sessions via CoA so the user is dropped

@@ -17,6 +17,8 @@
  */
 import { config } from '../../config.js';
 import { expireDueServices, notifyExpiringSoon } from './service.js';
+import { autoRenewDue } from './wallet.js';
+import { lowBalanceSweep } from './notifications.js';
 
 export function startExpireWorker(intervalMs = 60 * 60 * 1000): () => Promise<void> {
   let stopping = false;
@@ -26,10 +28,35 @@ export function startExpireWorker(intervalMs = 60 * 60 * 1000): () => Promise<vo
     if (stopping || inFlight) return;
     inFlight = (async () => {
       try {
-        // Order: warning sweep first (still-active customers), then the
-        // expire sweep (newly-past-due customers). If a service is both
-        // close-to-expiry AND past-expiry between ticks, the warning is
-        // skipped and we go straight to the expired SMS.
+        // Order: wallet auto-renew FIRST (silent, no SMS, customer stays
+        // online), then warning sweep for customers without enough wallet
+        // balance, then expire sweep for the past-due. The auto-renew
+        // step shortens the warning list — customers who got auto-renewed
+        // are no longer 'expiring soon' and don't get an SMS.
+        try {
+          const renewed = await autoRenewDue(24);
+          if (renewed.length > 0) {
+            console.log(JSON.stringify({
+              level: 'info', msg: 'auto_renew_sweep',
+              count: renewed.length,
+              total_kes: renewed.reduce((a, b) => a + b.amount_cents, 0) / 100,
+            }));
+          }
+        } catch (err) {
+          console.error('[expire-worker] auto-renew sweep failed:', (err as Error).message);
+        }
+        // Low-balance sweep — SMS customers whose auto-renew is on but
+        // wallet can't cover the next renewal in 7 days. Runs AFTER
+        // autoRenewDue so customers who just got renewed don't get a
+        // pointless "your wallet is low" message in the same tick.
+        try {
+          const { warned } = await lowBalanceSweep(7 * 24);
+          if (warned > 0) {
+            console.log(JSON.stringify({ level: 'info', msg: 'low_balance_sweep', count: warned }));
+          }
+        } catch (err) {
+          console.error('[expire-worker] low-balance sweep failed:', (err as Error).message);
+        }
         try {
           const { warned } = await notifyExpiringSoon(24);
           if (warned > 0) {
