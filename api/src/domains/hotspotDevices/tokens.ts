@@ -289,6 +289,131 @@ export async function tryAutoReconnect(input: AutoReconnectInput): Promise<AutoR
 }
 
 /**
+ * Fingerprint-based reconnect (third tier — fires when MAC lookup AND
+ * stored-token lookup both miss). Useful when the customer cleared
+ * site data, switched browsers within the same OS profile, or simply
+ * arrived after a long enough gap that the localStorage token vanished.
+ *
+ * Strict matching: we only auto-reconnect if EXACTLY ONE distinct phone
+ * has a non-revoked token whose fingerprint_hash equals the presented
+ * one. Multiple phones sharing the fingerprint (same iPhone model + iOS
+ * version is plausible) returns 'ambiguous' — we refuse silently and
+ * let the customer pay normally rather than authenticate as someone else.
+ */
+export interface FingerprintReconnectInput {
+  fingerprintHash: string;
+  newMac: string;
+  ip?: string | null;
+  userAgent?: string | null;
+}
+
+export async function tryFingerprintReconnect(input: FingerprintReconnectInput): Promise<AutoReconnectResult> {
+  const mac = normalizeMac(input.newMac);
+  if (!mac) {
+    await logAttempt({ method: 'fingerprint', outcome: 'error', notes: 'invalid mac', ip: input.ip, userAgent: input.userAgent });
+    return { active: false, reason: 'no_match' };
+  }
+  if (!input.fingerprintHash || input.fingerprintHash.length < 32) {
+    return { active: false, reason: 'no_match' };
+  }
+
+  return withTransaction(async (c) => {
+    // Find every distinct phone that has a live token with this fingerprint.
+    const r = await c.query<{ phone: string; customer_id: string | null }>(
+      `SELECT phone, MAX(customer_id::text)::uuid AS customer_id
+         FROM device_tokens
+        WHERE fingerprint_hash = $1
+          AND revoked_at IS NULL
+          AND expires_at > now()
+        GROUP BY phone`,
+      [input.fingerprintHash]
+    );
+    if (r.rows.length === 0) {
+      await logAttempt({ method: 'fingerprint', outcome: 'no_match', mac, ip: input.ip, userAgent: input.userAgent });
+      return { active: false, reason: 'no_match' };
+    }
+    if (r.rows.length > 1) {
+      // Refuse to guess between multiple customers sharing a fingerprint.
+      // logged so the operator can review if this is happening a lot.
+      await logAttempt({
+        method: 'fingerprint', outcome: 'fingerprint_mismatch', mac,
+        notes: `ambiguous: ${r.rows.length} phones share this fingerprint`,
+        ip: input.ip, userAgent: input.userAgent,
+      });
+      return { active: false, reason: 'no_match' };
+    }
+    const { phone, customer_id } = r.rows[0];
+
+    // Phone identified — does it have a live active_devices grant we can
+    // copy to the new MAC?
+    const g = await c.query<ActiveGrant>(
+      `SELECT mac, expires_at, rate_limit, session_timeout_seconds, idle_timeout_seconds,
+              phone, purchase_id, customer_id
+         FROM active_devices
+        WHERE phone = $1 AND expires_at > now()
+        ORDER BY last_seen DESC LIMIT 1`,
+      [phone]
+    );
+    const src = g.rows[0];
+    if (!src) {
+      await logAttempt({ method: 'fingerprint', outcome: 'grant_expired', mac, phone, ip: input.ip, userAgent: input.userAgent });
+      return { active: false, reason: 'grant_expired' };
+    }
+
+    // Copy the grant onto the new MAC (same shape as token-rebind path).
+    await c.query(
+      `INSERT INTO active_devices (
+         mac, expires_at, rate_limit, session_timeout_seconds, idle_timeout_seconds,
+         source, phone, purchase_id, customer_id, rebound_from_mac
+       ) VALUES ($1, $2, $3, $4, $5, 'rebind', $6, $7, $8, $9)
+       ON CONFLICT (mac) DO UPDATE SET
+         expires_at = EXCLUDED.expires_at,
+         rate_limit = EXCLUDED.rate_limit,
+         session_timeout_seconds = EXCLUDED.session_timeout_seconds,
+         phone = EXCLUDED.phone,
+         purchase_id = EXCLUDED.purchase_id,
+         source = 'rebind',
+         rebound_from_mac = EXCLUDED.rebound_from_mac,
+         last_seen = now()`,
+      [
+        mac, src.expires_at, src.rate_limit, src.session_timeout_seconds,
+        src.idle_timeout_seconds, src.phone, src.purchase_id, src.customer_id,
+        src.mac === mac ? null : src.mac,
+      ]
+    );
+
+    // Mint a fresh token bound to the new MAC + the verified phone so the
+    // next reconnect can use the faster token path.
+    const tok = await issueTokenInTx(c, {
+      phone,
+      customerId: customer_id,
+      mac,
+      fingerprintHash: input.fingerprintHash,
+      ip: input.ip,
+      userAgent: input.userAgent,
+    });
+
+    await logAttempt({
+      method: 'fingerprint', outcome: 'success', mac, phone, tokenId: tok.tokenId,
+      fingerprintMatch: true, ip: input.ip, userAgent: input.userAgent,
+    });
+
+    const secondsRemaining = Math.max(0, Math.floor((new Date(src.expires_at).getTime() - Date.now()) / 1000));
+    return {
+      active: true,
+      username: mac,
+      password: mac,
+      validitySeconds: src.session_timeout_seconds,
+      secondsRemaining,
+      rateLimit: src.rate_limit,
+      phone,
+      token: tok.token,
+      tokenExpiresAt: tok.expiresAt,
+    };
+  });
+}
+
+/**
  * Customer-driven revoke: "Forget this device". Wipes the token row
  * (still leaves the audit log entries). Caller must clear localStorage
  * and any cookie on their end.
