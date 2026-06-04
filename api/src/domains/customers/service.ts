@@ -1,6 +1,8 @@
 import { query, withTransaction } from '../../db/pool.js';
 import { badRequest, notFound } from '../../lib/errors.js';
 import * as wgManager from '../../lib/wgManager.js';
+import { config } from '../../config.js';
+import { notify } from '../notifications/service.js';
 
 export interface Customer {
   id: string;
@@ -25,6 +27,7 @@ export interface Service {
   mac_address: string | null;
   vlan_id: number | null;
   router_id: string | null;
+  plan_id: string | null;
   rate_limit: string | null;
   status: 'active' | 'suspended' | 'expired' | 'cancelled';
   expiry_date: string | null;
@@ -39,7 +42,7 @@ export interface CustomerWithServices extends Customer {
 const CUSTOMER_COLS = `id, account_number, full_name, phone, email, address,
   status, notes, created_at, updated_at`;
 const SERVICE_COLS = `id, customer_id, service_type, username, password,
-  ip_address, mac_address, vlan_id, router_id, rate_limit, status,
+  ip_address, mac_address, vlan_id, router_id, plan_id, rate_limit, status,
   expiry_date, created_at, updated_at`;
 
 /**
@@ -97,8 +100,13 @@ export async function syncServiceToRadius(svc: Service): Promise<void> {
   });
 }
 
+export interface ServiceSummary extends Pick<Service,
+  'id' | 'service_type' | 'username' | 'rate_limit' | 'status' | 'plan_id' | 'expiry_date'> {
+  plan_name: string | null;
+}
+
 export interface CustomerWithServiceSummary extends Customer {
-  services: Pick<Service, 'id' | 'service_type' | 'username' | 'rate_limit' | 'status'>[];
+  services: ServiceSummary[];
 }
 
 export async function listCustomers(): Promise<CustomerWithServiceSummary[]> {
@@ -110,18 +118,23 @@ export async function listCustomers(): Promise<CustomerWithServiceSummary[]> {
   const sr = await query<{
     id: string; customer_id: string; service_type: Service['service_type'];
     username: string | null; rate_limit: string | null; status: Service['status'];
+    plan_id: string | null; plan_name: string | null; expiry_date: string | null;
   }>(
-    `SELECT id, customer_id, service_type, username, rate_limit, status
-       FROM services WHERE customer_id = ANY($1::uuid[])
-       ORDER BY created_at`,
+    `SELECT s.id, s.customer_id, s.service_type, s.username, s.rate_limit, s.status,
+            s.plan_id, p.name AS plan_name, s.expiry_date
+       FROM services s
+       LEFT JOIN plans p ON p.id = s.plan_id
+      WHERE s.customer_id = ANY($1::uuid[])
+      ORDER BY s.created_at`,
     [ids]
   );
-  const byCustomer = new Map<string, CustomerWithServiceSummary['services']>();
+  const byCustomer = new Map<string, ServiceSummary[]>();
   for (const s of sr.rows) {
     if (!byCustomer.has(s.customer_id)) byCustomer.set(s.customer_id, []);
     byCustomer.get(s.customer_id)!.push({
       id: s.id, service_type: s.service_type, username: s.username,
       rate_limit: s.rate_limit, status: s.status,
+      plan_id: s.plan_id, plan_name: s.plan_name, expiry_date: s.expiry_date,
     });
   }
   return r.rows.map((c) => ({ ...c, services: byCustomer.get(c.id) ?? [] }));
@@ -175,6 +188,7 @@ export async function createService(input: {
   mac_address?: string;
   vlan_id?: number;
   router_id?: string;
+  plan_id?: string;
   rate_limit?: string;
   expiry_date?: string;
 }): Promise<Service> {
@@ -189,20 +203,177 @@ export async function createService(input: {
     throw badRequest('ip_address required for static services');
   }
 
+  // Plan-driven provisioning: when a plan_id is supplied, derive the
+  // rate-limit string and the expiry_date from the plan rather than
+  // making the operator type them. Explicit fields in the input still
+  // win — the plan only fills gaps.
+  let rateLimit = input.rate_limit ?? null;
+  let expiryDate = input.expiry_date ?? null;
+  if (input.plan_id) {
+    const p = await query<{
+      speed_down_kbps: number | null; speed_up_kbps: number | null; validity_days: number;
+    }>(
+      `SELECT speed_down_kbps, speed_up_kbps, validity_days FROM plans WHERE id = $1 AND active = TRUE`,
+      [input.plan_id]
+    );
+    const plan = p.rows[0];
+    if (!plan) throw notFound('plan');
+    if (!rateLimit && plan.speed_down_kbps && plan.speed_up_kbps) {
+      rateLimit = `${plan.speed_up_kbps}k/${plan.speed_down_kbps}k`;
+    }
+    if (!expiryDate) {
+      const d = new Date();
+      d.setDate(d.getDate() + plan.validity_days);
+      expiryDate = d.toISOString();
+    }
+  }
+
   const r = await query<Service>(
     `INSERT INTO services
        (customer_id, service_type, username, password, ip_address, mac_address,
-        vlan_id, router_id, rate_limit, expiry_date)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        vlan_id, router_id, plan_id, rate_limit, expiry_date)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
      RETURNING ${SERVICE_COLS}`,
     [input.customer_id, input.service_type, input.username ?? null,
      input.password ?? null, input.ip_address ?? null, input.mac_address ?? null,
-     input.vlan_id ?? null, input.router_id ?? null, input.rate_limit ?? null,
-     input.expiry_date ?? null]
+     input.vlan_id ?? null, input.router_id ?? null, input.plan_id ?? null,
+     rateLimit, expiryDate]
   );
   const service = r.rows[0];
   await syncServiceToRadius(service);
   return service;
+}
+
+/**
+ * Force-renew a service without going through M-Pesa. Bumps expiry by
+ * the plan's validity_days, restores status to 'active', re-syncs RADIUS.
+ * Used by operators for manual top-ups (cash payments, comps, fixes).
+ * If `planId` is omitted, uses the service's existing plan_id.
+ */
+export async function renewService(input: {
+  serviceId: string;
+  planId?: string;
+  fromNow?: boolean;        // true = expiry = now + validity (default); false = expiry += validity
+}): Promise<Service> {
+  const r = await query<Service & { plan_id: string | null }>(
+    `SELECT ${SERVICE_COLS} FROM services WHERE id = $1`, [input.serviceId]
+  );
+  const svc = r.rows[0];
+  if (!svc) throw notFound('service');
+
+  const planId = input.planId ?? svc.plan_id;
+  if (!planId) throw badRequest('no plan_id on service — supply planId or set one first');
+
+  const pr = await query<{
+    speed_down_kbps: number | null; speed_up_kbps: number | null; validity_days: number;
+  }>(
+    `SELECT speed_down_kbps, speed_up_kbps, validity_days FROM plans WHERE id = $1 AND active = TRUE`,
+    [planId]
+  );
+  const plan = pr.rows[0];
+  if (!plan) throw notFound('plan');
+
+  // Stack-or-restart policy: if the service is still live and the operator
+  // says fromNow=false, extend from current expiry. Otherwise start the
+  // window now (covers reactivating after expiry / cancellation).
+  const base = (!input.fromNow && svc.expiry_date && new Date(svc.expiry_date) > new Date())
+    ? new Date(svc.expiry_date)
+    : new Date();
+  const newExpiry = new Date(base);
+  newExpiry.setDate(newExpiry.getDate() + plan.validity_days);
+
+  const rateLimit = (plan.speed_down_kbps && plan.speed_up_kbps)
+    ? `${plan.speed_up_kbps}k/${plan.speed_down_kbps}k`
+    : svc.rate_limit;
+
+  // setServiceStatus does the RADIUS sync + jtm-expired removal for us when
+  // status transitions back to active, so update fields first then route
+  // through it for the side-effects. expiry_warned_at is cleared so the
+  // proactive "expires soon" SMS fires again as the new expiry approaches.
+  await query(
+    `UPDATE services
+        SET plan_id = $2, rate_limit = $3, expiry_date = $4,
+            expiry_warned_at = NULL, updated_at = now()
+      WHERE id = $1`,
+    [input.serviceId, planId, rateLimit, newExpiry.toISOString()]
+  );
+  return setServiceStatus(input.serviceId, 'active');
+}
+
+/**
+ * Sweep services whose expiry_date is in the past and mark them expired.
+ * Returns the rows that were transitioned so the caller (cron / admin)
+ * can log them or trigger side-effects per service. Also fires a customer
+ * SMS so they know to renew rather than discovering the captive themselves.
+ */
+export async function expireDueServices(): Promise<Service[]> {
+  // Join customer phone in the same scan so we don't N+1 to send SMS later.
+  const r = await query<Service & { customer_phone: string | null }>(
+    `SELECT ${SERVICE_COLS.split(',').map((c) => 's.' + c.trim()).join(', ')},
+            c.phone AS customer_phone
+       FROM services s JOIN customers c ON c.id = s.customer_id
+      WHERE s.status = 'active' AND s.expiry_date IS NOT NULL AND s.expiry_date < now()`
+  );
+  const expired: Service[] = [];
+  for (const row of r.rows) {
+    try {
+      const updated = await setServiceStatus(row.id, 'expired');
+      expired.push(updated);
+      // Fire-and-forget SMS to the customer with a deep-link to /renew. PPPoE
+      // only — hotspot customers see captive on next connect, no SMS needed.
+      if (row.customer_phone && row.username && row.service_type === 'pppoe') {
+        notify('sms', row.customer_phone, renewSmsBody(row.username, 'expired'))
+          .catch((e) => console.error('[expire] sms failed:', (e as Error).message));
+      }
+    } catch (err) {
+      console.error('[auto-expire] failed for', row.id, (err as Error).message);
+    }
+  }
+  return expired;
+}
+
+/**
+ * Proactive "your plan expires in N hours" warning. Fires for active PPPoE
+ * services whose expiry is inside the warning window (default 24h) and
+ * haven't been warned in this cycle. `expiry_warned_at` gates re-sends;
+ * renewService() clears the flag so the next cycle warns again.
+ */
+export async function notifyExpiringSoon(windowHours = 24): Promise<{ warned: number }> {
+  const r = await query<{
+    id: string; username: string | null; customer_phone: string | null; expiry_date: string;
+  }>(
+    `SELECT s.id, s.username, s.expiry_date, c.phone AS customer_phone
+       FROM services s JOIN customers c ON c.id = s.customer_id
+      WHERE s.status = 'active'
+        AND s.service_type = 'pppoe'
+        AND s.expiry_warned_at IS NULL
+        AND s.expiry_date IS NOT NULL
+        AND s.expiry_date > now()
+        AND s.expiry_date < now() + ($1 || ' hours')::interval`,
+    [String(windowHours)]
+  );
+  let warned = 0;
+  for (const row of r.rows) {
+    // Mark before SMS to prevent re-send loops if SMS hangs.
+    await query(`UPDATE services SET expiry_warned_at = now() WHERE id = $1`, [row.id]);
+    if (row.customer_phone && row.username) {
+      try {
+        await notify('sms', row.customer_phone, renewSmsBody(row.username, 'soon'));
+        warned++;
+      } catch (e) {
+        console.error('[warn] sms failed:', (e as Error).message);
+      }
+    }
+  }
+  return { warned };
+}
+
+function renewSmsBody(username: string, when: 'expired' | 'soon'): string {
+  const link = `https://${config.portal.host}/renew?username=${encodeURIComponent(username)}`;
+  if (when === 'expired') {
+    return `${config.brandName}: your internet expired. Renew via M-Pesa: ${link}`;
+  }
+  return `${config.brandName}: your plan ends soon. Renew now to avoid interruption: ${link}`;
 }
 
 export async function setServiceStatus(

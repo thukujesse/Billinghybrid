@@ -22,6 +22,7 @@ export default async function Dashboard() {
 
   const subs = data.subscribers ?? {};
   const totalSubs = Object.values(subs).reduce((a: number, b: any) => a + Number(b), 0);
+  const pppoe = data.pppoe ?? { active: 0, expired: 0, suspended: 0, expiring_24h: 0 };
 
   return (
     <div className="container">
@@ -34,6 +35,30 @@ export default async function Dashboard() {
         <div className="card stat"><div className="label">Subscribers</div><div className="value">{totalSubs}</div></div>
         <div className="card stat"><div className="label">Active</div><div className="value" style={{ color: 'var(--green)' }}>{subs.active ?? 0}</div></div>
         <div className="card stat"><div className="label">Suspended</div><div className="value" style={{ color: 'var(--red)' }}>{subs.suspended ?? 0}</div></div>
+      </div>
+
+      <h2 style={{ marginTop: 28 }}>PPPoE</h2>
+      <div className="grid">
+        <div className="card stat">
+          <div className="label">Active</div>
+          <div className="value" style={{ color: 'var(--green)' }}>{pppoe.active}</div>
+        </div>
+        <div className="card stat">
+          <div className="label">Expiring &lt; 24h</div>
+          <div className="value" style={{ color: pppoe.expiring_24h > 0 ? '#d97706' : 'inherit' }}>
+            {pppoe.expiring_24h}
+          </div>
+        </div>
+        <div className="card stat">
+          <div className="label">Expired</div>
+          <div className="value" style={{ color: pppoe.expired > 0 ? '#b91c1c' : 'inherit' }}>
+            {pppoe.expired}
+          </div>
+        </div>
+        <div className="card stat">
+          <div className="label">Suspended</div>
+          <div className="value">{pppoe.suspended}</div>
+        </div>
       </div>
 
       <h2>Invoices by status</h2>

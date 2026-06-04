@@ -2,7 +2,7 @@ import { query } from '../../db/pool.js';
 
 /** Dashboard / revenue analytics (the doc's NET-NEW Reports Service). */
 export async function dashboard() {
-  const [subs, revenue, invoices, vouchersStat, recentPayments] = await Promise.all([
+  const [subs, revenue, invoices, vouchersStat, recentPayments, pppoe] = await Promise.all([
     query(`SELECT status, COUNT(*)::int AS n FROM subscribers GROUP BY status`),
     query(`SELECT COALESCE(SUM(amount_cents),0)::bigint AS total, COUNT(*)::int AS n
            FROM payments WHERE status = 'success'`),
@@ -11,6 +11,20 @@ export async function dashboard() {
     query(`SELECT status, COUNT(*)::int AS n FROM vouchers GROUP BY status`),
     query(`SELECT id, provider, amount_cents, status, created_at
            FROM payments ORDER BY created_at DESC LIMIT 10`),
+    // PPPoE-specific tiles: status counts + an expiring-soon counter so the
+    // operator sees retention risk at a glance. expiring_24h overlaps with
+    // 'active' — they're still active until the sweep flips them.
+    query(`SELECT
+              COUNT(*) FILTER (WHERE status = 'active')::int AS active,
+              COUNT(*) FILTER (WHERE status = 'expired')::int AS expired,
+              COUNT(*) FILTER (WHERE status = 'suspended')::int AS suspended,
+              COUNT(*) FILTER (
+                WHERE status = 'active'
+                  AND expiry_date IS NOT NULL
+                  AND expiry_date > now()
+                  AND expiry_date < now() + interval '24 hours'
+              )::int AS expiring_24h
+            FROM services WHERE service_type = 'pppoe'`),
   ]);
 
   const byStatus = (rows: any[]) =>
@@ -22,6 +36,7 @@ export async function dashboard() {
     invoices: invoices.rows,
     vouchers: byStatus(vouchersStat.rows),
     recent_payments: recentPayments.rows,
+    pppoe: pppoe.rows[0] ?? { active: 0, expired: 0, suspended: 0, expiring_24h: 0 },
   };
 }
 
