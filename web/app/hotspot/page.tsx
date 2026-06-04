@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { api } from '@/lib/api';
 
 interface GrantResult {
@@ -242,9 +242,37 @@ export default function HotspotPortal() {
     payMpesa();
   };
 
+  // Dynamic per-state styles. Pulled out of `styles` so the Record<string,
+  // CSSProperties> annotation below stays valid (functions don't fit it).
+  const tabStyle = (active: boolean): CSSProperties => ({
+    flex: 1,
+    background: active ? '#ffffff' : 'transparent',
+    color: active ? brand.color : '#64748b',
+    fontSize: 13,
+    fontWeight: 600,
+    padding: '8px 12px',
+    borderRadius: 7,
+    border: 'none',
+    cursor: 'pointer',
+    boxShadow: active ? '0 1px 2px rgba(15,23,42,0.08)' : 'none',
+  });
+  const planCardStyle = (active: boolean): CSSProperties => ({
+    background: active ? `rgba(${brandRgb},0.06)` : '#ffffff',
+    border: `1px solid ${active ? brand.color : '#e2e8f0'}`,
+    borderRadius: 10,
+    padding: 14,
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 10,
+    cursor: 'pointer',
+    textAlign: 'left',
+    fontFamily: 'inherit',
+  });
+
   // CSS variables drive the theme — only the brand colour changes per tenant.
   // Light, minimal palette: white card on a soft tinted background.
-  const styles: Record<string, React.CSSProperties> = {
+  const styles: Record<string, CSSProperties> = {
     page: {
       minHeight: '100vh',
       width: '100%',
@@ -286,18 +314,6 @@ export default function HotspotPortal() {
       padding: 4,
       borderRadius: 10,
     },
-    tab: (active: boolean) => ({
-      flex: 1,
-      background: active ? '#ffffff' : 'transparent',
-      color: active ? brand.color : '#64748b',
-      fontSize: 13,
-      fontWeight: 600,
-      padding: '8px 12px',
-      borderRadius: 7,
-      border: 'none',
-      cursor: 'pointer',
-      boxShadow: active ? '0 1px 2px rgba(15,23,42,0.08)' : 'none',
-    }),
     label: {
       display: 'block',
       fontSize: 12,
@@ -346,19 +362,6 @@ export default function HotspotPortal() {
       cursor: 'pointer',
       marginTop: 12,
     },
-    planCard: (active: boolean) => ({
-      background: active ? `rgba(${brandRgb},0.06)` : '#ffffff',
-      border: `1px solid ${active ? brand.color : '#e2e8f0'}`,
-      borderRadius: 10,
-      padding: 14,
-      display: 'flex',
-      justifyContent: 'space-between',
-      alignItems: 'center',
-      gap: 10,
-      cursor: 'pointer',
-      textAlign: 'left' as const,
-      fontFamily: 'inherit',
-    }),
     okToast: {
       background: 'rgba(22,163,74,0.10)',
       color: '#15803d',
@@ -442,8 +445,8 @@ export default function HotspotPortal() {
             )}
 
             <div style={styles.tabs}>
-              <button onClick={() => { setTab('voucher'); setError(null); }} style={styles.tab(tab === 'voucher')}>Voucher</button>
-              <button onClick={() => { setTab('pay'); setError(null); }} style={styles.tab(tab === 'pay')}>Pay via M-Pesa</button>
+              <button onClick={() => { setTab('voucher'); setError(null); }} style={tabStyle(tab === 'voucher')}>Voucher</button>
+              <button onClick={() => { setTab('pay'); setError(null); }} style={tabStyle(tab === 'pay')}>Pay via M-Pesa</button>
             </div>
 
             {tab === 'voucher' ? (
@@ -500,7 +503,7 @@ export default function HotspotPortal() {
                       const active = p.id === planId;
                       const speed = formatSpeed(p.speed_down_kbps);
                       return (
-                        <button key={p.id} onClick={() => setPlanId(p.id)} style={styles.planCard(active)}>
+                        <button key={p.id} onClick={() => setPlanId(p.id)} style={planCardStyle(active)}>
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <div style={{ fontWeight: 600, fontSize: 14, color: '#0f172a' }}>{p.name}</div>
                             <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
