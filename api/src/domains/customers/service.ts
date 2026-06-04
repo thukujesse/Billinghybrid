@@ -176,6 +176,26 @@ export async function createCustomer(input: {
  * means "leave as-is". Returns the full row so the caller can show the
  * after-state without an extra round-trip.
  */
+/**
+ * Lookup a customer by phone — used by the self-serve portal's OTP flow.
+ * Normalizes the input to E.164 (2547XXXXXXXX) before matching, then falls
+ * back to a raw match for legacy rows that stored a different format.
+ * Returns null when no match exists.
+ */
+export async function findCustomerByPhone(rawPhone: string): Promise<Customer | null> {
+  const digits = rawPhone.replace(/\D/g, '');
+  let normalized = digits;
+  if (/^0[17]\d{8}$/.test(digits)) normalized = '254' + digits.slice(1);
+  if (/^[17]\d{8}$/.test(digits)) normalized = '254' + digits;
+  const r = await query<Customer>(
+    `SELECT ${CUSTOMER_COLS} FROM customers
+      WHERE phone = $1 OR phone = $2
+      ORDER BY created_at DESC LIMIT 1`,
+    [normalized, rawPhone]
+  );
+  return r.rows[0] ?? null;
+}
+
 export async function updateCustomer(id: string, fields: {
   full_name?: string;
   phone?: string | null;

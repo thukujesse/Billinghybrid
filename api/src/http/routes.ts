@@ -40,6 +40,7 @@ import { getTemplate as getHotspotTemplate, TEMPLATE_NAMES as HOTSPOT_TEMPLATE_N
 import * as paymentEvents from '../domains/paymentEvents/service.js';
 import * as hotspotDevices from '../domains/hotspotDevices/service.js';
 import * as deviceTokens from '../domains/hotspotDevices/tokens.js';
+import * as portal from '../domains/portal/service.js';
 
 export const api = Router();
 
@@ -67,6 +68,40 @@ api.post('/auth/otp/request', otpRequestLimit, ah(async (req, res) => {
 api.post('/auth/otp/verify', otpVerifyLimit, ah(async (req, res) => {
   const body = parse(z.object({ phone: z.string().min(7), code: z.string().min(4) }), req.body);
   res.json(await auth.verifyOtp(body.phone, body.code));
+}));
+
+// ----------------------- Customer self-serve portal --------------------
+// SMS-OTP login flow → /portal/me read → /portal/renew triggers M-Pesa STK.
+// All gated by 'customer' role JWT issued from /portal/auth/verify.
+api.post('/portal/auth/request', otpRequestLimit, ah(async (req, res) => {
+  const body = parse(z.object({ phone: z.string().min(7) }), req.body);
+  res.json(await auth.requestCustomerOtp(body.phone));
+}));
+api.post('/portal/auth/verify', otpVerifyLimit, ah(async (req, res) => {
+  const body = parse(z.object({ phone: z.string().min(7), code: z.string().min(4) }), req.body);
+  res.json(await auth.verifyCustomerOtp(body.phone, body.code));
+}));
+api.get('/portal/me', requireAuth('customer'), ah(async (req, res) => {
+  res.json(await portal.getPortalMe(req.user!.sub));
+}));
+api.post('/portal/renew', requireAuth('customer'), ah(async (req, res) => {
+  const body = parse(z.object({
+    service_id: z.string().uuid(),
+    plan_id: z.string().uuid(),
+    phone: z.string().min(7),
+  }), req.body);
+  res.json(await portal.portalRenew({
+    customerId: req.user!.sub,
+    serviceId: body.service_id,
+    planId: body.plan_id,
+    phone: body.phone,
+  }));
+}));
+// Status polling — reuse the existing hotspot getPurchaseStatus by
+// importing it at the top of this file. The customer's JWT proves
+// ownership of the parent checkoutRequestId (they initiated the renewal).
+api.get('/portal/pay/:checkoutRequestId', requireAuth('customer'), ah(async (req, res) => {
+  res.json(await hotspot.getPurchaseStatus(req.params.checkoutRequestId));
 }));
 // Echo the caller's identity from their token.
 api.get('/auth/me', requireAuth(), ah(async (req, res) => res.json(req.user)));

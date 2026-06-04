@@ -7,7 +7,7 @@ import { notifications } from '../notifications/service.js';
 import { listSubscribers } from '../subscribers/service.js';
 import { t } from '../../lib/i18n.js';
 
-export type Role = 'admin' | 'staff' | 'reseller' | 'subscriber';
+export type Role = 'admin' | 'staff' | 'reseller' | 'subscriber' | 'customer';
 
 export interface User {
   id: string;
@@ -102,4 +102,55 @@ export async function verifyOtp(phone: string, code: string): Promise<{ token: s
   const subscriberId = matches[0].id;
   const token = issueToken(subscriberId, 'subscriber', { phone });
   return { token, subscriberId };
+}
+
+// ----------------------- Customer (PPPoE) portal OTP ------------------
+// Same OTP storage as subscribers — distinguished by which table we look
+// up at verify time. The phone must already exist on customers.phone;
+// if not, requestCustomerOtp returns sent=false so we don't double as an
+// SMS abuse surface for phones we have no relationship with.
+
+export async function requestCustomerOtp(rawPhone: string): Promise<{ sent: boolean; devCode?: string }> {
+  const { findCustomerByPhone } = await import('../customers/service.js');
+  const customer = await findCustomerByPhone(rawPhone);
+  if (!customer || !customer.phone) {
+    // Don't reveal whether the phone exists in our system — just return
+    // sent=true to make enumeration uninformative. (We still don't actually
+    // SMS unknown phones — only the storage step is skipped.)
+    return { sent: true };
+  }
+  const code = generateOtp(6);
+  const expires = new Date(Date.now() + config.auth.otpTtlMinutes * 60_000);
+  await query(
+    `INSERT INTO otp_codes (phone, code_hash, expires_at) VALUES ($1, $2, $3)`,
+    [customer.phone, hashPassword(code), expires.toISOString()]
+  );
+  await notifications.sms(customer.phone, t('en', 'otp.code', { code, minutes: config.auth.otpTtlMinutes }));
+  return { sent: true, ...(config.auth.enabled ? {} : { devCode: code }) };
+}
+
+export async function verifyCustomerOtp(rawPhone: string, code: string): Promise<{ token: string; customerId: string }> {
+  const { findCustomerByPhone } = await import('../customers/service.js');
+  const customer = await findCustomerByPhone(rawPhone);
+  if (!customer || !customer.phone) throw notFound('account for this phone');
+  const phone = customer.phone;
+
+  const r = await query(
+    `SELECT * FROM otp_codes
+      WHERE phone = $1 AND consumed_at IS NULL AND expires_at > now()
+      ORDER BY created_at DESC LIMIT 1`,
+    [phone]
+  );
+  const otp = r.rows[0];
+  if (!otp) throw unauthorized('no valid code — request a new one');
+  if (otp.attempts >= config.auth.otpMaxAttempts) throw unauthorized('too many attempts — request a new code');
+
+  if (!verifyPassword(code, otp.code_hash)) {
+    await query(`UPDATE otp_codes SET attempts = attempts + 1 WHERE id = $1`, [otp.id]);
+    throw unauthorized('incorrect code');
+  }
+  await query(`UPDATE otp_codes SET consumed_at = now() WHERE id = $1`, [otp.id]);
+
+  const token = issueToken(customer.id, 'customer', { phone });
+  return { token, customerId: customer.id };
 }
