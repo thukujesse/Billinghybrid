@@ -86,6 +86,31 @@ export const config = {
       return !this.apiKey;
     },
   },
+  paymentQueue: {
+    // Worker loop runs inside the API process unless WORKER_ENABLED=false
+    // (useful for read-only replicas / scratch deploys).
+    enabled: (process.env.WORKER_ENABLED ?? 'true') !== 'false',
+    intervalMs: num('PAYMENT_WORKER_INTERVAL_MS', 2000),
+    batchSize: num('PAYMENT_WORKER_BATCH_SIZE', 10),
+    maxAttempts: num('PAYMENT_WORKER_MAX_ATTEMPTS', 5),
+    // Rows still in 'processing' after this long are considered crashed
+    // and re-queued by the stale-lock reaper.
+    staleLockMs: num('PAYMENT_WORKER_STALE_LOCK_MS', 300_000),
+    // Notification channel for DLQ alerts. Empty = log only.
+    dlqAlertChannel: (process.env.PAYMENT_DLQ_ALERT_CHANNEL ?? 'telegram') as 'telegram' | 'email' | 'sms' | '',
+    dlqAlertTo: process.env.PAYMENT_DLQ_ALERT_TO ?? '',
+  },
+  portal: {
+    // Public hostname for the customer-facing captive portal (hotspot + renew).
+    // VPS Caddy reverse-proxies this to jtm-web and jtm-api. MikroTik
+    // walled-garden allows ONLY this host/IP — Render's edge IPs rotate, the
+    // VPS IP is stable, so the captive never silently breaks.
+    host: process.env.PORTAL_HOST ?? 'portal.hubnetwifi.co.ke',
+    // Stable VPS IP the portal hostname resolves to. Used as the dst-address
+    // in walled-garden rules on RouterOS versions older than 7.7 (where
+    // tls-host isn't supported).
+    ip: process.env.PORTAL_IP ?? '38.60.134.212',
+  },
   wireguard: {
     // Public key of the VPS WG server. MikroTik peers trust this in their
     // peer config. Empty = provisioning endpoint refuses to issue scripts.

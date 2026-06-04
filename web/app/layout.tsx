@@ -19,6 +19,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           <a href="/plans">Plans</a>
           <a href="/invoices">Invoices</a>
           <a href="/payments">Payments</a>
+          <a href="/payment-events">Queue</a>
           <a href="/vouchers">Vouchers</a>
           <a href="/resellers">Resellers</a>
           <a href="/routers">Routers</a>

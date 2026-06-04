@@ -37,6 +37,7 @@ import * as customers from '../domains/customers/service.js';
 import * as hotspot from '../domains/hotspot/service.js';
 import * as renew from '../domains/renew/service.js';
 import { getTemplate as getHotspotTemplate, TEMPLATE_NAMES as HOTSPOT_TEMPLATE_NAMES } from '../domains/hotspot/templates.js';
+import * as paymentEvents from '../domains/paymentEvents/service.js';
 
 export const api = Router();
 
@@ -236,15 +237,18 @@ api.post('/payments/mpesa/stk', ah(async (req, res) => {
     invoiceId: body.invoice_id,
   }));
 }));
-// M-Pesa Daraja calls this; also usable to confirm a simulated push.
+// M-Pesa Daraja callback for SUBSCRIBER payments. Enqueue-only: the worker
+// drains payment_events asynchronously so a slow settle path can never block
+// the Daraja ACK (must return <10s or Daraja retries). The simulation shape
+// ({checkout_request_id, outcome}) is still handled inline since it's
+// developer-only and benefits from synchronous feedback.
 api.post('/payments/mpesa/callback', ah(async (req, res) => {
-  // Accept the real Daraja callback shape ({ Body: { stkCallback }}) or the
-  // simple simulation shape ({ checkout_request_id, outcome }).
   const daraja = parseCallback(req.body);
   if (daraja) {
-    await payments.confirmPayment(daraja.checkoutRequestId, daraja.success ? 'success' : 'failed', req.body);
+    await paymentEvents.enqueue('mpesa_payment', daraja.checkoutRequestId, req.body);
     return res.json({ ResultCode: 0, ResultDesc: 'Accepted' }); // Daraja-required ack
   }
+  // Dev/simulation path — synchronous so the caller sees the settled row.
   const body = parse(z.object({
     checkout_request_id: z.string(),
     outcome: z.enum(['success', 'failed']).optional(),
@@ -517,21 +521,47 @@ api.get('/hotspot/pay/:checkoutRequestId', ah(async (req, res) => {
   res.json(await hotspot.getPurchaseStatus(req.params.checkoutRequestId));
 }));
 
-// Daraja callback for hotspot purchases. Daraja-required ack format.
+// ---------------------- Payment events queue (admin) ----------------------
+// Visibility + recovery for the async payment_events worker.
+api.get('/admin/payment-events', requireAuth('admin', 'staff'), ah(async (req, res) => {
+  const status = typeof req.query.status === 'string' ? req.query.status as any : undefined;
+  const source = typeof req.query.source === 'string' ? req.query.source : undefined;
+  const limit = req.query.limit ? Number(req.query.limit) : undefined;
+  res.json(await paymentEvents.listEvents({ status, source, limit }));
+}));
+api.get('/admin/payment-events/health', requireAuth('admin', 'staff'), ah(async (_req, res) => {
+  res.json(await paymentEvents.queueHealth());
+}));
+api.post('/admin/payment-events/:id/retry', requireAuth('admin'), ah(async (req, res) => {
+  const row = await paymentEvents.retryEvent(req.params.id);
+  if (!row) return res.status(404).json({ error: 'not_found' });
+  res.json(row);
+}));
+
+// Daraja callback for hotspot purchases. Enqueue-only — the worker calls
+// hotspot.handleDarajaCallback asynchronously so radcheck/RADIUS writes
+// can fail and retry without losing the ACK to Daraja (which never
+// redelivers a callback that timed out the HTTP response).
 api.post('/hotspot/mpesa/callback', ah(async (req, res) => {
-  await hotspot.handleDarajaCallback(req.body);
+  const daraja = parseCallback(req.body);
+  // If parse fails we still enqueue under a synthetic dedup key so the row
+  // shows up in the admin DLQ for diagnosis rather than being silently dropped.
+  const dedup = daraja?.checkoutRequestId ?? `unparseable-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  await paymentEvents.enqueue('mpesa_hotspot', dedup, req.body);
   res.json({ ResultCode: 0, ResultDesc: 'Accepted' });
 }));
 
-// Simulation-only: when M-Pesa creds aren't configured, the portal calls this
-// to mark a fake purchase successful and trigger the radcheck grant. Useful
-// for end-to-end testing without real Safaricom keys.
+// Simulation-only: when M-Pesa creds aren't configured, the portal calls
+// this to mark a fake purchase successful. Routed through the same queue
+// as real callbacks so the worker path is exercised end-to-end in dev.
 api.post('/hotspot/pay/:checkoutRequestId/confirm-test', ah(async (req, res) => {
-  await hotspot.completePurchase({
-    checkoutRequestId: req.params.checkoutRequestId,
-    success: true,
-    receipt: 'SIMULATED',
-  });
+  await paymentEvents.enqueue(
+    'manual_hotspot',
+    req.params.checkoutRequestId,
+    { checkoutRequestId: req.params.checkoutRequestId }
+  );
+  // Return immediately — the portal polls /hotspot/pay/:id for status,
+  // which will flip to 'success' as soon as the worker drains the job.
   res.json(await hotspot.getPurchaseStatus(req.params.checkoutRequestId));
 }));
 

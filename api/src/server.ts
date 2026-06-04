@@ -2,6 +2,7 @@ import { createApp } from './app.js';
 import { config } from './config.js';
 import { pool } from './db/pool.js';
 import { pollVpsHandshakes } from './domains/routers/service.js';
+import { startPaymentWorker } from './domains/paymentEvents/worker.js';
 
 const app = await createApp();
 
@@ -14,6 +15,12 @@ const heartbeatInterval = setInterval(() => {
   );
 }, 30_000);
 heartbeatInterval.unref();
+
+// Payment events worker — drains the Daraja-callback queue asynchronously.
+// Disabled with WORKER_ENABLED=false on replicas that shouldn't run jobs.
+const stopPaymentWorker = config.paymentQueue.enabled
+  ? startPaymentWorker()
+  : async () => {};
 
 const server = app.listen(config.port, () => {
   console.log(`JTM billing API listening on http://localhost:${config.port}`);
@@ -39,6 +46,11 @@ async function shutdown(signal: string) {
   hardTimeout.unref();
 
   server.close(async () => {
+    try {
+      await stopPaymentWorker(); // let in-flight payment jobs finish
+    } catch (e) {
+      console.error('[shutdown] payment worker stop failed:', e);
+    }
     try {
       await pool.end();
     } catch {
