@@ -1,4 +1,17 @@
-const BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
+const BAKED_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
+
+// When served from the customer-facing portal subdomain (proxied through the
+// VPS), route API calls to the same origin so MikroTik walled-garden only
+// needs to allow ONE host (the VPS). Dashboard users on the Render origin
+// keep using the baked jtm-api URL.
+const getBase = () => {
+  if (typeof window === 'undefined') return BAKED_BASE;
+  const host = window.location.hostname;
+  if (host.startsWith('billing.') || host.startsWith('portal.')) {
+    return window.location.origin;
+  }
+  return BAKED_BASE;
+};
 
 const TOKEN_KEY = 'jtm_token';
 export const getToken = () =>
@@ -14,7 +27,7 @@ export async function api<T = any>(
   options: RequestInit = {}
 ): Promise<T> {
   const token = getToken();
-  const res = await fetch(`${BASE}/api${path}`, {
+  const res = await fetch(`${getBase()}/api${path}`, {
     ...options,
     headers: {
       'Content-Type': 'application/json',

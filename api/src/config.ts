@@ -105,7 +105,7 @@ export const config = {
     // VPS Caddy reverse-proxies this to jtm-web and jtm-api. MikroTik
     // walled-garden allows ONLY this host/IP — Render's edge IPs rotate, the
     // VPS IP is stable, so the captive never silently breaks.
-    host: process.env.PORTAL_HOST ?? 'portal.hubnetwifi.co.ke',
+    host: process.env.PORTAL_HOST ?? 'billing.hubnetwifi.co.ke',
     // Stable VPS IP the portal hostname resolves to. Used as the dst-address
     // in walled-garden rules on RouterOS versions older than 7.7 (where
     // tls-host isn't supported).

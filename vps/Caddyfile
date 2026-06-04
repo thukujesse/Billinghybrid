@@ -24,7 +24,7 @@ vpn.hubnetwifi.co.ke {
 #
 # tls_server_name pins SNI to Render's hostname so Render's edge routes
 # correctly. Host header is overridden to match.
-portal.hubnetwifi.co.ke {
+billing.hubnetwifi.co.ke {
     # Public API: hotspot (voucher / M-Pesa / branding) and renew (info / pay).
     @public_api path /api/hotspot/* /api/renew/*
     handle @public_api {
@@ -50,7 +50,7 @@ portal.hubnetwifi.co.ke {
         }
     }
 
-    # Optional UX nicety: bare https://portal.hubnetwifi.co.ke/ redirects
+    # Optional UX nicety: bare https://billing.hubnetwifi.co.ke/ redirects
     # to /hotspot so a phone visiting the root lands on the captive portal.
     redir / /hotspot 302
 
