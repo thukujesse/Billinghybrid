@@ -423,6 +423,25 @@ api.post('/customers', ah(async (req, res) => {
   }), req.body);
   res.status(201).json(await customers.createCustomer(body));
 }));
+api.put('/customers/:id', ah(async (req, res) => {
+  const body = parse(z.object({
+    full_name: z.string().min(1).max(120).optional(),
+    phone: z.string().max(20).nullable().optional(),
+    email: z.string().max(120).nullable().optional(),
+    address: z.string().max(200).nullable().optional(),
+    notes: z.string().max(2000).nullable().optional(),
+    status: z.enum(['active', 'suspended', 'closed']).optional(),
+  }), req.body);
+  res.json(await customers.updateCustomer(req.params.id, body));
+}));
+api.get('/customers/:id/payments', ah(async (req, res) => {
+  const limit = req.query.limit ? Math.min(Number(req.query.limit), 200) : 50;
+  res.json(await customers.getCustomerPayments(req.params.id, limit));
+}));
+api.get('/services/:id/sessions', ah(async (req, res) => {
+  const limit = req.query.limit ? Math.min(Number(req.query.limit), 100) : 20;
+  res.json(await customers.getRecentSessions(req.params.id, limit));
+}));
 api.post('/customers/:id/services', ah(async (req, res) => {
   const body = parse(z.object({
     service_type: z.enum(['pppoe', 'hotspot', 'static', 'ftth_gpon']),
@@ -432,6 +451,7 @@ api.post('/customers/:id/services', ah(async (req, res) => {
     mac_address: z.string().optional(),
     vlan_id: z.number().int().optional(),
     router_id: z.string().uuid().optional(),
+    plan_id: z.string().uuid().optional(),
     rate_limit: z.string().optional(),
     expiry_date: z.string().optional(),
   }), req.body);
@@ -442,6 +462,55 @@ api.patch('/services/:id/status', ah(async (req, res) => {
     status: z.enum(['active', 'suspended', 'expired', 'cancelled']),
   }), req.body);
   res.json(await customers.setServiceStatus(req.params.id, body.status));
+}));
+// Force-renew: operator-side top-up that bypasses M-Pesa. Bumps expiry by
+// the supplied plan's validity_days and restores status to 'active'.
+// fromNow=false stacks onto the existing expiry (loyal customer with time
+// left); fromNow=true restarts the window (reactivating after expiry).
+api.post('/services/:id/renew', requireAuth('admin', 'staff'), ah(async (req, res) => {
+  const body = parse(z.object({
+    planId: z.string().uuid().optional(),
+    fromNow: z.boolean().optional(),
+  }), req.body);
+  res.json(await customers.renewService({
+    serviceId: req.params.id,
+    planId: body.planId,
+    fromNow: body.fromNow,
+  }));
+}));
+// Mid-cycle plan change. Swaps plan_id + rate_limit; expiry_date untouched
+// so the customer keeps the days they paid for. Use /renew if the operator
+// wants to also reset the billing window.
+api.patch('/services/:id/plan', requireAuth('admin', 'staff'), ah(async (req, res) => {
+  const body = parse(z.object({ planId: z.string().uuid() }), req.body);
+  res.json(await customers.changePlan({ serviceId: req.params.id, planId: body.planId }));
+}));
+// Admin trigger for the auto-expire sweep (also runs hourly via the worker).
+api.post('/admin/services/expire-sweep', requireAuth('admin'), ah(async (_req, res) => {
+  res.json({ expired: await customers.expireDueServices() });
+}));
+// Bulk import: paste N (full_name, phone, ...) rows + one plan_id, mint
+// customers + PPPoE services in batch. Per-row isolation — one bad row
+// doesn't roll back the others. Response contains the generated creds
+// per row so the operator can SMS them in turn.
+api.post('/admin/customers/bulk-import', requireAuth('admin', 'staff'), ah(async (req, res) => {
+  const body = parse(z.object({
+    plan_id: z.string().uuid(),
+    router_id: z.string().uuid().optional(),
+    rows: z.array(z.object({
+      full_name: z.string().min(1).max(120),
+      phone: z.string().max(20).optional(),
+      email: z.string().max(120).optional(),
+      address: z.string().max(200).optional(),
+      username: z.string().max(60).optional(),
+      password: z.string().min(6).max(60).optional(),
+    })).min(1).max(500),
+  }), req.body);
+  res.json(await customers.bulkCreateCustomers({
+    rows: body.rows,
+    plan_id: body.plan_id,
+    router_id: body.router_id,
+  }));
 }));
 api.delete('/services/:id', ah(async (req, res) => {
   await customers.deleteService(req.params.id);

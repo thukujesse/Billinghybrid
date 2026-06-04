@@ -171,6 +171,143 @@ export async function createCustomer(input: {
   return r.rows[0];
 }
 
+/**
+ * Edit customer-level fields. Only the supplied keys are touched — undefined
+ * means "leave as-is". Returns the full row so the caller can show the
+ * after-state without an extra round-trip.
+ */
+export async function updateCustomer(id: string, fields: {
+  full_name?: string;
+  phone?: string | null;
+  email?: string | null;
+  address?: string | null;
+  notes?: string | null;
+  status?: 'active' | 'suspended' | 'closed';
+}): Promise<Customer> {
+  const sets: string[] = [];
+  const vals: any[] = [];
+  const addField = (col: string, val: unknown) => {
+    if (val !== undefined) { vals.push(val); sets.push(`${col} = $${vals.length}`); }
+  };
+  addField('full_name', fields.full_name);
+  addField('phone', fields.phone);
+  addField('email', fields.email);
+  addField('address', fields.address);
+  addField('notes', fields.notes);
+  addField('status', fields.status);
+  if (sets.length === 0) {
+    const r = await query<Customer>(`SELECT ${CUSTOMER_COLS} FROM customers WHERE id = $1`, [id]);
+    if (!r.rows[0]) throw notFound('customer');
+    return r.rows[0];
+  }
+  sets.push(`updated_at = now()`);
+  vals.push(id);
+  const r = await query<Customer>(
+    `UPDATE customers SET ${sets.join(', ')} WHERE id = $${vals.length} RETURNING ${CUSTOMER_COLS}`,
+    vals
+  );
+  if (!r.rows[0]) throw notFound('customer');
+  return r.rows[0];
+}
+
+export interface CustomerPayment {
+  id: string;
+  source: 'hotspot_renewal' | 'hotspot_guest';
+  checkout_request_id: string | null;
+  amount_kes: number;
+  status: 'pending' | 'success' | 'failed' | 'expired';
+  receipt: string | null;
+  failure_reason: string | null;
+  service_id: string | null;
+  service_username: string | null;
+  plan_id: string | null;
+  plan_name: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+/**
+ * Payment history for a customer — currently sourced from hotspot_purchases
+ * (M-Pesa STK pushes). 'hotspot_renewal' rows have service_id set and were
+ * the PPPoE-restore payments; we surface 'hotspot_guest' too if the phone
+ * matches the customer's phone (defensive — operator might want to see
+ * all M-Pesa activity for that phone number).
+ */
+export async function getCustomerPayments(customerId: string, limit = 50): Promise<CustomerPayment[]> {
+  const c = await query<{ phone: string | null }>(
+    `SELECT phone FROM customers WHERE id = $1`, [customerId]
+  );
+  if (!c.rows[0]) throw notFound('customer');
+
+  // Two paths joined: payments linked via service_id (the strong link), and
+  // payments where only phone matches (weak link — could include unrelated
+  // guest purchases from someone using the same number, but operator finds
+  // that useful for reconciliation).
+  const r = await query<CustomerPayment>(
+    `SELECT DISTINCT ON (hp.id)
+            hp.id,
+            CASE WHEN hp.service_id IS NOT NULL THEN 'hotspot_renewal' ELSE 'hotspot_guest' END AS source,
+            hp.checkout_request_id,
+            hp.amount_kes,
+            hp.status,
+            hp.receipt,
+            hp.failure_reason,
+            hp.service_id,
+            s.username AS service_username,
+            hp.plan_id,
+            p.name AS plan_name,
+            hp.created_at,
+            hp.completed_at
+       FROM hotspot_purchases hp
+       LEFT JOIN services s ON s.id = hp.service_id
+       LEFT JOIN plans p ON p.id = hp.plan_id
+      WHERE hp.service_id IN (SELECT id FROM services WHERE customer_id = $1)
+         OR (hp.phone = $2 AND $2 IS NOT NULL)
+      ORDER BY hp.id, hp.created_at DESC
+      LIMIT $3`,
+    [customerId, c.rows[0].phone ?? '', limit]
+  );
+  // Re-sort by created_at after the DISTINCT ON (which forced ordering by id).
+  return r.rows.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+}
+
+export interface ServiceSession {
+  acctsessionid: string;
+  acctstarttime: string | null;
+  acctstoptime: string | null;
+  framed_ip: string | null;
+  nas_ip: string | null;
+  acctinputoctets: string;        // bigint as string — Postgres numeric
+  acctoutputoctets: string;
+  acctterminatecause: string | null;
+}
+
+/** Recent radacct sessions for a service — last N by start time. */
+export async function getRecentSessions(serviceId: string, limit = 20): Promise<ServiceSession[]> {
+  const sr = await query<{ username: string | null }>(
+    `SELECT username FROM services WHERE id = $1`, [serviceId]
+  );
+  if (!sr.rows[0]) throw notFound('service');
+  const username = sr.rows[0].username;
+  if (!username) return [];
+
+  const r = await query<ServiceSession>(
+    `SELECT acctsessionid,
+            acctstarttime, acctstoptime,
+            host(framedipaddress) AS framed_ip,
+            host(nasipaddress) AS nas_ip,
+            COALESCE(acctinputoctets, 0)::text AS acctinputoctets,
+            COALESCE(acctoutputoctets, 0)::text AS acctoutputoctets,
+            acctterminatecause
+       FROM radacct
+      WHERE username = $1
+      ORDER BY acctstarttime DESC NULLS LAST
+      LIMIT $2`,
+    [username, limit]
+  );
+  return r.rows;
+}
+
 async function nextAccountNumber(): Promise<string> {
   const r = await query<{ count: string }>(
     `SELECT count(*)::text FROM customers WHERE account_number LIKE 'HUB%'`
@@ -298,6 +435,175 @@ export async function renewService(input: {
     [input.serviceId, planId, rateLimit, newExpiry.toISOString()]
   );
   return setServiceStatus(input.serviceId, 'active');
+}
+
+/**
+ * Mid-cycle plan change. Swaps plan_id + rate_limit but leaves the
+ * existing expiry_date intact — customers keep the days they paid for
+ * when they upgrade/downgrade. Use renewService() if you want to also
+ * reset the billing window.
+ */
+export async function changePlan(input: {
+  serviceId: string;
+  planId: string;
+}): Promise<Service> {
+  const sr = await query<Service>(
+    `SELECT ${SERVICE_COLS} FROM services WHERE id = $1`, [input.serviceId]
+  );
+  if (!sr.rows[0]) throw notFound('service');
+
+  const pr = await query<{
+    speed_down_kbps: number | null; speed_up_kbps: number | null;
+  }>(
+    `SELECT speed_down_kbps, speed_up_kbps FROM plans WHERE id = $1 AND active = TRUE`,
+    [input.planId]
+  );
+  const plan = pr.rows[0];
+  if (!plan) throw notFound('plan');
+
+  const rateLimit = (plan.speed_down_kbps && plan.speed_up_kbps)
+    ? `${plan.speed_up_kbps}k/${plan.speed_down_kbps}k`
+    : sr.rows[0].rate_limit;
+
+  await query(
+    `UPDATE services SET plan_id = $2, rate_limit = $3, updated_at = now() WHERE id = $1`,
+    [input.serviceId, input.planId, rateLimit]
+  );
+  // Re-sync RADIUS so Mikrotik-Rate-Limit picks up the new value on next auth.
+  // The active session keeps its old rate until reconnect — CoA-Change for
+  // live rate updates is a separate enhancement.
+  const final = await query<Service>(
+    `SELECT ${SERVICE_COLS} FROM services WHERE id = $1`, [input.serviceId]
+  );
+  await syncServiceToRadius(final.rows[0]);
+  return final.rows[0];
+}
+
+export interface BulkRow {
+  full_name: string;
+  phone?: string;
+  email?: string;
+  address?: string;
+  username?: string;     // optional override; auto-generated otherwise
+  password?: string;     // optional override; auto-generated otherwise
+}
+
+export interface BulkResult {
+  created: Array<{
+    row_index: number;
+    account_number: string;
+    full_name: string;
+    phone: string | null;
+    username: string;
+    password: string;
+  }>;
+  errors: Array<{ row_index: number; full_name: string; message: string }>;
+}
+
+/**
+ * Batch-create N customers + PPPoE services on the same plan. Per-row
+ * isolation: a single bad phone number or duplicate username doesn't
+ * roll back the others. Returns the generated creds for every successful
+ * row so the operator can paste them into a bulk SMS or print them.
+ *
+ * Username strategy: take the requested base (or derive from full_name as
+ * `firstinitial + lastword`), then append a numeric suffix if it collides
+ * with an existing row. Password is 10 chars from a confusion-free
+ * alphabet (no 0/O/1/I/l).
+ */
+export async function bulkCreateCustomers(input: {
+  rows: BulkRow[];
+  plan_id: string;
+  router_id?: string;
+}): Promise<BulkResult> {
+  if (!input.rows.length) return { created: [], errors: [] };
+
+  // Validate plan ONCE up front — fail-fast if the operator picked a bad plan.
+  const pr = await query<{ id: string; validity_days: number }>(
+    `SELECT id, validity_days FROM plans WHERE id = $1 AND active = TRUE`,
+    [input.plan_id]
+  );
+  if (!pr.rows[0]) throw notFound('plan');
+
+  const result: BulkResult = { created: [], errors: [] };
+  // Track usernames minted in this batch so two rows with the same derived
+  // base get different suffixes.
+  const mintedUsernames = new Set<string>();
+
+  for (let i = 0; i < input.rows.length; i++) {
+    const row = input.rows[i];
+    try {
+      if (!row.full_name?.trim()) throw badRequest('full_name required');
+
+      const customer = await createCustomer({
+        full_name: row.full_name.trim(),
+        phone: row.phone || undefined,
+        email: row.email || undefined,
+        address: row.address || undefined,
+      });
+
+      const username = await uniqueUsername(row.username || deriveUsername(row.full_name), mintedUsernames);
+      mintedUsernames.add(username);
+      const password = row.password || generatePassword();
+
+      await createService({
+        customer_id: customer.id,
+        service_type: 'pppoe',
+        username,
+        password,
+        plan_id: input.plan_id,
+        router_id: input.router_id,
+      });
+
+      result.created.push({
+        row_index: i,
+        account_number: customer.account_number,
+        full_name: customer.full_name,
+        phone: customer.phone,
+        username,
+        password,
+      });
+    } catch (err) {
+      result.errors.push({
+        row_index: i,
+        full_name: row.full_name,
+        message: (err as Error).message,
+      });
+    }
+  }
+  return result;
+}
+
+function deriveUsername(fullName: string): string {
+  const parts = fullName.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return 'customer';
+  if (parts.length === 1) return parts[0].replace(/[^a-z0-9]/g, '');
+  const first = parts[0][0];
+  const last = parts[parts.length - 1].replace(/[^a-z0-9]/g, '');
+  return (first + last) || 'customer';
+}
+
+async function uniqueUsername(base: string, batchTaken: Set<string>): Promise<string> {
+  const cleanBase = base.toLowerCase().replace(/[^a-z0-9]/g, '') || 'customer';
+  // Cap search at 100 — past that something is wrong, fall through to a random suffix.
+  for (let i = 0; i < 100; i++) {
+    const candidate = i === 0 ? cleanBase : `${cleanBase}${i + 1}`;
+    if (batchTaken.has(candidate)) continue;
+    const r = await query<{ exists: boolean }>(
+      `SELECT EXISTS(SELECT 1 FROM services WHERE username = $1) AS exists`,
+      [candidate]
+    );
+    if (!r.rows[0].exists) return candidate;
+  }
+  // Pathological fallback: append 6 random hex chars.
+  return cleanBase + Math.random().toString(16).slice(2, 8);
+}
+
+function generatePassword(): string {
+  const alphabet = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+  let out = '';
+  for (let i = 0; i < 10; i++) out += alphabet[Math.floor(Math.random() * alphabet.length)];
+  return out;
 }
 
 /**
