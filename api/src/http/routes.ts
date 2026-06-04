@@ -520,8 +520,11 @@ api.post('/hotspot/pay', ah(async (req, res) => {
 }));
 
 // Portal polls this every few seconds while waiting for the STK callback.
+// fp= query param carries the browser fingerprint so the inline-minted
+// token captures it for future fingerprint-reconnect lookups.
 api.get('/hotspot/pay/:checkoutRequestId', ah(async (req, res) => {
-  res.json(await hotspot.getPurchaseStatus(req.params.checkoutRequestId));
+  const fp = typeof req.query.fp === 'string' && req.query.fp.length >= 32 ? req.query.fp : undefined;
+  res.json(await hotspot.getPurchaseStatus(req.params.checkoutRequestId, { fingerprintHash: fp }));
 }));
 
 // ---------------------- Returning-customer auto-auth ----------------------
@@ -569,8 +572,13 @@ api.post('/hotspot/rebind/verify', ah(async (req, res) => {
   const body = parse(z.object({
     otpId: z.string().uuid(),
     code: z.string().min(4).max(8),
+    fingerprint: z.string().min(32).max(128).optional(),
   }), req.body);
-  res.json(await hotspotDevices.rebindVerify(body));
+  res.json(await hotspotDevices.rebindVerify({
+    otpId: body.otpId,
+    code: body.code,
+    fingerprintHash: body.fingerprint ?? null,
+  }));
 }));
 
 // Admin: live device list + manual revoke.
@@ -619,6 +627,26 @@ api.post('/hotspot/auto-reconnect', autoReconnectLimit, ah(async (req, res) => {
 //   * /hotspot/rebind/verify (SMS-OTP proves ownership)
 //   * admin-driven flows
 // Vouchers don't mint tokens since they have no associated phone.
+
+// Fingerprint-based reconnect — third tier when MAC lookup AND token
+// lookup both miss. Server correlates the presented browser fingerprint
+// against device_tokens.fingerprint_hash; if EXACTLY ONE phone matches
+// and that phone has a live active_devices grant, we copy the grant onto
+// the presented MAC and mint a fresh token. Ambiguous matches refuse
+// rather than guess. Rate-limited to keep enumeration cheap.
+const fingerprintReconnectLimit = rateLimit({ name: 'fp_reconnect', windowMs: 60_000, max: 30 });
+api.post('/hotspot/fingerprint-reconnect', fingerprintReconnectLimit, ah(async (req, res) => {
+  const body = parse(z.object({
+    fingerprint: z.string().min(32).max(128),
+    mac: z.string().min(11),
+  }), req.body);
+  res.json(await deviceTokens.tryFingerprintReconnect({
+    fingerprintHash: body.fingerprint,
+    newMac: body.mac,
+    ip: req.ip,
+    userAgent: req.headers['user-agent'],
+  }));
+}));
 
 // "Forget this device" — customer-driven token revoke.
 api.post('/hotspot/forget-device', ah(async (req, res) => {
@@ -812,6 +840,44 @@ api.get('/hotspot/login.html', ah(async (_req, res) => {
 // Slug = router's brand_slug or UUID. Unknown slug returns default HUB.
 api.get('/hotspot/branding/:slug', ah(async (req, res) => {
   res.json(await hotspot.getBranding(req.params.slug));
+}));
+
+// Public — captive portal calls this on mount when no per-router slug
+// is in the URL. Returns the global default (Settings → Hotspot Template).
+api.get('/hotspot/branding', ah(async (_req, res) => {
+  res.json(await hotspot.getBranding(''));
+}));
+
+// Admin — manage the global hotspot branding (logo, ISP name, tagline, color).
+api.get('/admin/hotspot-branding', requireAuth('admin', 'staff'), ah(async (_req, res) => {
+  res.json(await hotspot.getGlobalBrandingAdmin());
+}));
+api.put('/admin/hotspot-branding', requireAuth('admin'), ah(async (req, res) => {
+  const body = parse(z.object({
+    name: z.string().min(1).max(80).optional(),
+    color: z.string().regex(/^#[0-9a-f]{6}$/i).optional(),
+    tagline: z.string().max(120).optional(),
+    // logoUrl: null clears, undefined leaves alone, data: URL sets.
+    logoUrl: z.string().max(280_000).nullable().optional(),
+  }), req.body);
+  res.json(await hotspot.setGlobalBranding(body));
+}));
+
+// Public — Quick Connect: phone-based active-session lookup. Connects the
+// caller's MAC if their phone has a live grant on any device. Rate-limited
+// per IP since trusting a phone number alone is a soft auth boundary.
+const quickConnectLimit = rateLimit({ name: 'quick_connect', windowMs: 60_000, max: 20 });
+api.post('/hotspot/quick-connect', quickConnectLimit, ah(async (req, res) => {
+  const body = parse(z.object({
+    phone: z.string().min(7),
+    mac: z.string().min(11),
+  }), req.body);
+  res.json(await hotspotDevices.quickConnect({
+    phone: body.phone,
+    mac: body.mac,
+    ip: req.ip,
+    userAgent: req.headers['user-agent'],
+  }));
 }));
 
 // Identify: called by the MikroTik itself (no auth — gated by the unguessable

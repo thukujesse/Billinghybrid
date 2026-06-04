@@ -115,40 +115,105 @@ export interface HotspotBranding {
   name: string;
   color: string;
   tagline: string;
+  logoUrl: string | null;
 }
 
-const DEFAULT_BRANDING: HotspotBranding = {
+const HARDCODED_FALLBACK: HotspotBranding = {
   name: 'HUB Networks',
   color: '#2563eb',
   tagline: 'Connect to Wi-Fi',
+  logoUrl: null,
 };
+
+async function getGlobalBranding(): Promise<HotspotBranding> {
+  const r = await query<{ name: string; color: string; tagline: string; logo_url: string | null }>(
+    `SELECT name, color, tagline, logo_url FROM hotspot_branding WHERE id = TRUE LIMIT 1`
+  );
+  const row = r.rows[0];
+  if (!row) return HARDCODED_FALLBACK;
+  return {
+    name: row.name,
+    color: row.color,
+    tagline: row.tagline,
+    logoUrl: row.logo_url,
+  };
+}
 
 /**
  * Resolve the branding for a captive-portal request. Slug is either the
  * router's `brand_slug` (admin-set) or its UUID — both work as lookup keys.
- * Returns default HUB branding when the slug is empty or unrecognized.
+ * Per-router branding fills missing fields from the global singleton; the
+ * singleton in turn falls back to a hard-coded default if absent.
  */
 export async function getBranding(slug: string): Promise<HotspotBranding> {
+  const fallback = await getGlobalBranding();
   const s = slug.trim();
-  if (!s) return DEFAULT_BRANDING;
+  if (!s) return fallback;
   const r = await query<{
     brand_name: string | null;
     brand_color: string | null;
     brand_tagline: string | null;
+    brand_logo_url: string | null;
   }>(
-    `SELECT brand_name, brand_color, brand_tagline
+    `SELECT brand_name, brand_color, brand_tagline, brand_logo_url
        FROM routers
       WHERE brand_slug = $1 OR id::text = $1
       LIMIT 1`,
     [s]
   );
   const row = r.rows[0];
-  if (!row) return DEFAULT_BRANDING;
+  if (!row) return fallback;
   return {
-    name: row.brand_name ?? DEFAULT_BRANDING.name,
-    color: row.brand_color ?? DEFAULT_BRANDING.color,
-    tagline: row.brand_tagline ?? DEFAULT_BRANDING.tagline,
+    name: row.brand_name ?? fallback.name,
+    color: row.brand_color ?? fallback.color,
+    tagline: row.brand_tagline ?? fallback.tagline,
+    logoUrl: row.brand_logo_url ?? fallback.logoUrl,
   };
+}
+
+/** Admin: read the global branding singleton. */
+export async function getGlobalBrandingAdmin(): Promise<HotspotBranding> {
+  return getGlobalBranding();
+}
+
+/**
+ * Admin: update the global branding. Logo is a data: URL (base64 PNG/JPG).
+ * Reject anything bigger than 200 KB pre-encode so the table doesn't bloat.
+ */
+export async function setGlobalBranding(input: {
+  name?: string;
+  color?: string;
+  tagline?: string;
+  logoUrl?: string | null;
+}): Promise<HotspotBranding> {
+  const sets: string[] = [];
+  const vals: any[] = [];
+  if (input.name !== undefined) {
+    if (!input.name.trim()) throw badRequest('name cannot be empty');
+    vals.push(input.name.trim()); sets.push(`name = $${vals.length}`);
+  }
+  if (input.color !== undefined) {
+    if (!/^#[0-9a-f]{6}$/i.test(input.color)) throw badRequest('color must be a hex like #2563eb');
+    vals.push(input.color); sets.push(`color = $${vals.length}`);
+  }
+  if (input.tagline !== undefined) {
+    vals.push(input.tagline.trim()); sets.push(`tagline = $${vals.length}`);
+  }
+  if (input.logoUrl !== undefined) {
+    if (input.logoUrl !== null) {
+      if (!/^data:image\/(png|jpe?g|webp|svg\+xml);base64,/i.test(input.logoUrl)) {
+        throw badRequest('logoUrl must be a data:image/... base64 URL');
+      }
+      if (input.logoUrl.length > 280_000) {  // ~200 KB pre-encode
+        throw badRequest('logo too large — keep it under 200 KB before encoding');
+      }
+    }
+    vals.push(input.logoUrl); sets.push(`logo_url = $${vals.length}`);
+  }
+  if (sets.length === 0) return getGlobalBranding();
+  sets.push(`updated_at = now()`);
+  await query(`UPDATE hotspot_branding SET ${sets.join(', ')} WHERE id = TRUE`, vals);
+  return getGlobalBranding();
 }
 
 export interface PurchaseInitResult {
@@ -230,8 +295,12 @@ export interface PurchaseStatus {
   tokenExpiresAt?: string;
 }
 
-/** Portal polls this every couple of seconds while STK is in flight. */
-export async function getPurchaseStatus(checkoutRequestId: string): Promise<PurchaseStatus> {
+/** Portal polls this every couple of seconds while STK is in flight.
+ *  `fingerprintHash` is supplied by the captive portal so that the token
+ *  minted on first-success can be looked up later by browser fingerprint
+ *  (fingerprint-reconnect path). The portal recomputes the fingerprint
+ *  every load — there's no point caching it client-side. */
+export async function getPurchaseStatus(checkoutRequestId: string, opts: { fingerprintHash?: string } = {}): Promise<PurchaseStatus> {
   const r = await query<{
     status: 'pending' | 'success' | 'failed' | 'expired';
     username: string | null;
@@ -268,6 +337,7 @@ export async function getPurchaseStatus(checkoutRequestId: string): Promise<Purc
         phone: row.phone,
         mac: row.mac_address,
         userAgent: row.user_agent,
+        fingerprintHash: opts.fingerprintHash ?? null,
       });
       token = t.token;
       tokenExpiresAt = t.expiresAt;

@@ -30,17 +30,19 @@ interface Branding {
   name: string;
   color: string;
   tagline: string;
+  logoUrl: string | null;
 }
 
 type Tab = 'voucher' | 'pay';
+type Expanded = 'quick' | 'voucher' | null;
 
 const PHONE_KEY = 'jtm_hotspot_phone';
 const TOKEN_KEY = 'jtm_hotspot_token';
-const FP_KEY = 'jtm_hotspot_fp';
 const DEFAULT_BRANDING: Branding = {
   name: 'HUB Networks',
   color: '#2563eb',
   tagline: 'Connect to Wi-Fi',
+  logoUrl: null,
 };
 
 // ---------- Device-token plumbing (Sprint 2.5 silent re-auth) ----------
@@ -127,6 +129,56 @@ function formatBytes(b: number): string {
   return `${(b / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
+function CollapsibleBar({
+  open, onToggle, brand, brandRgb, label, hint, children,
+}: {
+  open: boolean;
+  onToggle: () => void;
+  brand: string;
+  brandRgb: string;
+  label: string;
+  hint: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div style={{
+      marginBottom: 10,
+      background: open ? `rgba(${brandRgb},0.04)` : '#ffffff',
+      border: `1px solid ${open ? `rgba(${brandRgb},0.25)` : '#e2e8f0'}`,
+      borderRadius: 10,
+      overflow: 'hidden',
+      transition: 'background 0.15s',
+    }}>
+      <button
+        onClick={onToggle}
+        style={{
+          width: '100%',
+          background: 'transparent',
+          border: 'none',
+          padding: '12px 14px',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          cursor: 'pointer',
+          fontFamily: 'inherit',
+          textAlign: 'left',
+        }}
+      >
+        <div>
+          <div style={{ fontWeight: 600, fontSize: 14, color: open ? brand : '#0f172a' }}>{label}</div>
+          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2, fontWeight: 300 }}>{hint}</div>
+        </div>
+        <span style={{ fontSize: 18, color: open ? brand : '#94a3b8', transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s', lineHeight: 1 }}>⌄</span>
+      </button>
+      {open && (
+        <div style={{ padding: '4px 14px 14px 14px', borderTop: `1px solid rgba(${brandRgb},0.18)` }}>
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function DataCapBar({ bytesUsed, capMb, brand, brandRgb }: { bytesUsed: number; capMb: number; brand: string; brandRgb: string }) {
   const usedMb = bytesUsed / (1024 * 1024);
   const pct = Math.min(100, Math.round((usedMb / capMb) * 100));
@@ -153,6 +205,9 @@ function hexToRgb(hex: string): string {
 
 export default function HotspotPortal() {
   const [tab, setTab] = useState<Tab>('voucher');
+  // Which collapsible section is open above the plan cards.
+  const [expanded, setExpanded] = useState<Expanded>(null);
+  const [quickBusy, setQuickBusy] = useState(false);
   const [code, setCode] = useState('');
   const [phone, setPhone] = useState('');
   const [planId, setPlanId] = useState('');
@@ -226,11 +281,11 @@ export default function HotspotPortal() {
     });
     const saved = window.localStorage.getItem(PHONE_KEY);
     if (saved) setPhone(saved);
-    if (tenant) {
-      api<Branding>(`/hotspot/branding/${encodeURIComponent(tenant)}`)
-        .then(setBrand)
-        .catch(() => {/* fall through to default */});
-    }
+    // Per-router slug overrides the global default. Empty slug uses the
+    // global Settings → Hotspot Template singleton.
+    api<Branding>(tenant ? `/hotspot/branding/${encodeURIComponent(tenant)}` : '/hotspot/branding')
+      .then(setBrand)
+      .catch(() => {/* fall through to hard-coded default */});
     loadPlans();
   }, []);
 
@@ -291,11 +346,14 @@ export default function HotspotPortal() {
         }
       } catch {/* fall through to token path */}
 
+      // Compute fingerprint once; used for both token (Step 2) and
+      // server-side fingerprint correlation (Step 3).
+      const fp = await getFingerprint();
+
       // Step 2: device token (silent rebind for randomized MAC).
       const stored = localStorage.getItem(TOKEN_KEY);
       if (stored) {
         try {
-          const fp = await getFingerprint();
           const tok = await api<{
             active: boolean; username?: string; password?: string;
             validitySeconds?: number; secondsRemaining?: number; rateLimit?: string | null;
@@ -315,10 +373,31 @@ export default function HotspotPortal() {
           if (tok.reason === 'no_match' || tok.reason === 'revoked' || tok.reason === 'expired') {
             localStorage.removeItem(TOKEN_KEY);
           }
+        } catch {/* fall through to fingerprint path */}
+      }
+
+      // Step 3: fingerprint correlation (works even with localStorage cleared).
+      // Server matches the browser fingerprint against device_tokens issued
+      // on prior payments. Strict — only fires on unique fingerprint match.
+      if (fp) {
+        try {
+          const fpRes = await api<{
+            active: boolean; username?: string; password?: string;
+            validitySeconds?: number; secondsRemaining?: number; rateLimit?: string | null;
+            phone?: string | null; token?: string; reason?: string;
+          }>('/hotspot/fingerprint-reconnect', {
+            method: 'POST',
+            body: JSON.stringify({ fingerprint: fp, mac: mtikParams.mac }),
+          });
+          if (fpRes.active && fpRes.username && fpRes.password) {
+            if (fpRes.token) localStorage.setItem(TOKEN_KEY, fpRes.token);
+            handleGrant(fpRes, 'Welcome back');
+            return;
+          }
         } catch {/* fall through to manual UI */}
       }
 
-      // Step 3: nothing matched — show payment UI.
+      // Step 4: nothing matched — show payment UI.
       if (!cancelled) setAutoCheck('unknown');
     })();
 
@@ -350,13 +429,14 @@ export default function HotspotPortal() {
     if (!rebind.otpId || rebind.code.length < 4) return;
     setRebind((r) => ({ ...r, busy: true, notice: null }));
     try {
+      const fp = await getFingerprint();
       const res = await api<{
         active: boolean; username: string; password: string;
         validitySeconds: number; rateLimit: string | null;
         token?: string;
       }>('/hotspot/rebind/verify', {
         method: 'POST',
-        body: JSON.stringify({ otpId: rebind.otpId, code: rebind.code }),
+        body: JSON.stringify({ otpId: rebind.otpId, code: rebind.code, fingerprint: fp || undefined }),
       });
       if (res.active) {
         setGrant({
@@ -386,6 +466,47 @@ export default function HotspotPortal() {
       })
       .catch((e: any) => setPlansError(e.message))
       .finally(() => setPlansLoading(false));
+  };
+
+  // Quick Connect: phone-based session lookup. Customer paid before from
+  // any device; entering their M-Pesa number connects this device too,
+  // copying the grant onto its MAC. SMS notification is sent to the phone
+  // so the legitimate customer notices any misuse.
+  const quickConnect = async () => {
+    if (!phoneNormalized) {
+      setError('Enter a valid Safaricom number first.');
+      return;
+    }
+    if (!mtikParams?.mac) {
+      setError('No device MAC detected. Make sure you opened this page from the captive Wi-Fi.');
+      return;
+    }
+    setQuickBusy(true);
+    setError(null);
+    try {
+      const r = await api<{
+        active: boolean; username: string; password: string;
+        validitySeconds: number; rateLimit: string | null;
+      }>('/hotspot/quick-connect', {
+        method: 'POST',
+        body: JSON.stringify({ phone: phoneNormalized, mac: mtikParams.mac }),
+      });
+      if (r.active) {
+        window.localStorage.setItem(PHONE_KEY, phoneNormalized);
+        setGrant({
+          username: r.username,
+          password: r.password,
+          validitySeconds: r.validitySeconds,
+          rateLimit: r.rateLimit,
+          planName: 'Welcome back',
+        });
+        setTimeout(() => formRef.current?.submit(), 400);
+      }
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setQuickBusy(false);
+    }
   };
 
   const redeemVoucher = async () => {
@@ -438,12 +559,16 @@ export default function HotspotPortal() {
         await api(`/hotspot/pay/${p.checkoutRequestId}/confirm-test`, { method: 'POST' });
       } catch {/* fall through to polling */}
     }
+    // Pre-compute fingerprint so the server can stamp it onto the
+    // inline-minted token at first-success — enables fingerprint reconnect
+    // for THIS browser on future visits even if localStorage is cleared.
+    const fp = await getFingerprint();
     const start = performance.now();
     const deadline = start + 90_000;
     const tick = async () => {
       try {
-        const s = await api<{ status: string; grant?: GrantResult; failureReason?: string }>(
-          `/hotspot/pay/${p.checkoutRequestId}`
+        const s = await api<{ status: string; grant?: GrantResult; failureReason?: string; token?: string }>(
+          `/hotspot/pay/${p.checkoutRequestId}${fp ? `?fp=${encodeURIComponent(fp)}` : ''}`
         );
         setPollElapsed(Math.floor((performance.now() - start) / 1000));
         if (s.status === 'success' && s.grant) {
@@ -626,8 +751,20 @@ export default function HotspotPortal() {
   return (
     <div style={styles.page}>
       <div style={styles.card}>
-        <h1 style={styles.wordmark}>{brand.name}</h1>
-        <p style={styles.tagline}>{brand.tagline}</p>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 4 }}>
+          {brand.logoUrl && (
+            <img
+              src={brand.logoUrl}
+              alt={brand.name}
+              style={{ height: 56, width: 56, objectFit: 'contain', flexShrink: 0 }}
+            />
+          )}
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <h1 style={{ ...styles.wordmark, margin: 0 }}>{brand.name}</h1>
+            <p style={{ ...styles.tagline, marginTop: 2, marginBottom: 0 }}>{brand.tagline}</p>
+          </div>
+        </div>
+        <div style={{ height: 16 }} />
 
         {mtikParams?.mode === 'status' ? (
           <>
@@ -748,34 +885,7 @@ export default function HotspotPortal() {
               </div>
             )}
 
-            <div style={styles.tabs}>
-              <button onClick={() => { setTab('voucher'); setError(null); }} style={tabStyle(tab === 'voucher')}>Voucher</button>
-              <button onClick={() => { setTab('pay'); setError(null); }} style={tabStyle(tab === 'pay')}>Pay via M-Pesa</button>
-            </div>
-
-            {tab === 'voucher' ? (
-              <>
-                <label style={styles.label}>Voucher code</label>
-                <input
-                  autoFocus
-                  value={code}
-                  placeholder="HS-XXXX-XXXX"
-                  onChange={(e) => setCode(formatVoucher(e.target.value))}
-                  inputMode="text"
-                  autoCapitalize="characters"
-                  autoCorrect="off"
-                  spellCheck={false}
-                  style={{ ...styles.input, ...styles.voucherInput }}
-                />
-                <button
-                  onClick={redeemVoucher}
-                  disabled={code.replace(/-/g, '').length < 6 || submitting}
-                  style={{ ...styles.btnPrimary, opacity: code.replace(/-/g, '').length < 6 || submitting ? 0.5 : 1 }}
-                >
-                  {submitting ? 'Activating…' : 'Connect'}
-                </button>
-              </>
-            ) : purchase ? (
+            {purchase ? (
               <>
                 <div style={styles.okToast}>
                   {purchaseStatus}
@@ -791,7 +901,71 @@ export default function HotspotPortal() {
               </>
             ) : (
               <>
-                <label style={styles.label}>Choose a plan</label>
+                {/* Quick Connect — collapsible. Phone-based active-session lookup. */}
+                <CollapsibleBar
+                  open={expanded === 'quick'}
+                  onToggle={() => setExpanded(expanded === 'quick' ? null : 'quick')}
+                  brand={brand.color}
+                  brandRgb={brandRgb}
+                  label="Quick Connect"
+                  hint="Paid before? Enter your M-Pesa number"
+                >
+                  <input
+                    value={phone}
+                    placeholder="07XX XXX XXX"
+                    onChange={(e) => setPhone(e.target.value)}
+                    inputMode="tel"
+                    autoComplete="tel"
+                    style={styles.input}
+                  />
+                  {phone && !phoneValid && (
+                    <p style={{ ...styles.sub, color: '#d97706', marginTop: 6 }}>
+                      Enter a Safaricom number (07XX or 2547XX).
+                    </p>
+                  )}
+                  <button
+                    onClick={quickConnect}
+                    disabled={!phoneValid || quickBusy}
+                    style={{ ...styles.btnPrimary, opacity: !phoneValid || quickBusy ? 0.5 : 1 }}
+                  >
+                    {quickBusy ? 'Looking up…' : 'Connect'}
+                  </button>
+                </CollapsibleBar>
+
+                {/* Voucher — collapsible. */}
+                <CollapsibleBar
+                  open={expanded === 'voucher'}
+                  onToggle={() => setExpanded(expanded === 'voucher' ? null : 'voucher')}
+                  brand={brand.color}
+                  brandRgb={brandRgb}
+                  label="Voucher"
+                  hint="Have an SMS code? Enter it here"
+                >
+                  <input
+                    value={code}
+                    placeholder="HS-XXXX-XXXX"
+                    onChange={(e) => setCode(formatVoucher(e.target.value))}
+                    inputMode="text"
+                    autoCapitalize="characters"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    style={{ ...styles.input, ...styles.voucherInput }}
+                  />
+                  <button
+                    onClick={redeemVoucher}
+                    disabled={code.replace(/-/g, '').length < 6 || submitting}
+                    style={{ ...styles.btnPrimary, opacity: code.replace(/-/g, '').length < 6 || submitting ? 0.5 : 1 }}
+                  >
+                    {submitting ? 'Activating…' : 'Connect'}
+                  </button>
+                </CollapsibleBar>
+
+                {/* Plan cards. Selecting a card reveals the phone field + Pay button. */}
+                <div style={{ marginTop: 20, marginBottom: 8 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: '#475569', letterSpacing: 0.4, textTransform: 'uppercase' }}>
+                    Choose a package
+                  </div>
+                </div>
                 {plansLoading ? (
                   <p style={styles.sub}>Loading plans…</p>
                 ) : plansError ? (
@@ -800,21 +974,28 @@ export default function HotspotPortal() {
                     <button onClick={loadPlans} style={styles.btnGhost}>Retry</button>
                   </>
                 ) : plans.length === 0 ? (
-                  <p style={styles.sub}>No hotspot plans configured. Please ask staff to set up plans.</p>
+                  <p style={styles.sub}>No hotspot plans configured yet. Ask staff to add packages from the dashboard.</p>
                 ) : (
-                  <div style={{ display: 'grid', gap: 8 }}>
+                  <div style={{ display: 'grid', gap: 10 }}>
                     {plans.map((p) => {
                       const active = p.id === planId;
-                      const speed = formatSpeed(p.speed_down_kbps);
+                      const down = formatSpeed(p.speed_down_kbps);
+                      const up   = formatSpeed(p.speed_up_kbps);
                       return (
-                        <button key={p.id} onClick={() => setPlanId(p.id)} style={planCardStyle(active)}>
-                          <div style={{ flex: 1, minWidth: 0 }}>
-                            <div style={{ fontWeight: 600, fontSize: 14, color: '#0f172a' }}>{p.name}</div>
-                            <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
-                              {formatValidity(p.validity_days)}{speed ? ` · ${speed}` : ''}
+                        <button key={p.id} onClick={() => { setPlanId(p.id); setExpanded(null); }} style={planCardStyle(active)}>
+                          <div style={{ flex: 1, minWidth: 0, textAlign: 'left' }}>
+                            <div style={{ fontWeight: 700, fontSize: 18, color: active ? brand.color : '#0f172a', lineHeight: 1.2 }}>
+                              {p.name}
+                            </div>
+                            <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4, fontWeight: 300 }}>
+                              {down && <>↓ {down}</>}
+                              {down && up && <span style={{ margin: '0 6px' }}>·</span>}
+                              {up && <>↑ {up}</>}
+                              {!down && !up && formatValidity(p.validity_days)}
+                              {(down || up) && <span style={{ marginLeft: 6 }}>· {formatValidity(p.validity_days)}</span>}
                             </div>
                           </div>
-                          <div style={{ fontWeight: 700, fontSize: 16, color: active ? brand.color : '#0f172a' }}>
+                          <div style={{ fontWeight: 700, fontSize: 18, color: active ? brand.color : '#0f172a', textAlign: 'right' }}>
                             KES {(p.price_cents / 100).toFixed(0)}
                           </div>
                         </button>
@@ -823,9 +1004,12 @@ export default function HotspotPortal() {
                   </div>
                 )}
 
-                {plans.length > 0 && (
-                  <>
-                    <label style={styles.label}>M-Pesa phone</label>
+                {/* Once a plan is selected, prompt for M-Pesa phone + Pay. */}
+                {selectedPlan && plans.length > 0 && (
+                  <div style={{ marginTop: 16, padding: 14, background: `rgba(${brandRgb},0.04)`, border: `1px solid rgba(${brandRgb},0.18)`, borderRadius: 10 }}>
+                    <div style={{ fontSize: 13, color: '#475569', marginBottom: 8 }}>
+                      Pay <strong style={{ color: brand.color }}>KES {(selectedPlan.price_cents / 100).toFixed(0)}</strong> for <strong>{selectedPlan.name}</strong> via M-Pesa
+                    </div>
                     <input
                       value={phone}
                       placeholder="07XX XXX XXX"
@@ -839,37 +1023,19 @@ export default function HotspotPortal() {
                         Enter a Safaricom number (07XX or 2547XX).
                       </p>
                     )}
-                    {phoneValid && selectedPlan && (
-                      <p style={{ ...styles.sub, marginTop: 6 }}>
-                        STK push to <code style={styles.code}>{phoneNormalized}</code> · KES {(selectedPlan.price_cents / 100).toFixed(0)}
-                      </p>
-                    )}
                     <button
                       onClick={payMpesa}
-                      disabled={!planId || !phoneValid || submitting}
-                      style={{ ...styles.btnPrimary, opacity: !planId || !phoneValid || submitting ? 0.5 : 1 }}
+                      disabled={!phoneValid || submitting}
+                      style={{ ...styles.btnPrimary, opacity: !phoneValid || submitting ? 0.5 : 1 }}
                     >
                       {submitting ? 'Sending STK push…' : 'Pay & Connect'}
                     </button>
-                  </>
+                  </div>
                 )}
               </>
             )}
 
             {error && <div style={styles.errToast}>{error}</div>}
-
-            {rebind.phase === 'closed' && !purchase && (
-              <p style={{ ...styles.sub, marginTop: 16, textAlign: 'center' }}>
-                Already paid on another device?{' '}
-                <a
-                  href="#"
-                  onClick={(e) => { e.preventDefault(); setRebind({ phase: 'phone', otpId: null, code: '', busy: false, notice: null }); }}
-                  style={{ color: brand.color, textDecoration: 'none', fontWeight: 600 }}
-                >
-                  Recover via SMS
-                </a>
-              </p>
-            )}
           </>
         )}
 

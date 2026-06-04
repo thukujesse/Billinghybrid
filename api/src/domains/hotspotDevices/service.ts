@@ -93,6 +93,94 @@ export async function lookup(rawMac: string): Promise<LookupResult> {
 }
 
 /**
+ * Quick Connect (operator-requested feature): look up an active session
+ * by phone number directly, no SMS-OTP. If the phone has a live grant
+ * on any MAC, copy the grant onto the caller's current MAC and connect.
+ *
+ * SECURITY TRADE-OFF: trusts knowledge of the phone number as proof of
+ * ownership. Anyone who knows a customer's M-Pesa phone could ride the
+ * plan from a different device. Mitigations:
+ *   - Strict rate limit at the route layer (defense vs phone enumeration)
+ *   - Async SMS notification to the phone ("device connected at HH:MM")
+ *     so the customer can detect misuse and Forget their devices
+ *   - Audit log so operator can spot abuse patterns
+ *   - Always records the connecting MAC + IP + UA on auto_reconnect_log
+ *
+ * For high-security venues, disable this endpoint via env var and
+ * fall back to the SMS-OTP rebind flow.
+ */
+export async function quickConnect(input: {
+  phone: string;
+  mac: string;
+  ip?: string | null;
+  userAgent?: string | null;
+}): Promise<LookupResult> {
+  const phone = normalizeMsisdn(input.phone);
+  const mac = normalizeMac(input.mac);
+  if (!mac) {
+    const tokens = await import('./tokens.js');
+    await tokens.logAttempt({ method: 'manual', outcome: 'error', notes: 'invalid mac', phone, ip: input.ip, userAgent: input.userAgent });
+    throw badRequest('invalid MAC');
+  }
+
+  return withTransaction(async (c) => {
+    // Most-recent live grant for this phone.
+    const g = await c.query<ActiveDevice>(
+      `SELECT * FROM active_devices
+        WHERE phone = $1 AND expires_at > now()
+        ORDER BY last_seen DESC LIMIT 1`,
+      [phone]
+    );
+    const src = g.rows[0];
+    if (!src) {
+      const tokens = await import('./tokens.js');
+      await tokens.logAttempt({ method: 'manual', outcome: 'no_match', mac, phone, ip: input.ip, userAgent: input.userAgent });
+      throw notFound('no active session for this phone — please pay first');
+    }
+
+    // Copy grant onto the caller's MAC.
+    await c.query(
+      `INSERT INTO active_devices (
+         mac, expires_at, rate_limit, session_timeout_seconds, idle_timeout_seconds,
+         source, phone, purchase_id, customer_id, rebound_from_mac
+       ) VALUES ($1, $2, $3, $4, $5, 'rebind', $6, $7, $8, $9)
+       ON CONFLICT (mac) DO UPDATE SET
+         expires_at = EXCLUDED.expires_at,
+         rate_limit = EXCLUDED.rate_limit,
+         session_timeout_seconds = EXCLUDED.session_timeout_seconds,
+         phone = EXCLUDED.phone,
+         purchase_id = EXCLUDED.purchase_id,
+         source = 'rebind',
+         rebound_from_mac = EXCLUDED.rebound_from_mac,
+         last_seen = now()`,
+      [mac, src.expires_at, src.rate_limit, src.session_timeout_seconds,
+       src.idle_timeout_seconds, src.phone, src.purchase_id, src.customer_id,
+       src.mac === mac ? null : src.mac]
+    );
+
+    const tokens = await import('./tokens.js');
+    await tokens.logAttempt({ method: 'manual', outcome: 'success', mac, phone, ip: input.ip, userAgent: input.userAgent });
+
+    // Fire-and-forget SMS so the legitimate customer notices misuse if any.
+    // Failure here is non-fatal — the device is already connected.
+    const last4 = mac.replace(/:/g, '').slice(-4);
+    notify('sms', phone, `HUB Wi-Fi: device ${last4} just connected using your number. If this wasn't you, reply to revoke.`)
+      .catch((e) => console.error('[quick-connect] sms notify failed:', e));
+
+    const secondsRemaining = Math.max(0, Math.floor((new Date(src.expires_at).getTime() - Date.now()) / 1000));
+    return {
+      active: true,
+      username: mac,
+      password: mac,
+      validitySeconds: src.session_timeout_seconds,
+      secondsRemaining,
+      rateLimit: src.rate_limit,
+      phone: src.phone,
+    };
+  });
+}
+
+/**
  * Start the SMS-OTP rebind flow. Generates a 6-digit code, stores it
  * with 5-min TTL, sends via SMS. Only generates a code if the phone
  * has a still-live grant on SOME mac — otherwise we'd be sending OTPs
@@ -157,6 +245,7 @@ export async function rebindStart(input: {
 export async function rebindVerify(input: {
   otpId: string;
   code: string;
+  fingerprintHash?: string | null;
 }): Promise<LookupResult> {
   return withTransaction(async (c) => {
     const r = await c.query<{
@@ -228,6 +317,7 @@ export async function rebindVerify(input: {
     const tok = await tokens.issueTokenInTx(c, {
       phone: src.phone!,
       mac: otp.new_mac,
+      fingerprintHash: input.fingerprintHash ?? null,
     });
 
     const secondsRemaining = Math.max(0, Math.floor((new Date(src.expires_at).getTime() - Date.now()) / 1000));
