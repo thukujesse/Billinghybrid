@@ -680,13 +680,17 @@ function renderUnifiedConfig(
       `/ip dhcp-server network add address=${hotspotCidr} gateway=${gateway} dns-server=${gateway} comment="jtm-hs"`,
       `/ip dhcp-server add name=jtm-hs-dhcp interface=jtm-edge-bridge address-pool=jtm-hs-pool lease-time=1h disabled=no`,
       `/ip dns set allow-remote-requests=yes servers=1.1.1.1,8.8.8.8`,
-      `# login-by ordering: mac-cookie first (router-side cookie keyed by MAC,`,
-      `# survives any client reboot/restart for mac-cookie-timeout), then mac`,
-      `# (RADIUS MAC-auth against active_devices via FreeRADIUS queries.conf`,
-      `# override), then http-pap so the portal can submit credentials.`,
-      `# NOTE: 'cookie' alone is the browser HTTP cookie — useless for MAC-stable`,
-      `# reconnects; we need 'mac-cookie' which is stored on the router itself.`,
-      `/ip hotspot profile add name=jtm-hotspot hotspot-address=${gateway} dns-name=hotspot.jtm use-radius=yes login-by=mac-cookie,mac,http-pap mac-auth-mode=mac-as-username-and-password mac-cookie-timeout=3d`,
+      `# Profile is added in two steps so older RouterOS (pre-6.46) still works.`,
+      `# The base 'add' uses only properties present in every supported version`,
+      `# (login-by=mac,http-pap is in 6.x baseline). The optional set blocks`,
+      `# below upgrade the profile if the local RouterOS supports them.`,
+      `/ip hotspot profile add name=jtm-hotspot hotspot-address=${gateway} dns-name=hotspot.jtm use-radius=yes login-by=mac,http-pap`,
+      `# mac-auth-mode (6.46+): tells MikroTik to send User-Name=MAC, User-Password=MAC`,
+      `# for the auto-login Access-Request. Without it the default behaviour varies.`,
+      `:do { /ip hotspot profile set [find name=jtm-hotspot] mac-auth-mode=mac-as-username-and-password } on-error={ :put "mac-auth-mode not supported on this RouterOS — portal still works" }`,
+      `# mac-cookie-timeout (6.48+): router-side cookie keyed by MAC, valid for 3d`,
+      `# after last logout. With it, returning devices skip RADIUS entirely.`,
+      `:do { /ip hotspot profile set [find name=jtm-hotspot] login-by=mac-cookie,mac,http-pap mac-cookie-timeout=3d } on-error={ :put "mac-cookie not supported on this RouterOS — falling back to RADIUS MAC-auth for reconnects" }`,
       `/ip hotspot add name=jtm-hs interface=jtm-edge-bridge address-pool=jtm-hs-pool profile=jtm-hotspot disabled=no`,
       `# Walled-garden by stable VPS IP — works on every RouterOS version`,
       `# (tls-host needs 7.7+). dst-host rule allows HTTP for older clients.`,
@@ -884,9 +888,9 @@ ${portAdds}
 
 /ip hotspot profile add name=jtm-hotspot \\
   hotspot-address=${gateway} dns-name=hotspot.jtm \\
-  use-radius=yes login-by=mac-cookie,mac,http-pap \\
-  mac-auth-mode=mac-as-username-and-password \\
-  mac-cookie-timeout=3d
+  use-radius=yes login-by=mac,http-pap
+:do { /ip hotspot profile set [find name=jtm-hotspot] mac-auth-mode=mac-as-username-and-password } on-error={ :put "mac-auth-mode not supported on this RouterOS" }
+:do { /ip hotspot profile set [find name=jtm-hotspot] login-by=mac-cookie,mac,http-pap mac-cookie-timeout=3d } on-error={ :put "mac-cookie not supported on this RouterOS" }
 
 /ip hotspot add name=jtm-hs interface=jtm-hs-bridge \\
   address-pool=jtm-hs-pool profile=jtm-hotspot disabled=no
@@ -1112,9 +1116,9 @@ export async function buildHotspotScript(
 
 /ip hotspot profile add name=jtm-hotspot \\
   hotspot-address=${gateway} dns-name=hotspot.jtm \\
-  use-radius=yes login-by=mac-cookie,mac,http-pap \\
-  mac-auth-mode=mac-as-username-and-password \\
-  mac-cookie-timeout=3d
+  use-radius=yes login-by=mac,http-pap
+:do { /ip hotspot profile set [find name=jtm-hotspot] mac-auth-mode=mac-as-username-and-password } on-error={ :put "mac-auth-mode not supported on this RouterOS" }
+:do { /ip hotspot profile set [find name=jtm-hotspot] login-by=mac-cookie,mac,http-pap mac-cookie-timeout=3d } on-error={ :put "mac-cookie not supported on this RouterOS" }
 
 /ip hotspot add name=jtm-hs \\
   interface=jtm-hs-bridge \\
