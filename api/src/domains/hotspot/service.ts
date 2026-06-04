@@ -33,6 +33,13 @@ export async function redeemVoucher(input: {
   const code = input.code.trim().toUpperCase();
   if (!code) throw badRequest('voucher code required');
 
+  // MAC-lock: require the captive portal to pass the MikroTik-observed MAC
+  // so we can bind the voucher to one device. Without this, a code shared
+  // over WhatsApp lets multiple devices ride the same plan.
+  const { normalizeMac } = await import('../hotspotDevices/service.js');
+  const mac = normalizeMac(input.mac);
+  if (!mac) throw badRequest('device MAC required (captive portal must include ?mac=...)');
+
   return withTransaction(async (c) => {
     // Lock voucher row + load plan in one go.
     const r = await c.query<{
@@ -61,48 +68,42 @@ export async function redeemVoucher(input: {
       throw conflict('voucher has expired');
     }
 
-    await c.query(
-      `UPDATE vouchers SET status='used', used_at=now() WHERE id=$1`,
-      [voucher.voucher_id]
-    );
-
     // Compute reply attributes from the plan.
     const validitySeconds = Math.max(60, voucher.validity_days * 86400);
     const rateLimit = voucher.speed_down_kbps && voucher.speed_up_kbps
       ? `${voucher.speed_up_kbps}k/${voucher.speed_down_kbps}k`
       : null;
 
-    // Insert into FreeRADIUS tables. Username = voucher code; password is the
-    // same (hotspot auth doesn't really care, MAC binding via Calling-Station
-    // is the real identity in MikroTik's Hotspot flow).
-    await c.query(`DELETE FROM radcheck WHERE username=$1`, [code]);
-    await c.query(`DELETE FROM radreply WHERE username=$1`, [code]);
+    // Lock the voucher to this device. status='used' alone would already
+    // prevent re-redemption, but storing the MAC is useful for audit /
+    // support ("Yes, your voucher was used by aa:bb:..., not some other phone").
     await c.query(
-      `INSERT INTO radcheck (username, attribute, op, value)
-       VALUES ($1, 'Cleartext-Password', ':=', $1)`,
-      [code]
+      `UPDATE vouchers SET status='used', used_at=now(), mac_address=$2 WHERE id=$1`,
+      [voucher.voucher_id, mac]
     );
+
+    // Drive subsequent reconnects through the same MAC-auth path used by
+    // M-Pesa purchases — no radcheck row keyed by the voucher code, so the
+    // code itself can't be replayed from a different device. active_devices
+    // is the source of truth; the FreeRADIUS authorize_check_query override
+    // joins it for MAC-as-username Access-Requests.
     await c.query(
-      `INSERT INTO radreply (username, attribute, op, value)
-       VALUES ($1, 'Session-Timeout', ':=', $2)`,
-      [code, String(validitySeconds)]
+      `INSERT INTO active_devices (
+         mac, expires_at, rate_limit, session_timeout_seconds, idle_timeout_seconds,
+         source, phone
+       ) VALUES ($1, now() + ($2 || ' seconds')::interval, $3, $4, 600, 'voucher', NULL)
+       ON CONFLICT (mac) DO UPDATE SET
+         expires_at = GREATEST(active_devices.expires_at, EXCLUDED.expires_at),
+         rate_limit = EXCLUDED.rate_limit,
+         session_timeout_seconds = EXCLUDED.session_timeout_seconds,
+         source = 'voucher',
+         last_seen = now()`,
+      [mac, String(validitySeconds), rateLimit, validitySeconds]
     );
-    await c.query(
-      `INSERT INTO radreply (username, attribute, op, value)
-       VALUES ($1, 'Idle-Timeout', ':=', '600')`,
-      [code]
-    );
-    if (rateLimit) {
-      await c.query(
-        `INSERT INTO radreply (username, attribute, op, value)
-         VALUES ($1, 'Mikrotik-Rate-Limit', '=', $2)`,
-        [code, rateLimit]
-      );
-    }
 
     return {
-      username: code,
-      password: code,
+      username: mac,
+      password: mac,
       validitySeconds,
       rateLimit,
       planName: voucher.plan_name,
