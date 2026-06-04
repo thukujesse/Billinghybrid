@@ -515,6 +515,7 @@ api.post('/hotspot/pay', ah(async (req, res) => {
   }), req.body);
   res.status(201).json(await hotspot.initPurchase({
     planId: body.plan_id, phone: body.phone, mac: body.mac,
+    userAgent: req.headers['user-agent'],
   }));
 }));
 

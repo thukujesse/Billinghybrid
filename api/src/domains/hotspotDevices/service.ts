@@ -236,23 +236,172 @@ export interface ListFilters {
   limit?: number;
 }
 
-export async function listDevices(f: ListFilters): Promise<ActiveDevice[]> {
+/**
+ * Best-effort User-Agent → friendly device label. Doesn't pull in a
+ * full UA-parser dependency — covers the common Kenyan device mix
+ * (Android dominant, iPhones, occasional laptops) and falls back to
+ * "Other" when nothing matches. The original UA stays in the response
+ * for power users.
+ */
+export function deviceModelFromUa(ua: string | null | undefined): string {
+  if (!ua) return '—';
+  const s = ua;
+  // iPhone / iPad / iPod
+  if (/iPhone/i.test(s)) {
+    const ios = /OS (\d+)[_.](\d+)/i.exec(s);
+    return ios ? `iPhone · iOS ${ios[1]}.${ios[2]}` : 'iPhone';
+  }
+  if (/iPad/i.test(s))  return 'iPad';
+  if (/iPod/i.test(s))  return 'iPod';
+  // Android — try to surface manufacturer + model from the "(...; <model> Build/...)" segment.
+  if (/Android/i.test(s)) {
+    const ver = /Android (\d+(?:\.\d+)?)/i.exec(s);
+    const m = /;\s*([^;)]+?)\s+Build\//i.exec(s) || /;\s*([^;)]+?)\)\s+AppleWebKit/i.exec(s);
+    const model = m ? m[1].trim().replace(/\s+/g, ' ') : null;
+    return [model || 'Android', ver ? `Android ${ver[1]}` : null].filter(Boolean).join(' · ');
+  }
+  // Desktop browsers
+  if (/Windows NT/i.test(s)) return 'Windows · ' + (/Edg\//.test(s) ? 'Edge' : /Chrome\//.test(s) ? 'Chrome' : /Firefox\//.test(s) ? 'Firefox' : 'Browser');
+  if (/Macintosh/i.test(s)) return 'macOS · ' + (/Chrome\//.test(s) ? 'Chrome' : /Firefox\//.test(s) ? 'Firefox' : 'Safari');
+  if (/Linux/i.test(s))    return 'Linux · ' + (/Chrome\//.test(s) ? 'Chrome' : /Firefox\//.test(s) ? 'Firefox' : 'Browser');
+  return 'Other';
+}
+
+export interface DeviceListRow extends ActiveDevice {
+  // Joined enrichment for the admin Devices page. All nullable — voucher
+  // grants and admin-issued grants have no hotspot_purchases row to join,
+  // and pre-migration purchases have no user_agent.
+  plan_name: string | null;
+  plan_validity_days: number | null;
+  data_cap_mb: number | null;
+  amount_kes: number | null;
+  stk_status: 'pending' | 'success' | 'failed' | 'expired' | null;
+  stk_receipt: string | null;
+  stk_failure_reason: string | null;
+  stk_created_at: string | null;
+  stk_completed_at: string | null;
+  user_agent: string | null;
+  device_model: string;                    // derived from user_agent
+  seconds_remaining: number;
+  checkout_request_id: string | null;
+}
+
+export async function listDevices(f: ListFilters): Promise<DeviceListRow[]> {
   const where: string[] = [];
   const vals: any[] = [];
-  if (f.liveOnly) where.push(`expires_at > now()`);
-  if (f.phone) { vals.push(f.phone); where.push(`phone = $${vals.length}`); }
+  if (f.liveOnly) where.push(`ad.expires_at > now()`);
+  if (f.phone) { vals.push(f.phone); where.push(`ad.phone = $${vals.length}`); }
   const limit = Math.min(Math.max(f.limit ?? 200, 1), 1000);
   vals.push(limit);
-  const sql = `SELECT * FROM active_devices
-                ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-                ORDER BY last_seen DESC
-                LIMIT $${vals.length}`;
-  const r = await query<ActiveDevice>(sql, vals);
-  return r.rows;
+  // LEFT JOIN keeps voucher / admin grants visible even though they have
+  // no hotspot_purchases row. We pick the most recent purchase row for
+  // the MAC's phone when ad.purchase_id is null (covers SMS-OTP rebinds
+  // where active_devices.purchase_id was nulled on rebind copy).
+  const sql = `
+    SELECT
+      ad.*,
+      p.name              AS plan_name,
+      p.validity_days     AS plan_validity_days,
+      p.data_cap_mb       AS data_cap_mb,
+      hp.checkout_request_id,
+      hp.amount_kes,
+      hp.status           AS stk_status,
+      hp.receipt          AS stk_receipt,
+      hp.failure_reason   AS stk_failure_reason,
+      hp.user_agent,
+      hp.created_at       AS stk_created_at,
+      hp.completed_at     AS stk_completed_at,
+      GREATEST(0, EXTRACT(EPOCH FROM (ad.expires_at - now()))::bigint)::int AS seconds_remaining
+    FROM active_devices ad
+    LEFT JOIN LATERAL (
+      SELECT *
+        FROM hotspot_purchases
+       WHERE id = ad.purchase_id
+          OR (ad.purchase_id IS NULL AND phone = ad.phone)
+       ORDER BY created_at DESC
+       LIMIT 1
+    ) hp ON true
+    LEFT JOIN plans p ON p.id = hp.plan_id
+    ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+    ORDER BY ad.last_seen DESC
+    LIMIT $${vals.length}`;
+  const r = await query<any>(sql, vals);
+  return r.rows.map((row) => ({
+    ...row,
+    device_model: deviceModelFromUa(row.user_agent),
+  }));
 }
 
 export async function revoke(mac: string): Promise<void> {
   const m = normalizeMac(mac);
   if (!m) throw badRequest('invalid MAC');
   await query(`DELETE FROM active_devices WHERE mac = $1`, [m]);
+}
+
+/**
+ * Rich session info for the customer-facing status page. Joins active_devices
+ * to hotspot_purchases + plans to surface plan name, data cap, voucher code,
+ * and current bytes-used (summed across all radacct rows for this MAC since
+ * the device was first seen — handles the multi-session case where MikroTik
+ * generates multiple Acct-Session-Ids during a long connection).
+ */
+export interface SessionInfo {
+  planName: string | null;
+  voucherId: string | null;
+  expiresAt: string | null;
+  secondsRemaining: number | null;
+  rateLimit: string | null;
+  dataCapMb: number | null;
+  bytesUsed: number;
+  phone: string | null;
+}
+
+export async function getSessionInfo(rawMac: string): Promise<SessionInfo | null> {
+  const mac = normalizeMac(rawMac);
+  if (!mac) return null;
+  const r = await query<{
+    expires_at: string | null;
+    rate_limit: string | null;
+    phone: string | null;
+    plan_name: string | null;
+    data_cap_mb: number | null;
+    voucher_code: string | null;
+    bytes_used: number;
+  }>(
+    `SELECT
+       ad.expires_at,
+       ad.rate_limit,
+       ad.phone,
+       p.name        AS plan_name,
+       p.data_cap_mb AS data_cap_mb,
+       v.code        AS voucher_code,
+       COALESCE((
+         SELECT SUM(COALESCE(acctinputoctets,0) + COALESCE(acctoutputoctets,0))
+           FROM radacct
+          WHERE LOWER(callingstationid) IN ($1, replace($1,':',''), replace($1,':','-'))
+            AND acctstarttime >= ad.first_seen
+       ), 0)::bigint AS bytes_used
+       FROM active_devices ad
+       LEFT JOIN hotspot_purchases hp ON hp.id = ad.purchase_id
+       LEFT JOIN plans p              ON p.id = hp.plan_id
+       LEFT JOIN vouchers v           ON v.code = hp.username
+      WHERE ad.mac = $1
+      LIMIT 1`,
+    [mac]
+  );
+  const row = r.rows[0];
+  if (!row) return null;
+  const secondsRemaining = row.expires_at
+    ? Math.max(0, Math.floor((new Date(row.expires_at).getTime() - Date.now()) / 1000))
+    : null;
+  return {
+    planName: row.plan_name,
+    voucherId: row.voucher_code,
+    expiresAt: row.expires_at,
+    secondsRemaining,
+    rateLimit: row.rate_limit,
+    dataCapMb: row.data_cap_mb,
+    bytesUsed: Number(row.bytes_used) || 0,
+    phone: row.phone,
+  };
 }

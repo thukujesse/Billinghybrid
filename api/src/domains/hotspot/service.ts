@@ -167,6 +167,7 @@ export async function initPurchase(input: {
   planId: string;
   phone: string;
   mac?: string;
+  userAgent?: string;
 }): Promise<PurchaseInitResult> {
   const pr = await query<{
     id: string; name: string; price_cents: number; validity_days: number;
@@ -207,9 +208,9 @@ export async function initPurchase(input: {
 
   await query(
     `INSERT INTO hotspot_purchases
-       (checkout_request_id, plan_id, phone, mac_address, amount_kes, status)
-     VALUES ($1, $2, $3, $4, $5, 'pending')`,
-    [checkoutRequestId, plan.id, phone, input.mac ?? null, amountKes]
+       (checkout_request_id, plan_id, phone, mac_address, amount_kes, status, user_agent)
+     VALUES ($1, $2, $3, $4, $5, 'pending', $6)`,
+    [checkoutRequestId, plan.id, phone, input.mac ?? null, amountKes, input.userAgent ?? null]
   );
 
   return { checkoutRequestId, amountKes, customerMessage, simulated };
