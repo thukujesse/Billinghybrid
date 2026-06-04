@@ -33,7 +33,6 @@ interface Branding {
   logoUrl: string | null;
 }
 
-type Tab = 'voucher' | 'pay';
 type Expanded = 'quick' | 'voucher' | null;
 
 const PHONE_KEY = 'jtm_hotspot_phone';
@@ -62,8 +61,46 @@ async function sha256Hex(input: string): Promise<string> {
  * browser updates) and IP (rotates with NAT). Goal: identify the same
  * physical browser across MAC rotations, not defeat private-browsing.
  */
+/**
+ * Canvas-based fingerprint (v2). Renders a fixed string into a 2D canvas
+ * and hashes the resulting pixel data alongside the navigator fields.
+ * The canvas output differs per device because of:
+ *   - GPU + driver
+ *   - Sub-pixel rendering + anti-aliasing settings
+ *   - Installed font set + font-substitution rules
+ *   - Browser version's text-shaping engine
+ * Two iPhones running the same iOS version on the same Safari version
+ * STILL produce different canvas hashes because the GPU contributes.
+ *
+ * v2 prefix versions the algorithm — stored v1 hashes (no canvas) never
+ * accidentally match v2 hashes. If we ever change the algorithm again,
+ * bump the prefix and customers re-fingerprint on next payment.
+ */
 async function computeFingerprint(): Promise<string> {
   try {
+    let canvasFp = '';
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = 220;
+      canvas.height = 30;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        // Two overlapping text renders + a coloured rectangle force the GPU
+        // through enough paths that variation surfaces. The exact strings
+        // don't matter as long as they're stable across runs.
+        ctx.textBaseline = 'top';
+        ctx.font = '14px Arial';
+        ctx.fillStyle = '#f60';
+        ctx.fillRect(125, 1, 62, 20);
+        ctx.fillStyle = '#069';
+        ctx.fillText('hub_hotspot_fp', 2, 15);
+        ctx.fillStyle = 'rgba(102, 204, 0, 0.7)';
+        ctx.fillText('hub_hotspot_fp', 4, 17);
+        canvasFp = canvas.toDataURL();
+      }
+    } catch {
+      // Canvas blocked (some privacy extensions) — fall back to navigator-only.
+    }
     const parts = [
       navigator.userAgent || '',
       navigator.language || '',
@@ -72,8 +109,10 @@ async function computeFingerprint(): Promise<string> {
       `${screen.width}x${screen.height}x${screen.colorDepth}`,
       Intl.DateTimeFormat().resolvedOptions().timeZone || '',
       String((navigator as any).platform || ''),
+      canvasFp,
     ];
-    return await sha256Hex(parts.join('|'));
+    const hash = await sha256Hex(parts.join('|'));
+    return 'fp_v2_' + hash;
   } catch {
     return '';
   }
@@ -204,7 +243,6 @@ function hexToRgb(hex: string): string {
 }
 
 export default function HotspotPortal() {
-  const [tab, setTab] = useState<Tab>('voucher');
   // Which collapsible section is open above the plan cards.
   const [expanded, setExpanded] = useState<Expanded>(null);
   const [quickBusy, setQuickBusy] = useState(false);
@@ -607,20 +645,10 @@ export default function HotspotPortal() {
     payMpesa();
   };
 
-  // Dynamic per-state styles. Pulled out of `styles` so the Record<string,
-  // CSSProperties> annotation below stays valid (functions don't fit it).
-  const tabStyle = (active: boolean): CSSProperties => ({
-    flex: 1,
-    background: active ? '#ffffff' : 'transparent',
-    color: active ? brand.color : '#64748b',
-    fontSize: 13,
-    fontWeight: 600,
-    padding: '8px 12px',
-    borderRadius: 7,
-    border: 'none',
-    cursor: 'pointer',
-    boxShadow: active ? '0 1px 2px rgba(15,23,42,0.08)' : 'none',
-  });
+  // Dynamic per-state style for plan cards. Pulled out of `styles` so the
+  // Record<string, CSSProperties> annotation below stays valid (functions
+  // don't fit it). The old tabStyle was removed when the Voucher/Pay tabs
+  // gave way to the Quick Connect / Voucher collapsible bars.
   const planCardStyle = (active: boolean): CSSProperties => ({
     background: active ? `rgba(${brandRgb},0.06)` : '#ffffff',
     border: `1px solid ${active ? brand.color : '#e2e8f0'}`,
