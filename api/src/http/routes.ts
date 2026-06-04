@@ -42,6 +42,7 @@ import * as hotspotDevices from '../domains/hotspotDevices/service.js';
 import * as deviceTokens from '../domains/hotspotDevices/tokens.js';
 import * as portal from '../domains/portal/service.js';
 import * as alerts from '../domains/alerts/service.js';
+import * as audit from '../domains/audit/service.js';
 
 export const api = Router();
 
@@ -490,6 +491,36 @@ api.put('/customers/:id', ah(async (req, res) => {
 api.get('/customers/:id/payments', ah(async (req, res) => {
   const limit = req.query.limit ? Math.min(Number(req.query.limit), 200) : 50;
   res.json(await customers.getCustomerPayments(req.params.id, limit));
+}));
+// Per-customer audit feed — every mutation against this customer or any
+// of their services. Powers the "Activity" tab on the customer detail page.
+api.get('/customers/:id/audit', requireAuth('admin', 'staff'), ah(async (req, res) => {
+  const limit = req.query.limit ? Math.min(Number(req.query.limit), 200) : 50;
+  // Customer's own row events…
+  const customerEvents = await audit.listAudit({ entity_type: 'customer', entity_id: req.params.id, limit });
+  // …plus any service that belongs to them. Two queries kept simple — at
+  // customer-page scale (handful of services) this is cheap.
+  const services = await customers.getCustomer(req.params.id);
+  const serviceIds = services.services.map((s) => s.id);
+  const serviceEvents = serviceIds.length === 0 ? [] : (await Promise.all(
+    serviceIds.map((sid) => audit.listAudit({ entity_type: 'service', entity_id: sid, limit }))
+  )).flat();
+  const merged = [...customerEvents, ...serviceEvents]
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+    .slice(0, limit);
+  res.json(merged);
+}));
+// Global audit feed for compliance review and operator forensics.
+api.get('/admin/audit', requireAuth('admin', 'staff'), ah(async (req, res) => {
+  const limit = req.query.limit ? Math.min(Number(req.query.limit), 1000) : 200;
+  res.json(await audit.listAudit({
+    entity_type: typeof req.query.entity_type === 'string' ? req.query.entity_type : undefined,
+    entity_id:   typeof req.query.entity_id === 'string'   ? req.query.entity_id   : undefined,
+    actor_id:    typeof req.query.actor_id === 'string'    ? req.query.actor_id    : undefined,
+    kind:        typeof req.query.kind === 'string'        ? req.query.kind        : undefined,
+    since:       typeof req.query.since === 'string'       ? req.query.since       : undefined,
+    limit,
+  }));
 }));
 api.get('/services/:id/sessions', ah(async (req, res) => {
   const limit = req.query.limit ? Math.min(Number(req.query.limit), 100) : 20;

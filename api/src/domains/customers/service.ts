@@ -3,6 +3,8 @@ import { badRequest, notFound } from '../../lib/errors.js';
 import * as wgManager from '../../lib/wgManager.js';
 import { config } from '../../config.js';
 import { notify } from '../notifications/service.js';
+import { logAuditSafe } from '../audit/service.js';
+import { runAsActor } from '../../lib/actor.js';
 
 export interface Customer {
   id: string;
@@ -168,6 +170,11 @@ export async function createCustomer(input: {
     [accountNumber, input.full_name, input.phone ?? null, input.email ?? null,
      input.address ?? null, input.notes ?? null]
   );
+  logAuditSafe({
+    kind: 'customer.create',
+    entity_type: 'customer', entity_id: r.rows[0].id,
+    after: r.rows[0],
+  });
   return r.rows[0];
 }
 
@@ -215,11 +222,12 @@ export async function updateCustomer(id: string, fields: {
   addField('address', fields.address);
   addField('notes', fields.notes);
   addField('status', fields.status);
-  if (sets.length === 0) {
-    const r = await query<Customer>(`SELECT ${CUSTOMER_COLS} FROM customers WHERE id = $1`, [id]);
-    if (!r.rows[0]) throw notFound('customer');
-    return r.rows[0];
-  }
+  // Snapshot the before-state for the audit log. Skipped when nothing changes.
+  const beforeR = await query<Customer>(
+    `SELECT ${CUSTOMER_COLS} FROM customers WHERE id = $1`, [id]
+  );
+  if (!beforeR.rows[0]) throw notFound('customer');
+  if (sets.length === 0) return beforeR.rows[0];
   sets.push(`updated_at = now()`);
   vals.push(id);
   const r = await query<Customer>(
@@ -227,6 +235,12 @@ export async function updateCustomer(id: string, fields: {
     vals
   );
   if (!r.rows[0]) throw notFound('customer');
+  logAuditSafe({
+    kind: 'customer.update',
+    entity_type: 'customer', entity_id: id,
+    before: beforeR.rows[0], after: r.rows[0],
+    metadata: { fields_changed: Object.keys(fields).filter((k) => (fields as any)[k] !== undefined) },
+  });
   return r.rows[0];
 }
 
@@ -454,6 +468,18 @@ export async function renewService(input: {
       WHERE id = $1`,
     [input.serviceId, planId, rateLimit, newExpiry.toISOString()]
   );
+  logAuditSafe({
+    kind: 'service.renew',
+    entity_type: 'service', entity_id: input.serviceId,
+    before: { expiry_date: svc.expiry_date, plan_id: svc.plan_id, status: svc.status },
+    after: { expiry_date: newExpiry.toISOString(), plan_id: planId, status: 'active' },
+    metadata: {
+      validity_days: plan.validity_days,
+      from_now: !!input.fromNow,
+      customer_id: svc.customer_id,
+      username: svc.username,
+    },
+  });
   return setServiceStatus(input.serviceId, 'active');
 }
 
@@ -485,6 +511,7 @@ export async function changePlan(input: {
     ? `${plan.speed_up_kbps}k/${plan.speed_down_kbps}k`
     : sr.rows[0].rate_limit;
 
+  const before = sr.rows[0];
   await query(
     `UPDATE services SET plan_id = $2, rate_limit = $3, updated_at = now() WHERE id = $1`,
     [input.serviceId, input.planId, rateLimit]
@@ -496,6 +523,13 @@ export async function changePlan(input: {
     `SELECT ${SERVICE_COLS} FROM services WHERE id = $1`, [input.serviceId]
   );
   await syncServiceToRadius(final.rows[0]);
+  logAuditSafe({
+    kind: 'service.plan_change',
+    entity_type: 'service', entity_id: input.serviceId,
+    before: { plan_id: before.plan_id, rate_limit: before.rate_limit },
+    after: { plan_id: input.planId, rate_limit: rateLimit },
+    metadata: { customer_id: before.customer_id, username: before.username },
+  });
   return final.rows[0];
 }
 
@@ -591,6 +625,22 @@ export async function bulkCreateCustomers(input: {
       });
     }
   }
+  // Summary row — per-customer audit is already written by createCustomer /
+  // createService, this one ties the batch together for compliance ("on date
+  // X, admin Y imported Z customers for plan P").
+  logAuditSafe({
+    kind: 'bulk.import',
+    entity_type: 'batch',
+    entity_id: `bulk-${Date.now()}`,
+    metadata: {
+      plan_id: input.plan_id,
+      router_id: input.router_id,
+      attempted: input.rows.length,
+      created: result.created.length,
+      errors: result.errors.length,
+      created_ids: result.created.map((c) => c.account_number),
+    },
+  });
   return result;
 }
 
@@ -643,8 +693,22 @@ export async function expireDueServices(): Promise<Service[]> {
   const expired: Service[] = [];
   for (const row of r.rows) {
     try {
-      const updated = await setServiceStatus(row.id, 'expired');
+      // Run the status flip inside a 'system' actor scope so the
+      // service.status_change audit row is attributed to the cron rather
+      // than to whoever last hit an authenticated endpoint.
+      const updated = await runAsActor(
+        { id: 'system', label: 'expire-worker', role: 'system' },
+        () => setServiceStatus(row.id, 'expired')
+      );
       expired.push(updated);
+      logAuditSafe({
+        kind: 'service.expire',
+        entity_type: 'service', entity_id: row.id,
+        before: { expiry_date: row.expiry_date, status: 'active' },
+        after: { status: 'expired' },
+        actor: { id: 'system', label: 'expire-worker', role: 'system' },
+        metadata: { customer_id: row.customer_id, username: row.username },
+      });
       // Fire-and-forget SMS to the customer with a deep-link to /renew. PPPoE
       // only — hotspot customers see captive on next connect, no SMS needed.
       if (row.customer_phone && row.username && row.service_type === 'pppoe') {
@@ -706,6 +770,13 @@ export async function setServiceStatus(
   id: string,
   status: Service['status']
 ): Promise<Service> {
+  // Capture the pre-state for the audit log so we can show "active → suspended"
+  // rather than just the new state.
+  const beforeR = await query<Service>(
+    `SELECT ${SERVICE_COLS} FROM services WHERE id = $1`, [id]
+  );
+  if (!beforeR.rows[0]) throw notFound('service');
+  const before = beforeR.rows[0];
   const r = await query<Service>(
     `UPDATE services SET status = $2, updated_at = now()
      WHERE id = $1 RETURNING ${SERVICE_COLS}`,
@@ -714,6 +785,14 @@ export async function setServiceStatus(
   if (!r.rows[0]) throw notFound('service');
   const svc = r.rows[0];
   await syncServiceToRadius(svc);
+  if (before.status !== svc.status) {
+    logAuditSafe({
+      kind: 'service.status_change',
+      entity_type: 'service', entity_id: id,
+      before: { status: before.status }, after: { status: svc.status },
+      metadata: { customer_id: svc.customer_id, username: svc.username },
+    });
+  }
 
   // If suspending, kick any active sessions via CoA so the user is dropped
   // within seconds rather than waiting for re-auth on next session-timeout.
@@ -815,12 +894,21 @@ async function kickActiveSessions(username: string): Promise<void> {
 
 export async function deleteService(id: string): Promise<void> {
   const r = await query<Service>(
-    `SELECT username FROM services WHERE id = $1`, [id]
+    `SELECT ${SERVICE_COLS} FROM services WHERE id = $1`, [id]
   );
-  const username = r.rows[0]?.username;
+  const before = r.rows[0];
+  const username = before?.username;
   await query(`DELETE FROM services WHERE id = $1`, [id]);
   if (username) {
     await query(`DELETE FROM radcheck WHERE username = $1`, [username]);
     await query(`DELETE FROM radreply WHERE username = $1`, [username]);
+  }
+  if (before) {
+    logAuditSafe({
+      kind: 'service.delete',
+      entity_type: 'service', entity_id: id,
+      before,
+      metadata: { customer_id: before.customer_id, username },
+    });
   }
 }

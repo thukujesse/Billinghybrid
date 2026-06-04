@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams } from 'next/navigation';
 import { api } from '@/lib/api';
 
 interface Service {
@@ -60,6 +60,19 @@ interface Session {
   acctterminatecause: string | null;
 }
 
+interface AuditEntry {
+  id: string;
+  created_at: string;
+  kind: string;
+  entity_type: string;
+  entity_id: string;
+  actor_label: string;
+  actor_role: string;
+  before: any;
+  after: any;
+  metadata: Record<string, unknown>;
+}
+
 interface Plan {
   id: string;
   name: string;
@@ -108,14 +121,14 @@ function formatDuration(startIso: string | null, endIso: string | null): string 
 
 export default function CustomerDetail() {
   const params = useParams<{ id: string }>();
-  const router = useRouter();
   const customerId = params.id;
 
   const [customer, setCustomer] = useState<CustomerDetail | null>(null);
   const [payments, setPayments] = useState<Payment[]>([]);
   const [sessions, setSessions] = useState<Record<string, Session[]>>({});
   const [plans, setPlans] = useState<Plan[]>([]);
-  const [tab, setTab] = useState<'services' | 'payments' | 'sessions'>('services');
+  const [activity, setActivity] = useState<AuditEntry[]>([]);
+  const [tab, setTab] = useState<'services' | 'payments' | 'sessions' | 'activity'>('services');
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState({ full_name: '', phone: '', email: '', address: '', notes: '' });
   const [toast, setToast] = useState<{ ok: boolean; msg: string } | null>(null);
@@ -136,6 +149,9 @@ export default function CustomerDetail() {
       .catch((e) => setToast({ ok: false, msg: e.message }));
     api<Payment[]>(`/customers/${customerId}/payments`)
       .then(setPayments)
+      .catch(() => {/* non-fatal */});
+    api<AuditEntry[]>(`/customers/${customerId}/audit?limit=100`)
+      .then(setActivity)
       .catch(() => {/* non-fatal */});
   };
 
@@ -280,7 +296,7 @@ export default function CustomerDetail() {
       )}
 
       <div style={{ display: 'flex', gap: 8, marginTop: 24, borderBottom: '1px solid var(--border, #e2e8f0)' }}>
-        {(['services', 'payments', 'sessions'] as const).map((t) => (
+        {(['services', 'payments', 'sessions', 'activity'] as const).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -299,6 +315,7 @@ export default function CustomerDetail() {
             {t === 'services' && `Services (${customer.services.length})`}
             {t === 'payments' && `Payments (${payments.length})`}
             {t === 'sessions' && 'Sessions'}
+            {t === 'activity' && `Activity (${activity.length})`}
           </button>
         ))}
       </div>
@@ -441,6 +458,43 @@ export default function CustomerDetail() {
                     ))}
                   </tbody>
                 </table>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {tab === 'activity' && (
+        <div style={{ marginTop: 16 }}>
+          {activity.length === 0 ? (
+            <p className="sub">No audited activity for this customer yet.</p>
+          ) : activity.map((e) => (
+            <div key={e.id} style={{
+              background: '#fff', border: '1px solid var(--border, #e2e8f0)',
+              borderRadius: 8, padding: 12, marginBottom: 8, fontSize: 13,
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+                <div>
+                  <code style={{ fontSize: 11, background: 'rgba(37,99,235,0.08)', color: '#1d4ed8', padding: '2px 6px', borderRadius: 4 }}>
+                    {e.kind}
+                  </code>
+                  <span style={{ marginLeft: 8, color: 'var(--muted)', fontSize: 12 }}>
+                    by <strong style={{ color: '#0f172a' }}>{e.actor_label}</strong> ({e.actor_role})
+                  </span>
+                </div>
+                <span style={{ fontSize: 11, color: 'var(--muted)' }}>
+                  {new Date(e.created_at).toLocaleString()}
+                </span>
+              </div>
+              {(e.before || e.after) && (
+                <div style={{ marginTop: 8, fontSize: 11, color: 'var(--muted)', fontFamily: 'ui-monospace, monospace' }}>
+                  {e.before && Object.keys(e.before).length > 0 && (
+                    <div>before: <span style={{ color: '#b91c1c' }}>{JSON.stringify(e.before)}</span></div>
+                  )}
+                  {e.after && Object.keys(e.after).length > 0 && (
+                    <div>after: <span style={{ color: '#15803d' }}>{JSON.stringify(e.after)}</span></div>
+                  )}
+                </div>
               )}
             </div>
           ))}

@@ -2,6 +2,7 @@ import type { Request, Response, NextFunction } from 'express';
 import { config } from '../../config.js';
 import { verifyJwt } from '../../lib/jwt.js';
 import type { Role } from '../../domains/auth/service.js';
+import { runAsActor } from '../../lib/actor.js';
 
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
@@ -20,8 +21,10 @@ declare global {
 export function requireAuth(...roles: Role[]) {
   return (req: Request, res: Response, next: NextFunction): void => {
     if (!config.auth.enabled) {
-      req.user = { sub: 'dev-admin', role: 'admin' };
-      return next();
+      req.user = { sub: 'dev-admin', role: 'admin', username: 'dev-admin' };
+      // Run downstream in an ALS actor scope so audit_log captures something
+      // meaningful even when auth is disabled (demo mode).
+      return runAsActor({ id: 'dev-admin', label: 'dev-admin', role: 'admin' }, () => next());
     }
 
     const header = req.headers.authorization ?? '';
@@ -36,6 +39,9 @@ export function requireAuth(...roles: Role[]) {
       return;
     }
     req.user = { ...claims, sub: claims.sub, role: claims.role as Role };
-    next();
+    // ALS scope so services downstream (logAudit) can read the actor
+    // without us threading it through every call signature.
+    const label = (claims.username as string | undefined) ?? String(claims.sub);
+    runAsActor({ id: String(claims.sub), label, role: claims.role as Role }, () => next());
   };
 }
