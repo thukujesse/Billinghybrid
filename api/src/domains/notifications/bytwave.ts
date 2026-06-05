@@ -32,14 +32,6 @@ export async function sendBytwaveSms(to: string, message: string): Promise<Bytwa
   // send doesn't silently fail at the gateway.
   const senderId = cfg.senderId || config.brandName.slice(0, 11);
 
-  const payload = {
-    api_token: cfg.apiKey,
-    recipient: to,
-    sender_id: senderId,
-    type: 'plain' as const,
-    message,
-  };
-
   // Bytewave's live deployment 404s on POST despite their docs publishing
   // a POST example. Their working API is GET-only. URL-encode every value
   // EXCEPT the api_token's '|' separator — URLSearchParams encodes pipe
@@ -78,8 +70,15 @@ export async function sendBytwaveSms(to: string, message: string): Promise<Bytwa
   let json: any = null;
   try { json = text ? JSON.parse(text) : null; } catch {/* not json */}
 
+  // Redact the api_token in the URL we log so the operator can spot
+  // typos / encoding issues without leaking the secret into log streams.
+  const redactedUrl = url.replace(/api_token=[^&]+/, 'api_token=<REDACTED>');
+
   if (json?.status === 'error') {
-    return { ok: false, detail: json.message ?? 'rejected (no message)' };
+    return {
+      ok: false,
+      detail: `${json.message ?? 'rejected (no message)'} | url=${redactedUrl}`,
+    };
   }
   if (json?.status === 'success') {
     const data = typeof json.data === 'string'
@@ -91,7 +90,7 @@ export async function sendBytwaveSms(to: string, message: string): Promise<Bytwa
   if (!res.ok) {
     return {
       ok: false,
-      detail: `http ${res.status} ${res.statusText || ''}: ${bodyPreview || '(empty body)'}`,
+      detail: `http ${res.status} ${res.statusText || ''}: ${bodyPreview || '(empty body)'} | url=${redactedUrl}`,
     };
   }
   return { ok: true, detail: bodyPreview || 'sent (no envelope)' };
