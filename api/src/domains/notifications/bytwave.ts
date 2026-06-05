@@ -11,20 +11,23 @@
  * If your Bytwave account uses a different envelope, override via env
  * vars or adjust the buildPayload + parseResponse functions below.
  */
-import { config } from '../../config.js';
+import { getSmsConfig } from '../settings/service.js';
 
 interface BytwaveResponse {
   ok: boolean;
   detail: string;
 }
 
-function buildPayload(to: string, message: string): { body: string; contentType: string } {
+function buildPayload(
+  to: string, message: string,
+  cfg: { senderId: string; payloadFormat: 'json' | 'form' }
+): { body: string; contentType: string } {
   const fields: Record<string, string> = {
-    sender_id: config.sms.bytwave.senderId,
+    sender_id: cfg.senderId,
     mobile: to,
     message,
   };
-  if (config.sms.bytwave.payloadFormat === 'form') {
+  if (cfg.payloadFormat === 'form') {
     const usp = new URLSearchParams(fields);
     return { body: usp.toString(), contentType: 'application/x-www-form-urlencoded' };
   }
@@ -43,16 +46,15 @@ function parseResponse(httpOk: boolean, status: number, json: any): BytwaveRespo
 }
 
 export async function sendBytwaveSms(to: string, message: string): Promise<BytwaveResponse> {
-  if (!config.sms.bytwave.apiKey) {
-    return { ok: false, detail: 'bytwave not configured' };
-  }
-  const { body, contentType } = buildPayload(to, message);
-  const res = await fetch(config.sms.bytwave.endpoint, {
+  const cfg = (await getSmsConfig()).bytwave;
+  if (!cfg.apiKey) return { ok: false, detail: 'bytwave not configured' };
+  const { body, contentType } = buildPayload(to, message, cfg);
+  const res = await fetch(cfg.endpoint, {
     method: 'POST',
     headers: {
       'Content-Type': contentType,
       'Accept': 'application/json',
-      'Authorization': `Bearer ${config.sms.bytwave.apiKey}`,
+      'Authorization': `Bearer ${cfg.apiKey}`,
     },
     body,
   });

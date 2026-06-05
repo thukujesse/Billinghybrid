@@ -11,6 +11,13 @@ interface MpesaPublic {
   simulated: boolean;
 }
 
+interface SmsPublic {
+  provider: 'africastalking' | 'bytwave';
+  africastalking: { username: string; senderId: string; apiKeySet: boolean };
+  bytwave: { endpoint: string; senderId: string; payloadFormat: 'json' | 'form'; apiKeySet: boolean };
+  simulated: boolean;
+}
+
 interface HotspotBranding {
   name: string;
   color: string;
@@ -55,7 +62,84 @@ export default function SettingsPage() {
       .then((b) => { setBrand(b); setBrandForm(b); })
       .catch((e: any) => setToast({ ok: false, msg: e.message }));
 
-  useEffect(() => { load(); loadBrand(); }, []);
+  // SMS provider settings — same shape as M-Pesa: public read returns
+  // which-creds-are-set booleans, secrets are write-only.
+  const [sms, setSms] = useState<SmsPublic | null>(null);
+  const [smsForm, setSmsForm] = useState({
+    provider: 'africastalking' as 'africastalking' | 'bytwave',
+    atUsername: 'sandbox', atApiKey: '', atSenderId: '',
+    bytwaveApiKey: '', bytwaveEndpoint: 'https://api.bytwave.co.ke/v1/sms/send',
+    bytwaveSenderId: '', bytwavePayloadFormat: 'json' as 'json' | 'form',
+  });
+  const [smsSaving, setSmsSaving] = useState(false);
+  const [testPhone, setTestPhone] = useState('');
+  const [smsTestSending, setSmsTestSending] = useState(false);
+
+  const loadSms = () =>
+    api<SmsPublic>('/settings/sms')
+      .then((s) => {
+        setSms(s);
+        setSmsForm((f) => ({
+          ...f,
+          provider: s.provider,
+          atUsername: s.africastalking.username, atSenderId: s.africastalking.senderId,
+          bytwaveEndpoint: s.bytwave.endpoint, bytwaveSenderId: s.bytwave.senderId,
+          bytwavePayloadFormat: s.bytwave.payloadFormat,
+        }));
+      })
+      .catch((e: any) => setToast({ ok: false, msg: e.message }));
+
+  const saveSms = async () => {
+    setSmsSaving(true);
+    try {
+      const body: Record<string, unknown> = { provider: smsForm.provider };
+      const at: Record<string, string> = {
+        username: smsForm.atUsername, senderId: smsForm.atSenderId,
+      };
+      if (smsForm.atApiKey) at.apiKey = smsForm.atApiKey;
+      body.africastalking = at;
+      const bw: Record<string, string> = {
+        endpoint: smsForm.bytwaveEndpoint, senderId: smsForm.bytwaveSenderId,
+        payloadFormat: smsForm.bytwavePayloadFormat,
+      };
+      if (smsForm.bytwaveApiKey) bw.apiKey = smsForm.bytwaveApiKey;
+      body.bytwave = bw;
+      const r = await api<SmsPublic>('/settings/sms', {
+        method: 'PUT',
+        body: JSON.stringify(body),
+      });
+      setSms(r);
+      setSmsForm((f) => ({ ...f, atApiKey: '', bytwaveApiKey: '' }));
+      setToast({ ok: true, msg: 'SMS settings saved' });
+    } catch (e: any) {
+      setToast({ ok: false, msg: e.message });
+    } finally {
+      setSmsSaving(false);
+    }
+  };
+
+  const sendTestSms = async () => {
+    if (!testPhone) return;
+    setSmsTestSending(true);
+    try {
+      const r = await api<{ ok: boolean; sent_to: string; message: string }>('/settings/sms/test', {
+        method: 'POST',
+        body: JSON.stringify({ phone: testPhone }),
+      });
+      setToast({
+        ok: r.ok,
+        msg: r.ok
+          ? `Test sent to ${r.sent_to} — check the phone and the API log for the [notify:sms->...] line.`
+          : `Test failed`,
+      });
+    } catch (e: any) {
+      setToast({ ok: false, msg: e.message });
+    } finally {
+      setSmsTestSending(false);
+    }
+  };
+
+  useEffect(() => { load(); loadBrand(); loadSms(); }, []);
 
   const saveBrand = async () => {
     setBrandSaving(true);
@@ -231,6 +315,103 @@ export default function SettingsPage() {
         My Apps → Lipa Na M-Pesa Sandbox → Consumer Key + Secret.
         The standard sandbox passkey + shortcode 174379 are pre-fillable above.
       </p>
+
+      <h2 style={{ marginTop: 32 }}>SMS provider</h2>
+      {sms && (
+        <div
+          className={`toast ${sms.simulated ? 'err' : 'ok'}`}
+          style={{ marginBottom: 12 }}
+        >
+          Provider: <strong>{sms.provider}</strong>{' '}
+          {sms.simulated
+            ? '— SIMULATION (API key missing; customer SMS is logged not sent)'
+            : '— LIVE'}
+        </div>
+      )}
+
+      <div className="card">
+        <label>Active provider</label>
+        <select value={smsForm.provider}
+          onChange={(e) => setSmsForm({ ...smsForm, provider: e.target.value as any })}>
+          <option value="africastalking">Africa's Talking</option>
+          <option value="bytwave">Bytwave</option>
+        </select>
+
+        <h3 style={{ fontSize: 14, marginTop: 20, marginBottom: 8 }}>Africa's Talking</h3>
+        <div className="row">
+          <div>
+            <label>Username {sms?.africastalking.apiKeySet && <span style={{ color: 'var(--green)' }}>✓ key set</span>}</label>
+            <input value={smsForm.atUsername}
+              onChange={(e) => setSmsForm({ ...smsForm, atUsername: e.target.value })}
+              placeholder="sandbox" />
+          </div>
+          <div>
+            <label>Sender ID</label>
+            <input value={smsForm.atSenderId}
+              onChange={(e) => setSmsForm({ ...smsForm, atSenderId: e.target.value })}
+              placeholder="HUBNETS" />
+          </div>
+        </div>
+        <label>API key {sms?.africastalking.apiKeySet && <span style={{ color: 'var(--green)' }}>✓ set</span>}</label>
+        <input type="password" value={smsForm.atApiKey}
+          onChange={(e) => setSmsForm({ ...smsForm, atApiKey: e.target.value })}
+          placeholder={sms?.africastalking.apiKeySet ? '••• leave empty to keep current' : 'atsk_...'} />
+
+        <h3 style={{ fontSize: 14, marginTop: 20, marginBottom: 8 }}>Bytwave</h3>
+        <div className="row">
+          <div>
+            <label>Endpoint URL</label>
+            <input value={smsForm.bytwaveEndpoint}
+              onChange={(e) => setSmsForm({ ...smsForm, bytwaveEndpoint: e.target.value })}
+              placeholder="https://api.bytwave.co.ke/v1/sms/send" />
+          </div>
+          <div>
+            <label>Sender ID</label>
+            <input value={smsForm.bytwaveSenderId}
+              onChange={(e) => setSmsForm({ ...smsForm, bytwaveSenderId: e.target.value })}
+              placeholder="HUBNETS" />
+          </div>
+          <div>
+            <label>Payload format</label>
+            <select value={smsForm.bytwavePayloadFormat}
+              onChange={(e) => setSmsForm({ ...smsForm, bytwavePayloadFormat: e.target.value as any })}>
+              <option value="json">JSON</option>
+              <option value="form">form-urlencoded</option>
+            </select>
+          </div>
+        </div>
+        <label>API key {sms?.bytwave.apiKeySet && <span style={{ color: 'var(--green)' }}>✓ set</span>}</label>
+        <input type="password" value={smsForm.bytwaveApiKey}
+          onChange={(e) => setSmsForm({ ...smsForm, bytwaveApiKey: e.target.value })}
+          placeholder={sms?.bytwave.apiKeySet ? '••• leave empty to keep current' : 'bytwave_...'} />
+
+        <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+          <button onClick={saveSms} disabled={smsSaving}>
+            {smsSaving ? 'Saving…' : 'Save SMS settings'}
+          </button>
+        </div>
+      </div>
+
+      <div className="card" style={{ marginTop: 12 }}>
+        <h3 style={{ marginTop: 0, fontSize: 14 }}>Send a test SMS</h3>
+        <p className="sub" style={{ marginTop: 0 }}>
+          Fires through the active provider above so you can confirm the creds work
+          before relying on them for customer notifications.
+        </p>
+        <div className="row">
+          <div style={{ flex: 1 }}>
+            <label>Phone</label>
+            <input value={testPhone}
+              onChange={(e) => setTestPhone(e.target.value)}
+              placeholder="2547XXXXXXXX" />
+          </div>
+          <div style={{ flex: '0 0 auto', alignSelf: 'flex-end' }}>
+            <button className="ghost" onClick={sendTestSms} disabled={!testPhone || smsTestSending}>
+              {smsTestSending ? 'Sending…' : 'Send test'}
+            </button>
+          </div>
+        </div>
+      </div>
 
       <h2 style={{ marginTop: 32 }}>Hotspot Template</h2>
       <p className="sub">

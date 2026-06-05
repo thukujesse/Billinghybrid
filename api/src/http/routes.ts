@@ -756,6 +756,50 @@ api.put('/settings/mpesa', requireAuth('admin'), ah(async (req, res) => {
   res.json(await settings.getMpesaConfigPublic());
 }));
 
+// ---------- SMS provider settings ----------
+// Same DB-overrides-env pattern as M-Pesa. Provider switch is hot — no
+// redeploy needed; the africastalking/bytwave clients read getSmsConfig()
+// on every send. Test endpoint lets the operator fire a single SMS to
+// any number to confirm provider creds work before relying on them.
+api.get('/settings/sms', requireAuth('admin', 'staff'), ah(async (_req, res) => {
+  res.json(await settings.getSmsConfigPublic());
+}));
+api.put('/settings/sms', requireAuth('admin'), ah(async (req, res) => {
+  const body = parse(z.object({
+    provider: z.enum(['africastalking', 'bytwave']).optional(),
+    africastalking: z.object({
+      username: z.string().optional(),
+      apiKey:   z.string().optional(),
+      senderId: z.string().optional(),
+    }).optional(),
+    bytwave: z.object({
+      apiKey:        z.string().optional(),
+      endpoint:      z.string().url().optional(),
+      senderId:      z.string().optional(),
+      payloadFormat: z.enum(['json', 'form']).optional(),
+    }).optional(),
+  }), req.body);
+  await settings.setSmsConfig(body, (req.user as { username?: string } | undefined)?.username);
+  res.json(await settings.getSmsConfigPublic());
+}));
+api.post('/settings/sms/test', requireAuth('admin'), ah(async (req, res) => {
+  const body = parse(z.object({
+    phone: z.string().min(7),
+    message: z.string().max(160).optional(),
+  }), req.body);
+  // Use notify() so the test goes through the exact same dispatcher path
+  // as production traffic — picks the configured provider, applies the
+  // simulation fallback if creds are missing.
+  const { notify } = await import('../domains/notifications/service.js');
+  const text = body.message ?? `Test SMS from ${(await settings.getSmsConfigPublic()).provider} via JTM at ${new Date().toISOString()}`;
+  try {
+    await notify('sms', body.phone, text);
+    res.json({ ok: true, sent_to: body.phone, message: text });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: (err as Error).message });
+  }
+}));
+
 // ---------------------- Hotspot captive portal ----------------------
 // Public endpoint — gated by the voucher code being unguessable, not auth.
 // The captive portal page calls this with the voucher code from the customer.
