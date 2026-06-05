@@ -5,6 +5,7 @@ import { pollVpsHandshakes } from './domains/routers/service.js';
 import { startPaymentWorker } from './domains/paymentEvents/worker.js';
 import { startExpireWorker, expireWorkerEnabled, expireWorkerIntervalMs } from './domains/customers/expireWorker.js';
 import { startAlertWorker, alertWorkerEnabled, alertWorkerIntervalMs } from './domains/alerts/worker.js';
+import { startMetricsWorker, metricsWorkerEnabled, metricsWorkerIntervalMs } from './domains/network/worker.js';
 
 const app = await createApp();
 
@@ -35,6 +36,12 @@ const stopExpireWorker = expireWorkerEnabled
 // router offline and fire Telegram to the admin chat on new conditions.
 const stopAlertWorker = alertWorkerEnabled
   ? startAlertWorker(alertWorkerIntervalMs)
+  : async () => {};
+
+// Network metrics sampler — every 60s, snapshot per-router bandwidth
+// + session counts into router_metrics for the /network history charts.
+const stopMetricsWorker = metricsWorkerEnabled
+  ? startMetricsWorker(metricsWorkerIntervalMs)
   : async () => {};
 
 const server = app.listen(config.port, () => {
@@ -75,6 +82,11 @@ async function shutdown(signal: string) {
       await stopAlertWorker(); // let an in-flight alert sweep finish
     } catch (e) {
       console.error('[shutdown] alert worker stop failed:', e);
+    }
+    try {
+      await stopMetricsWorker(); // let an in-flight metrics sample finish
+    } catch (e) {
+      console.error('[shutdown] metrics worker stop failed:', e);
     }
     try {
       await pool.end();

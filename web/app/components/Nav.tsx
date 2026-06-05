@@ -26,6 +26,7 @@ export function Nav() {
       <a href="/vouchers">Vouchers</a>
       <a href="/resellers">Resellers</a>
       <a href="/routers">Routers</a>
+      <a href="/network">Network</a>
       <a href="/sessions">Sessions</a>
       <a href="/plugins">Plugins</a>
       <a href="/settings">Settings</a>
