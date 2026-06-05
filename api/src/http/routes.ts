@@ -41,13 +41,24 @@ import * as paymentEvents from '../domains/paymentEvents/service.js';
 import * as hotspotDevices from '../domains/hotspotDevices/service.js';
 import * as deviceTokens from '../domains/hotspotDevices/tokens.js';
 import * as portal from '../domains/portal/service.js';
-import * as customerWallet from '../domains/customers/wallet.js';
+// customerWallet is consumed by routes/wallet.ts; routes.ts only needs
+// the SMS resend helper which uses customerSms below.
 import * as customerSms from '../domains/customers/notifications.js';
 import * as alerts from '../domains/alerts/service.js';
 import * as audit from '../domains/audit/service.js';
-import * as network from '../domains/network/service.js';
+import { registerNetworkRoutes } from './routes/network.js';
+import { registerWalletRoutes } from './routes/wallet.js';
+import { registerReportsRoutes } from './routes/reports.js';
 
 export const api = Router();
+
+// Feature-bucketed sub-routers. Adding a new feature here keeps routes.ts
+// from growing further — drop a routes/<feature>.ts file with a register()
+// function and add one line below. Each sub-module owns its own imports +
+// zod validation, so two features editing this file at once stop colliding.
+registerNetworkRoutes(api);
+registerWalletRoutes(api);
+registerReportsRoutes(api);
 
 // ------------------------------- Auth -------------------------------
 // Staff/admin password login.
@@ -90,75 +101,15 @@ api.get('/portal/me', requireAuth('customer'), ah(async (req, res) => {
   res.json(await portal.getPortalMe(req.user!.sub));
 }));
 
-// ----------------------- Customer wallet (portal) -----------------------
-// All routes scoped to the authenticated customer's own balance — no
-// cross-customer reads possible because we use req.user.sub as the key.
-api.get('/portal/wallet/txns', requireAuth('customer'), ah(async (req, res) => {
-  const limit = req.query.limit ? Number(req.query.limit) : 50;
-  res.json(await portal.listWalletTxns(req.user!.sub, limit));
-}));
-api.post('/portal/wallet/topup', requireAuth('customer'), ah(async (req, res) => {
-  const body = parse(z.object({
-    amount_kes: z.number().int().min(10).max(70000),
-    phone: z.string().min(7),
-  }), req.body);
-  res.json(await customerWallet.initWalletTopup({
-    customerId: req.user!.sub,
-    amountKes: body.amount_kes,
-    phone: body.phone,
-  }));
-}));
-api.post('/portal/wallet/renew', requireAuth('customer'), ah(async (req, res) => {
-  const body = parse(z.object({ service_id: z.string().uuid() }), req.body);
-  res.json(await customerWallet.renewServiceFromWallet({
-    customerId: req.user!.sub,
-    serviceId: body.service_id,
-    actor: req.user!.sub,
-  }));
-}));
-api.post('/portal/services/:id/auto-renew', requireAuth('customer'), ah(async (req, res) => {
-  const body = parse(z.object({ enabled: z.boolean() }), req.body);
-  await customerWallet.setAutoRenew(req.params.id, req.user!.sub, body.enabled);
-  res.json({ ok: true });
-}));
-
-// ----------------------- Customer wallet (admin) -----------------------
-// Operator-facing — view + adjust customer balances for cash payments,
-// refunds, promotions, corrections. Adjustment txns include the admin
-// username in the actor field for auditability.
-api.get('/admin/customers/:id/wallet', requireAuth('admin', 'staff'), ah(async (req, res) => {
-  const [balance, txns] = await Promise.all([
-    customerWallet.getWallet(req.params.id),
-    customerWallet.listTxns(req.params.id, 100),
-  ]);
-  res.json({ balance, txns });
-}));
-// Operator-triggered resend of the onboarding SMS. Useful when a customer
-// loses their creds slip. Bypasses the per-service dedup by salting the
-// log key with a timestamp.
+// Wallet routes (portal + admin) live in ./routes/wallet.ts.
+// Operator-triggered SMS resend stays here — it's a customer-mutation
+// adjacent to status_change/renew which haven't been extracted.
 api.post('/admin/customers/:id/services/:serviceId/resend-onboarding',
   requireAuth('admin', 'staff'),
   ah(async (req, res) => {
     await customerSms.resendOnboarding(req.params.id, req.params.serviceId);
     res.json({ ok: true });
   }));
-api.post('/admin/customers/:id/wallet/adjust', requireAuth('admin'), ah(async (req, res) => {
-  const body = parse(z.object({
-    amount_cents: z.number().int(),  // positive credit, negative debit
-    kind: z.enum(['adjustment', 'refund']),
-    notes: z.string().max(500).optional(),
-    reference: z.string().max(120).optional(),
-  }), req.body);
-  const actorLabel = req.user?.username ? String(req.user.username) : String(req.user?.sub ?? 'admin');
-  res.json(await customerWallet.applyTxn({
-    customerId: req.params.id,
-    amountCents: body.amount_cents,
-    kind: body.kind,
-    notes: body.notes,
-    reference: body.reference,
-    actor: actorLabel,
-  }));
-}));
 
 // ----------------------------- Alerts --------------------------------
 // Operator-facing health alerts (DLQ, queue backlog, router offline).
@@ -177,27 +128,7 @@ api.post('/admin/alerts/evaluate', requireAuth('admin'), ah(async (_req, res) =>
   res.json(await alerts.runEvaluators());
 }));
 
-// ----------------------------- Network monitoring -----------------------------
-// Per-router live status + bandwidth, current session list, top consumers,
-// and per-router bandwidth history. Sampler worker keeps router_metrics fed
-// every 60s for the historical charts.
-api.get('/admin/network/routers', requireAuth('admin', 'staff'), ah(async (_req, res) => {
-  res.json(await network.routerStatus());
-}));
-api.get('/admin/network/sessions', requireAuth('admin', 'staff'), ah(async (req, res) => {
-  const routerId = typeof req.query.router_id === 'string' ? req.query.router_id : undefined;
-  const limit = req.query.limit ? Number(req.query.limit) : undefined;
-  res.json(await network.liveSessions(routerId, limit));
-}));
-api.get('/admin/network/top-consumers', requireAuth('admin', 'staff'), ah(async (req, res) => {
-  const windowMin = req.query.window_min ? Number(req.query.window_min) : 60;
-  const limit = req.query.limit ? Number(req.query.limit) : 20;
-  res.json(await network.topConsumers(windowMin, limit));
-}));
-api.get('/admin/network/routers/:id/history', requireAuth('admin', 'staff'), ah(async (req, res) => {
-  const hours = req.query.hours ? Math.min(Number(req.query.hours), 72) : 6;
-  res.json(await network.routerHistory(req.params.id, hours));
-}));
+// Network monitoring routes live in ./routes/network.ts.
 api.post('/portal/renew', requireAuth('customer'), ah(async (req, res) => {
   const body = parse(z.object({
     service_id: z.string().uuid(),
@@ -249,32 +180,8 @@ api.get('/reports/payments.csv', ah(async (_req, res) => {
 // Unified revenue across legacy payments + hotspot_purchases. The /reports/revenue
 // endpoint above only sees the legacy slice; this one is what the rebuilt
 // Reports page calls.
-api.get('/reports/revenue-combined', ah(async (req, res) => {
-  const months = req.query.months ? Math.min(Number(req.query.months), 36) : 12;
-  res.json(await reports.revenueByMonthCombined(months));
-}));
-api.get('/reports/revenue-by-plan', ah(async (req, res) => {
-  const days = req.query.days ? Math.min(Number(req.query.days), 365) : 30;
-  res.json(await reports.revenueByPlan(days));
-}));
-api.get('/reports/outstanding-renewals', ah(async (_req, res) => {
-  res.json(await reports.outstandingRenewals());
-}));
-api.get('/reports/pppoe-mrr', ah(async (_req, res) => {
-  res.json(await reports.pppoeMrr());
-}));
-api.get('/reports/customers.csv', requireAuth('admin', 'staff'), ah(async (_req, res) => {
-  const csv = await reports.customersCsv();
-  res.setHeader('Content-Type', 'text/csv');
-  res.setHeader('Content-Disposition', 'attachment; filename="customers.csv"');
-  res.send(csv);
-}));
-api.get('/reports/hotspot-purchases.csv', requireAuth('admin', 'staff'), ah(async (_req, res) => {
-  const csv = await reports.hotspotPurchasesCsv();
-  res.setHeader('Content-Type', 'text/csv');
-  res.setHeader('Content-Disposition', 'attachment; filename="hotspot-purchases.csv"');
-  res.send(csv);
-}));
+// New reports (revenue-combined, by-plan, outstanding-renewals, pppoe-mrr,
+// customers.csv, hotspot-purchases.csv) live in ./routes/reports.ts.
 
 // ----------------------------- Plans --------------------------------
 api.get('/plans', ah(async (req, res) => {
