@@ -11,9 +11,6 @@ interface RouterRow {
   vpn_status: string;
   wg_tunnel_ip: string | null;
   last_handshake_at: string | null;
-  last_template_sync_at: string | null;
-  last_template_sync_status: 'ok' | 'failed' | 'pending' | null;
-  last_template_sync_error: string | null;
 }
 
 interface DetectedRouter {
@@ -173,49 +170,6 @@ export default function Routers() {
     }
   };
 
-  // Sync hotspot templates + walled-garden via SSH. Per-row. Updates the
-  // row's status badge optimistically so the operator sees "pending" the
-  // instant they click, then the next 10s poll reflects ok/failed.
-  const syncTemplates = async (id: string, name: string) => {
-    setList((cur) => cur.map((r) => r.id === id
-      ? { ...r, last_template_sync_status: 'pending' as const }
-      : r
-    ));
-    try {
-      const r = await api<{ ok: boolean; detail: string; durationMs: number }>(
-        `/routers/${id}/sync-templates`, { method: 'POST' }
-      );
-      if (r.ok) {
-        setToast({ ok: true, msg: `Synced ${name} (${r.durationMs}ms)` });
-      } else {
-        setToast({ ok: false, msg: `Sync failed for ${name}: ${r.detail.slice(0, 150)}` });
-      }
-      load();
-    } catch (e: any) {
-      setToast({ ok: false, msg: e.message });
-      load();
-    }
-  };
-
-  const syncAllTemplates = async () => {
-    if (!confirm('Push hotspot templates + walled-garden to ALL reachable routers? Safe on live routers (templates serve on next captive load).')) return;
-    setToast({ ok: true, msg: 'Syncing all routersâ€¦' });
-    try {
-      const r = await api<{ results: Array<{ routerName: string; ok: boolean; detail: string }>; total: number }>(
-        '/admin/routers/sync-all-templates', { method: 'POST' }
-      );
-      const okCount = r.results.filter((x) => x.ok).length;
-      const failed = r.results.filter((x) => !x.ok).map((x) => x.routerName).slice(0, 3);
-      setToast({
-        ok: okCount === r.total,
-        msg: `Synced ${okCount}/${r.total}${failed.length ? ` â€” failed: ${failed.join(', ')}${r.total - okCount > 3 ? '...' : ''}` : ''}`,
-      });
-      load();
-    } catch (e: any) {
-      setToast({ ok: false, msg: e.message });
-    }
-  };
-
   const reprovision = async (id: string, name: string) => {
     if (!confirm(`Reprovision ${name}? Rotates RADIUS secret + pushes fresh config to the MikroTik.`)) return;
     try {
@@ -336,19 +290,6 @@ export default function Routers() {
         </div>
       )}
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginTop: 16 }}>
-        <h3 style={{ margin: 0, fontSize: 14 }}>Registered routers</h3>
-        {list.length > 0 && (
-          <button
-            className="ghost"
-            style={{ fontSize: 12, padding: '6px 12px' }}
-            onClick={syncAllTemplates}
-            title="Re-push captive HTML + walled-garden to every reachable router"
-          >
-            â†» Sync templates to all
-          </button>
-        )}
-      </div>
       <table>
         <thead>
           <tr>
@@ -356,7 +297,6 @@ export default function Routers() {
             <th>Site</th>
             <th>Tunnel IP</th>
             <th>VPN</th>
-            <th>Templates</th>
             <th>Last handshake</th>
             <th></th>
           </tr>
@@ -368,7 +308,6 @@ export default function Routers() {
               <td>{r.site ?? 'â€”'}</td>
               <td><code>{r.wg_tunnel_ip ?? 'â€”'}</code></td>
               <td><VpnPill status={r.vpn_status} /></td>
-              <td><TemplateSyncBadge r={r} /></td>
               <td title={r.last_handshake_at ?? ''}>{formatLastSeen(r.last_handshake_at)}</td>
               <td>
                 <button
@@ -377,15 +316,6 @@ export default function Routers() {
                   onClick={() => testConnection(r.id)}
                 >
                   Test
-                </button>
-                <button
-                  className="ghost"
-                  style={{ fontSize: 11, padding: '4px 10px', marginRight: 4 }}
-                  onClick={() => syncTemplates(r.id, r.name)}
-                  disabled={r.last_template_sync_status === 'pending'}
-                  title="Re-push hotspot HTML + walled-garden via SSH (safe on live router)"
-                >
-                  Sync
                 </button>
                 <button
                   className="ghost"
@@ -412,7 +342,7 @@ export default function Routers() {
             </tr>
           ))}
           {list.length === 0 && (
-            <tr><td colSpan={7} style={{ color: 'var(--muted)' }}>No routers yet</td></tr>
+            <tr><td colSpan={6} style={{ color: 'var(--muted)' }}>No routers yet</td></tr>
           )}
         </tbody>
       </table>
@@ -575,37 +505,6 @@ function VpnPill({ status }: { status: string }) {
     status === 'connected' ? 'Online' :
     status === 'disconnected' ? 'Offline' : 'Waiting';
   return <span className={`vpn-pill ${cls}`}>{label}</span>;
-}
-
-function TemplateSyncBadge({ r }: { r: RouterRow }) {
-  const status = r.last_template_sync_status;
-  const when = r.last_template_sync_at;
-
-  const cfg = (() => {
-    if (status === 'ok')      return { bg: 'rgba(22,163,74,0.10)',  fg: '#15803d', label: 'âœ“ Synced' };
-    if (status === 'failed')  return { bg: 'rgba(220,38,38,0.10)',  fg: '#b91c1c', label: 'âœ— Failed' };
-    if (status === 'pending') return { bg: 'rgba(217,119,6,0.10)',  fg: '#a16207', label: 'â€¦ Syncing' };
-    return                          { bg: '#f1f5f9',                fg: '#64748b', label: 'â€” Never' };
-  })();
-
-  // Tooltip shows last-sync timestamp on hover + the error if any.
-  const tip = [
-    when ? `last sync: ${new Date(when).toLocaleString()}` : 'never synced',
-    r.last_template_sync_error ? `error: ${r.last_template_sync_error}` : null,
-  ].filter(Boolean).join('\n');
-
-  return (
-    <span
-      title={tip}
-      style={{
-        display: 'inline-block', padding: '2px 8px', borderRadius: 6,
-        fontSize: 11, fontWeight: 600, background: cfg.bg, color: cfg.fg,
-        cursor: 'help', whiteSpace: 'nowrap',
-      }}
-    >
-      {cfg.label}
-    </span>
-  );
 }
 
 function formatLastSeen(iso: string | null): string {
