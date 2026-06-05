@@ -147,6 +147,17 @@ export default function SettingsPage() {
     }
   };
 
+  const resetSms = async () => {
+    if (!confirm('Wipe every saved SMS setting? The hardcoded defaults in the API will take over.')) return;
+    try {
+      const r = await api<{ ok: boolean; deleted_rows: number }>('/settings/sms/reset', { method: 'POST' });
+      setToast({ ok: true, msg: `Reset — ${r.deleted_rows} row(s) deleted. Reload to see defaults.` });
+      loadSms();
+    } catch (e: any) {
+      setToast({ ok: false, msg: e.message });
+    }
+  };
+
   // One-tap "show me what's actually in the DB" helper. Pulls /debug and
   // dumps to the toast so the operator can verify the saved key length
   // without re-typing the secret.
@@ -436,6 +447,10 @@ export default function SettingsPage() {
               placeholder="2547XXXXXXXX" />
           </div>
           <div style={{ flex: '0 0 auto', alignSelf: 'flex-end', display: 'flex', gap: 6 }}>
+            <button className="ghost" onClick={resetSms} type="button"
+              style={{ color: '#b91c1c', borderColor: '#fecaca' }}>
+              Reset
+            </button>
             <button className="ghost" onClick={debugSms} type="button">
               Debug
             </button>

@@ -738,10 +738,15 @@ api.post('/settings/sms/test', requireAuth('admin'), ah(async (req, res) => {
     }
     // Mirror the result to the API log so the operator can confirm
     // outcome from Render's log stream even when the dashboard toast
-    // gets dismissed or the browser network tab is closed.
+    // gets dismissed or the browser network tab is closed. Include the
+    // endpoint URL so DNS / typo failures are immediately visible.
+    const endpoint = smsCfg.provider === 'bytwave'
+      ? smsCfg.bytwave.endpoint
+      : 'africastalking';
     console.log(
-      `[sms-test] provider=${smsCfg.provider} to=${normalized} ` +
-      `ok=${result.ok} detail=${JSON.stringify(result.detail).slice(0, 200)}`
+      `[sms-test] provider=${smsCfg.provider} endpoint=${endpoint} ` +
+      `to=${normalized} ok=${result.ok} ` +
+      `detail=${JSON.stringify(result.detail).slice(0, 200)}`
     );
     return res.json({
       ok: result.ok,
@@ -762,6 +767,15 @@ api.post('/settings/sms/test', requireAuth('admin'), ah(async (req, res) => {
       detail: `exception during ${phase}: ${e?.name ?? 'Error'}: ${e?.message ?? String(err)}`,
     });
   }
+}));
+
+// Reset endpoint — wipes every sms.* row from the settings table so the
+// hardcoded defaults in config.ts take over. Use when the DB-saved
+// endpoint URL or key is wrong and you just want a clean slate.
+api.post('/settings/sms/reset', requireAuth('admin'), ah(async (_req, res) => {
+  const { query } = await import('../db/pool.js');
+  const r = await query(`DELETE FROM settings WHERE key LIKE 'sms.%'`);
+  res.json({ ok: true, deleted_rows: r.rowCount ?? 0 });
 }));
 
 // Debug endpoint — shows what the SMS dispatcher will actually use,
