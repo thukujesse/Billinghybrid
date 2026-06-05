@@ -1,63 +1,75 @@
 /**
- * Bytwave SMS gateway client. Active only when BYTWAVE_API_KEY is set;
- * otherwise the notification service logs instead of sending.
+ * Bytewave Networks SMS gateway client.
  *
- * Bytwave's HTTP API is configurable here in case the path or payload
- * shape varies across their docs versions — set BYTWAVE_ENDPOINT to the
- * full URL and BYTWAVE_PAYLOAD_FORMAT to 'json' (default) or 'form'.
- * Default request body: { sender_id, mobile, message } as JSON with
- * Authorization: Bearer <key>.
+ * Spec (from https://portal.bytewavenetworks.com/api/http/sms/send docs):
+ *   - POST /api/http/sms/send
+ *   - Content-Type: application/json
+ *   - Accept: application/json
+ *   - NO Authorization header — the api_token rides in the JSON body
+ *   - JSON body shape:
+ *       { api_token, recipient, sender_id, type: "plain", message }
+ *   - Response:
+ *       success → { status: "success", data: "..." }
+ *       error   → { status: "error",   message: "..." }
  *
- * If your Bytwave account uses a different envelope, override via env
- * vars or adjust the buildPayload + parseResponse functions below.
+ * Note: their auth scheme (token in body) is unusual but matches their
+ * published examples verbatim. Don't switch to Bearer — it'll 401.
  */
 import { getSmsConfig } from '../settings/service.js';
+import { config } from '../../config.js';
 
 interface BytwaveResponse {
   ok: boolean;
   detail: string;
 }
 
-function buildPayload(
-  to: string, message: string,
-  cfg: { senderId: string; payloadFormat: 'json' | 'form' }
-): { body: string; contentType: string } {
-  const fields: Record<string, string> = {
-    sender_id: cfg.senderId,
-    mobile: to,
-    message,
-  };
-  if (cfg.payloadFormat === 'form') {
-    const usp = new URLSearchParams(fields);
-    return { body: usp.toString(), contentType: 'application/x-www-form-urlencoded' };
-  }
-  return { body: JSON.stringify(fields), contentType: 'application/json' };
-}
-
-function parseResponse(httpOk: boolean, status: number, json: any): BytwaveResponse {
-  // Bytwave commonly returns either { status: 'success', ... } or
-  // { code: 200, message: 'Sent', ... }. Treat HTTP 2xx as success unless
-  // the body explicitly flags failure. Keep the detail human-readable
-  // so the operator log line is useful.
-  if (!httpOk) return { ok: false, detail: `bytwave error ${status}: ${json?.message ?? 'unknown'}` };
-  const explicitFail = json?.status === 'error' || json?.status === 'failed' || json?.success === false;
-  if (explicitFail) return { ok: false, detail: json?.message ?? json?.error ?? 'rejected' };
-  return { ok: true, detail: json?.message ?? json?.status ?? 'sent' };
-}
-
 export async function sendBytwaveSms(to: string, message: string): Promise<BytwaveResponse> {
   const cfg = (await getSmsConfig()).bytwave;
-  if (!cfg.apiKey) return { ok: false, detail: 'bytwave not configured' };
-  const { body, contentType } = buildPayload(to, message, cfg);
-  const res = await fetch(cfg.endpoint, {
-    method: 'POST',
-    headers: {
-      'Content-Type': contentType,
-      'Accept': 'application/json',
-      'Authorization': `Bearer ${cfg.apiKey}`,
-    },
-    body,
-  });
-  const json = await res.json().catch(() => ({}));
-  return parseResponse(res.ok, res.status, json);
+  if (!cfg.apiKey) return { ok: false, detail: 'bytwave not configured (no api_token)' };
+
+  // Bytewave requires sender_id and rejects without one. If the operator
+  // hasn't set one, fall back to first 11 chars of the brand name so the
+  // send doesn't silently fail at the gateway.
+  const senderId = cfg.senderId || config.brandName.slice(0, 11);
+
+  const payload = {
+    api_token: cfg.apiKey,
+    recipient: to,
+    sender_id: senderId,
+    type: 'plain' as const,
+    message,
+  };
+
+  let res: Response;
+  try {
+    res = await fetch(cfg.endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    return { ok: false, detail: `network: ${(err as Error).message}` };
+  }
+
+  const json = await res.json().catch(() => ({} as any));
+
+  // Bytewave's own envelope wins over the HTTP status — they sometimes
+  // return 200 with status:"error" (validation rejections).
+  if (json?.status === 'error') {
+    return { ok: false, detail: json.message ?? 'rejected (no message)' };
+  }
+  if (json?.status === 'success') {
+    const data = typeof json.data === 'string'
+      ? json.data
+      : JSON.stringify(json.data ?? {}).slice(0, 120);
+    return { ok: true, detail: data || 'sent' };
+  }
+  // No status envelope — fall back to HTTP code.
+  if (!res.ok) {
+    return { ok: false, detail: `http ${res.status}: ${json?.message ?? JSON.stringify(json).slice(0, 120) ?? 'unknown'}` };
+  }
+  return { ok: true, detail: 'sent (no envelope)' };
 }

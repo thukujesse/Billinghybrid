@@ -60,9 +60,10 @@ export const config = {
     },
   },
   sms: {
-    // Which provider to dispatch SMS through. 'africastalking' (default —
-    // backwards compatible) or 'bytwave'. Set via SMS_PROVIDER env var.
-    provider: (process.env.SMS_PROVIDER ?? 'africastalking') as 'africastalking' | 'bytwave',
+    // Which provider to dispatch SMS through. Default is 'bytwave' since
+    // Bytewave Networks is the active shared-tenant provider; flip to
+    // 'africastalking' via SMS_PROVIDER env var or the /settings UI.
+    provider: (process.env.SMS_PROVIDER ?? 'bytwave') as 'africastalking' | 'bytwave',
     // Africa's Talking creds.
     username: process.env.AT_USERNAME ?? 'sandbox',
     apiKey: process.env.AT_API_KEY ?? '',
@@ -84,7 +85,7 @@ export const config = {
       // it varies by version of their docs — try /messages first, fall
       // back via /settings UI override if 404.
       endpoint: process.env.BYTWAVE_ENDPOINT
-        ?? 'https://portal.bytewavenetworks.com/api/http/messages',
+        ?? 'https://portal.bytewavenetworks.com/api/http/sms/send',
       senderId: process.env.BYTWAVE_SENDER_ID ?? '',
       payloadFormat: (process.env.BYTWAVE_PAYLOAD_FORMAT ?? 'json') as 'json' | 'form',
     },
