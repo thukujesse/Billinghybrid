@@ -736,6 +736,13 @@ api.post('/settings/sms/test', requireAuth('admin'), ah(async (req, res) => {
       const { sendSms } = await import('../domains/notifications/africastalking.js');
       result = await sendSms(normalized, text);
     }
+    // Mirror the result to the API log so the operator can confirm
+    // outcome from Render's log stream even when the dashboard toast
+    // gets dismissed or the browser network tab is closed.
+    console.log(
+      `[sms-test] provider=${smsCfg.provider} to=${normalized} ` +
+      `ok=${result.ok} detail=${JSON.stringify(result.detail).slice(0, 200)}`
+    );
     return res.json({
       ok: result.ok,
       provider: smsCfg.provider,
