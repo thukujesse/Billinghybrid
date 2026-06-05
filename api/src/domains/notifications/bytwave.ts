@@ -47,12 +47,20 @@ export async function sendBytwaveSms(to: string, message: string): Promise<Bytwa
   const tryRequest = async (mode: 'post' | 'get'): Promise<BytwaveResponse> => {
     let res: Response;
     try {
+      // Send an explicit User-Agent. Node 18+'s undici default is bare
+      // "undici/x.y" which some SMS gateways (Bytewave included) appear
+      // to either block at nginx or route to a 404 for fingerprinting
+      // reasons. A "normal" browser-style UA reliably reaches the route.
+      const commonHeaders = {
+        'User-Agent': `${config.brandName} JTM-Billing/1.0 (+https://${config.portal.host})`,
+        'Accept': 'application/json',
+      };
       if (mode === 'post') {
         res = await fetch(cfg.endpoint, {
           method: 'POST',
           headers: {
+            ...commonHeaders,
             'Content-Type': 'application/json',
-            'Accept': 'application/json',
           },
           body: JSON.stringify(payload),
         });
@@ -67,7 +75,7 @@ export async function sendBytwaveSms(to: string, message: string): Promise<Bytwa
         const url = cfg.endpoint + (cfg.endpoint.includes('?') ? '&' : '?') + qs;
         res = await fetch(url, {
           method: 'GET',
-          headers: { 'Accept': 'application/json' },
+          headers: commonHeaders,
         });
       }
     } catch (err) {
