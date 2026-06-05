@@ -40,88 +40,59 @@ export async function sendBytwaveSms(to: string, message: string): Promise<Bytwa
     message,
   };
 
-  // First try POST as the docs specify. If we get a 404 or other
-  // non-2xx, fall back to GET with query string — the docs publish a
-  // GET example as a valid alternative, and Laravel apps sometimes
-  // only register one of the two methods on the route.
-  const tryRequest = async (mode: 'post' | 'get'): Promise<BytwaveResponse> => {
-    let res: Response;
-    try {
-      // Send an explicit User-Agent. Node 18+'s undici default is bare
-      // "undici/x.y" which some SMS gateways (Bytewave included) appear
-      // to either block at nginx or route to a 404 for fingerprinting
-      // reasons. A "normal" browser-style UA reliably reaches the route.
-      const commonHeaders = {
+  // Bytewave's live deployment 404s on POST despite their docs publishing
+  // a POST example. Their working API is GET-only. URL-encode every value
+  // EXCEPT the api_token's '|' separator — URLSearchParams encodes pipe
+  // to %7C which Bytewave's token parser doesn't decode, so we build the
+  // query string manually to match the docs example verbatim.
+  const enc = (v: string) => encodeURIComponent(v);
+  const qsParts = [
+    `recipient=${enc(to)}`,
+    `sender_id=${enc(senderId)}`,
+    `message=${enc(message)}`,
+    `type=plain`,
+    // api_token last and not URL-encoded so '|' stays raw
+    `api_token=${cfg.apiKey}`,
+  ];
+  const url = cfg.endpoint + (cfg.endpoint.includes('?') ? '&' : '?') + qsParts.join('&');
+
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: 'GET',
+      headers: {
+        // Explicit UA so Bytewave's nginx doesn't fingerprint undici and
+        // route to a 404. JTM brand + portal host gives them something
+        // to log if they ever want to track usage.
         'User-Agent': `${config.brandName} JTM-Billing/1.0 (+https://${config.portal.host})`,
         'Accept': 'application/json',
-      };
-      if (mode === 'post') {
-        res = await fetch(cfg.endpoint, {
-          method: 'POST',
-          headers: {
-            ...commonHeaders,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(payload),
-        });
-      } else {
-        const qs = new URLSearchParams({
-          api_token: cfg.apiKey,
-          recipient: to,
-          sender_id: senderId,
-          type: 'plain',
-          message,
-        }).toString();
-        const url = cfg.endpoint + (cfg.endpoint.includes('?') ? '&' : '?') + qs;
-        res = await fetch(url, {
-          method: 'GET',
-          headers: commonHeaders,
-        });
-      }
-    } catch (err) {
-      return { ok: false, detail: `network[${mode}]: ${(err as Error).message}` };
-    }
-
-    // Read body as TEXT first so empty / HTML / non-JSON responses still
-    // give us SOMETHING useful in the detail. Then try JSON parse.
-    const text = await res.text().catch(() => '');
-    let json: any = null;
-    try { json = text ? JSON.parse(text) : null; } catch {/* not json */}
-
-    if (json?.status === 'error') {
-      return { ok: false, detail: `[${mode}] ${json.message ?? 'rejected (no message)'}` };
-    }
-    if (json?.status === 'success') {
-      const data = typeof json.data === 'string'
-        ? json.data
-        : JSON.stringify(json.data ?? {}).slice(0, 120);
-      return { ok: true, detail: `[${mode}] ${data || 'sent'}` };
-    }
-    // No envelope — include first 200 chars of body so the operator can
-    // see whether Bytewave returned HTML (Laravel 404 page), an unknown
-    // JSON shape, or nothing.
-    const bodyPreview = text.slice(0, 200).replace(/\s+/g, ' ');
-    if (!res.ok) {
-      return {
-        ok: false,
-        detail: `[${mode}] http ${res.status} ${res.statusText || ''}: ${bodyPreview || '(empty body)'}`,
-      };
-    }
-    return { ok: true, detail: `[${mode}] ${bodyPreview || 'sent (no envelope)'}` };
-  };
-
-  const postResult = await tryRequest('post');
-  // POST worked OR failed in a way that's not 404 → return that. Only
-  // try GET when POST returns 404 specifically (route not registered).
-  if (postResult.ok || !postResult.detail.includes('http 404')) {
-    return postResult;
+      },
+    });
+  } catch (err) {
+    return { ok: false, detail: `network: ${(err as Error).message}` };
   }
-  const getResult = await tryRequest('get');
-  // If GET succeeded, return it. Otherwise return both detail strings
-  // so the operator can see both failures.
-  if (getResult.ok) return getResult;
-  return {
-    ok: false,
-    detail: `POST: ${postResult.detail} | GET: ${getResult.detail}`,
-  };
+
+  // Read body as TEXT first so empty / HTML responses still surface
+  // SOMETHING useful in the detail.
+  const text = await res.text().catch(() => '');
+  let json: any = null;
+  try { json = text ? JSON.parse(text) : null; } catch {/* not json */}
+
+  if (json?.status === 'error') {
+    return { ok: false, detail: json.message ?? 'rejected (no message)' };
+  }
+  if (json?.status === 'success') {
+    const data = typeof json.data === 'string'
+      ? json.data
+      : JSON.stringify(json.data ?? {}).slice(0, 120);
+    return { ok: true, detail: data || 'sent' };
+  }
+  const bodyPreview = text.slice(0, 200).replace(/\s+/g, ' ');
+  if (!res.ok) {
+    return {
+      ok: false,
+      detail: `http ${res.status} ${res.statusText || ''}: ${bodyPreview || '(empty body)'}`,
+    };
+  }
+  return { ok: true, detail: bodyPreview || 'sent (no envelope)' };
 }
