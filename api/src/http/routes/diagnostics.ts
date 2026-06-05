@@ -78,13 +78,4 @@ export function registerDiagnosticsRoutes(api: Router): void {
     const hours = req.query.hours ? Math.min(Number(req.query.hours), 168) : 24;
     res.json(await events.recentSummary(hours));
   }));
-
-  // Admin: most recent failed portal events — drives the dashboard
-  // "needs attention" panel. Each row clicks through to /diagnostics
-  // with the right ?mac= or ?phone= already filled in.
-  api.get('/admin/diagnostics/recent-failures', requireAuth('admin', 'staff'), ah(async (req, res) => {
-    const hours = req.query.hours ? Math.min(Number(req.query.hours), 168) : 24;
-    const limit = req.query.limit ? Math.min(Number(req.query.limit), 50) : 5;
-    res.json(await events.recentFailures(hours, limit));
-  }));
 }
