@@ -179,12 +179,7 @@ export default function HotspotUsers() {
                   )}
                 </td>
                 <td style={{ fontSize: 12 }}>{relative(d.last_seen)}</td>
-                <td style={{ display: 'flex', gap: 6 }}>
-                  <a
-                    href={`/diagnostics?mac=${encodeURIComponent(d.mac)}`}
-                    title="View captive-portal trace for this MAC"
-                    style={{ fontSize: 11, padding: '4px 10px', border: '1px solid var(--border, #e2e8f0)', borderRadius: 6, textDecoration: 'none', color: 'inherit' }}
-                  >Trace</a>
+                <td>
                   {isLive && (
                     <button onClick={() => revoke(d.mac)} className="ghost" style={{ fontSize: 11, padding: '4px 10px' }}>Revoke</button>
                   )}
