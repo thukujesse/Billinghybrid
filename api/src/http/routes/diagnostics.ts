@@ -87,4 +87,86 @@ export function registerDiagnosticsRoutes(api: Router): void {
     const limit = req.query.limit ? Math.min(Number(req.query.limit), 50) : 5;
     res.json(await events.recentFailures(hours, limit));
   }));
+
+  // Admin: end-to-end data-state probe for a MAC or phone. Surfaces:
+  //   - whether the active_devices row exists for that MAC (and its source)
+  //   - whether the hotspot_purchases row exists for that phone+MAC and its status
+  //   - whether the portal_events table exists at all (catches migration-not-run cases)
+  //
+  // Designed so the operator can answer "is this customer's payment recorded
+  // and the grant materialized?" in one HTTP call when diagnostics shows
+  // nothing helpful. The trace timeline is great for chronology; this is the
+  // current-state snapshot.
+  api.get('/admin/diagnostics/probe', requireAuth('admin', 'staff'), ah(async (req, res) => {
+    const { query } = await import('../../db/pool.js');
+    const mac = typeof req.query.mac === 'string' ? req.query.mac : null;
+    const phone = typeof req.query.phone === 'string' ? req.query.phone : null;
+    if (!mac && !phone) return res.status(400).json({ error: 'pass mac or phone' });
+
+    // Normalize using the same helpers the rest of the system uses.
+    const { normalizeMac } = await import('../../domains/hotspotDevices/service.js');
+    const { normalizeMsisdn } = await import('../../domains/payments/daraja.js');
+    const normMac = mac ? normalizeMac(mac) : null;
+    const normPhone = phone ? safeNormalize(phone, normalizeMsisdn) : null;
+
+    // Migration check — portal_events not existing is a critical operator signal.
+    const tableCheck = await query<{ exists: boolean }>(
+      `SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'portal_events') AS exists`
+    );
+    const portalEventsExists = tableCheck.rows[0]?.exists ?? false;
+
+    const activeDevice = normMac
+      ? (await query(
+          `SELECT mac, expires_at, source, phone, purchase_id,
+                  (expires_at > now()) AS live, last_seen
+             FROM active_devices WHERE mac = $1`,
+          [normMac]
+        )).rows[0] ?? null
+      : null;
+
+    const recentPurchases = normPhone
+      ? (await query(
+          `SELECT id, checkout_request_id, status, mac_address, amount_kes,
+                  validity_seconds, completed_at, failure_reason, receipt, created_at
+             FROM hotspot_purchases
+            WHERE phone = $1
+            ORDER BY created_at DESC LIMIT 5`,
+          [normPhone]
+        )).rows
+      : [];
+
+    // Anything for this MAC in hotspot_purchases regardless of phone? Catches
+    // cases where the MAC was captured but never flipped to status='success'.
+    const purchasesByMac = normMac
+      ? (await query(
+          `SELECT id, checkout_request_id, status, phone, validity_seconds, completed_at, created_at
+             FROM hotspot_purchases
+            WHERE LOWER(mac_address) = $1
+            ORDER BY created_at DESC LIMIT 5`,
+          [normMac]
+        )).rows
+      : [];
+
+    res.json({
+      input: { mac, phone },
+      normalized: { mac: normMac, phone: normPhone },
+      portal_events_table_exists: portalEventsExists,
+      active_device: activeDevice,
+      recent_purchases_by_phone: recentPurchases,
+      recent_purchases_by_mac: purchasesByMac,
+      hint: !portalEventsExists
+        ? 'portal_events table is MISSING — migration 037 did not run. Check the deploy logs for migration errors.'
+        : !activeDevice && normMac
+        ? 'no active_devices row for this MAC. Check recent_purchases_by_mac — if there are status=success purchases, the trigger from migration 021 may have failed.'
+        : activeDevice && !activeDevice.live
+        ? 'active_devices row exists but expired. Customer needs to repay.'
+        : activeDevice
+        ? 'active_devices row is live — MikroTik RADIUS auth should accept this MAC.'
+        : 'pass mac to inspect device state.',
+    });
+  }));
+}
+
+function safeNormalize<T>(input: string, fn: (s: string) => T): T | null {
+  try { return fn(input); } catch { return null; }
 }
