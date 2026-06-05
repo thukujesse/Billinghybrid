@@ -694,14 +694,17 @@ api.post('/settings/sms/test', requireAuth('admin'), ah(async (req, res) => {
     phone: z.string().min(7),
     message: z.string().max(160).optional(),
   }), req.body);
-  // Use notify() so the test goes through the exact same dispatcher path
-  // as production traffic — picks the configured provider, applies the
-  // simulation fallback if creds are missing.
+  // Normalize Kenyan local-format input (0748..., 7488..., +254...) to
+  // bare E.164 (2547...) which is what every SMS gateway expects.
+  // Production code already runs through normalizeMsisdn at customer
+  // create time; the test endpoint takes raw input so we do it here.
+  const { normalizeMsisdn } = await import('../domains/payments/daraja.js');
+  const normalized = normalizeMsisdn(body.phone);
   const { notify } = await import('../domains/notifications/service.js');
   const text = body.message ?? `Test SMS from ${(await settings.getSmsConfigPublic()).provider} via JTM at ${new Date().toISOString()}`;
   try {
-    await notify('sms', body.phone, text);
-    res.json({ ok: true, sent_to: body.phone, message: text });
+    await notify('sms', normalized, text);
+    res.json({ ok: true, sent_to: normalized, message: text });
   } catch (err) {
     res.status(500).json({ ok: false, error: (err as Error).message });
   }

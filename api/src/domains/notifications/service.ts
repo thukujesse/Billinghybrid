@@ -10,6 +10,7 @@
 import { config } from '../../config.js';
 import { sendSms } from './africastalking.js';
 import { sendBytwaveSms } from './bytwave.js';
+import { getSmsConfig } from '../settings/service.js';
 import { sendWhatsApp, sendWhatsAppTemplate } from './whatsapp.js';
 import { sendTelegram } from './telegram.js';
 import { sendEmail } from './email.js';
@@ -58,19 +59,27 @@ export async function notify(
 ): Promise<void> {
   // Failures never throw — a notification must not break the business flow
   // that triggered it.
-  if (channel === 'sms' && !config.sms.simulated) {
-    // Dispatch to the configured provider. Failure logged; never thrown
-    // (the calling business flow must not break because the SMS gateway
-    // had a moment).
-    try {
-      const r = config.sms.provider === 'bytwave'
-        ? await sendBytwaveSms(to, message)
-        : await sendSms(to, message);
-      console.log(`[notify:sms->${config.sms.provider}] ${to}: ${r.ok ? r.detail : 'FAILED ' + r.detail}`);
-    } catch (err) {
-      console.error(`[notify:sms->${config.sms.provider}] failed for ${to}:`, err);
+  if (channel === 'sms') {
+    // Resolve provider + creds from the DB-backed settings (admin can
+    // change via /settings without a redeploy). Only fall back to the
+    // simulation log when the active provider has no API key configured
+    // anywhere — env vars are checked inside getSmsConfig() too.
+    const smsCfg = await getSmsConfig();
+    const apiKey = smsCfg.provider === 'bytwave'
+      ? smsCfg.bytwave.apiKey
+      : smsCfg.africastalking.apiKey;
+    if (apiKey) {
+      try {
+        const r = smsCfg.provider === 'bytwave'
+          ? await sendBytwaveSms(to, message)
+          : await sendSms(to, message);
+        console.log(`[notify:sms->${smsCfg.provider}] ${to}: ${r.ok ? r.detail : 'FAILED ' + r.detail}`);
+      } catch (err) {
+        console.error(`[notify:sms->${smsCfg.provider}] failed for ${to}:`, err);
+      }
+      return;
     }
-    return;
+    // No key — fall through to the simulation log line below.
   }
   if (channel === 'whatsapp' && !config.whatsapp.simulated) {
     try {
