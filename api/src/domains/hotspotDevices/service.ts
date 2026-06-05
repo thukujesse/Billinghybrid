@@ -72,41 +72,16 @@ export function normalizeMac(raw: string | null | undefined): string | null {
  */
 export async function lookup(rawMac: string): Promise<LookupResult> {
   const mac = normalizeMac(rawMac);
-  if (!mac) {
-    void emitPortalEvent({
-      type: 'lookup_miss', mac: rawMac ?? null, success: false,
-      reason: 'invalid_mac', detail: { raw: (rawMac ?? '').slice(0, 32) },
-    });
-    return { active: false };
-  }
+  if (!mac) return { active: false };
   const r = await query<ActiveDevice>(
     `SELECT * FROM active_devices WHERE mac = $1 AND expires_at > now()`,
     [mac]
   );
   const dev = r.rows[0];
-  if (!dev) {
-    // Diagnose WHY the miss happened — check if there's an expired row,
-    // or no row at all. Critical signal: post-payment "miss" usually means
-    // the trigger didn't fire (purchase had no mac_address) OR the row
-    // was inserted with a different MAC format than what MikroTik sends.
-    const expired = await query<{ expires_at: string; source: string; phone: string | null }>(
-      `SELECT expires_at, source, phone FROM active_devices WHERE mac = $1 LIMIT 1`,
-      [mac]
-    );
-    void emitPortalEvent({
-      type: 'lookup_miss', mac, success: false,
-      reason: expired.rows[0] ? 'expired' : 'no_row',
-      detail: expired.rows[0] ?? { hint: 'no active_devices row for this MAC' },
-    });
-    return { active: false };
-  }
+  if (!dev) return { active: false };
   // Touch last_seen so admin "recently active" lists are useful.
   query(`UPDATE active_devices SET last_seen = now() WHERE mac = $1`, [mac]).catch(() => {});
   const secondsRemaining = Math.max(0, Math.floor((new Date(dev.expires_at).getTime() - Date.now()) / 1000));
-  void emitPortalEvent({
-    type: 'grant_issued', mac, phone: dev.phone, success: true,
-    detail: { source: dev.source, hit_kind: 'lookup', seconds_remaining: secondsRemaining },
-  });
   return {
     active: true,
     username: mac,
