@@ -375,13 +375,15 @@ export async function completePurchase(input: {
   // Pull out of the transaction so we can call setServiceStatus (which has its
   // own transactions) for renew-flow purchases.
   const r = await query<{
-    id: string; plan_id: string; phone: string;
+    id: string; plan_id: string; phone: string; amount_kes: number;
     validity_days: number;
     speed_down_kbps: number | null; speed_up_kbps: number | null;
     status: string;
     service_id: string | null;
+    wallet_topup_customer_id: string | null;
   }>(
-    `SELECT hp.id, hp.plan_id, hp.phone, hp.status, hp.service_id,
+    `SELECT hp.id, hp.plan_id, hp.phone, hp.amount_kes, hp.status,
+            hp.service_id, hp.wallet_topup_customer_id,
             p.validity_days, p.speed_down_kbps, p.speed_up_kbps
        FROM hotspot_purchases hp
        JOIN plans p ON p.id = hp.plan_id
@@ -398,6 +400,33 @@ export async function completePurchase(input: {
         WHERE id=$1`,
       [row.id, input.failureReason ?? 'STK push rejected']
     );
+    return;
+  }
+
+  // Wallet top-up flow: credit the customer's balance instead of
+  // activating a service. wallet_topup_customer_id is set by
+  // wallet.initWalletTopup() on the originating STK push.
+  if (row.wallet_topup_customer_id) {
+    await query(
+      `UPDATE hotspot_purchases SET status='success', receipt=$2, completed_at=now()
+        WHERE id=$1`,
+      [row.id, input.receipt ?? null]
+    );
+    const { creditWalletFromPurchase } = await import('../customers/wallet.js');
+    try {
+      await creditWalletFromPurchase({
+        customerId: row.wallet_topup_customer_id,
+        amountKes: row.amount_kes,
+        purchaseId: row.id,
+        receipt: input.receipt ?? null,
+      });
+    } catch (err) {
+      // Money landed in M-Pesa but ledger write failed — log loudly.
+      // The purchase row is the source of truth; an admin can re-trigger
+      // the credit by clearing customer_wallet_txns.purchase_id and
+      // re-running creditWalletFromPurchase.
+      console.error('[wallet] credit from purchase failed:', (err as Error).message);
+    }
     return;
   }
 
