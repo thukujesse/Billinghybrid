@@ -9,12 +9,13 @@
  *       error   → { status: "error",   message: "..." }
  *
  * Deployment quirks discovered empirically:
- *   - Their nginx 404s requests with non-curl User-Agents AND application/json
- *     Content-Type. A curl/* UA + form-urlencoded body reliably reaches Laravel.
- *   - api_token contains '|' which URLSearchParams encodes to %7C; their
- *     parser doesn't decode it, so we splice the token in raw at the end.
- *   - sender_id must be registered + approved in your Bytewave portal first
- *     (we default to "HUBNET" which is the configured shared-tenant sender).
+ *   - Their nginx 404s requests with browser-like User-Agents — must send
+ *     a curl/* UA (or similar) to reach the Laravel app at all.
+ *   - Form-urlencoded bodies reach Laravel but $request->all() returns
+ *     empty for this route, so validation fails with "recipient required"
+ *     even when the body has it. JSON body is what their parser reads.
+ *   - sender_id must be registered + approved in your Bytewave portal
+ *     (default "HUBNET" — the configured shared-tenant sender).
  */
 import { getSmsConfig } from '../settings/service.js';
 import { config } from '../../config.js';
@@ -30,29 +31,28 @@ export async function sendBytwaveSms(to: string, message: string): Promise<Bytwa
 
   const senderId = cfg.senderId || config.brandName.slice(0, 11);
 
-  // form-urlencoded body. Splice the api_token in raw (no URL encoding)
-  // so the '|' survives Bytewave's parser. Every other field gets
-  // encodeURIComponent treatment.
-  const enc = (v: string) => encodeURIComponent(v);
-  const bodyParts = [
-    `recipient=${enc(to)}`,
-    `sender_id=${enc(senderId)}`,
-    `message=${enc(message)}`,
-    `type=plain`,
-    `api_token=${cfg.apiKey}`,
-  ];
-  const body = bodyParts.join('&');
+  // Bytewave Laravel only parses JSON bodies on this endpoint — sending
+  // form-urlencoded reaches the route but $request->all() returns empty,
+  // so validation fails with "recipient required" even when the body
+  // clearly has it. Docs example uses JSON; matching that.
+  const body = JSON.stringify({
+    api_token: cfg.apiKey,
+    recipient: to,
+    sender_id: senderId,
+    type: 'plain',
+    message,
+  });
 
   let res: Response;
   try {
     res = await fetch(cfg.endpoint, {
       method: 'POST',
       headers: {
-        // curl-style UA bypasses Bytewave's nginx fingerprint that
-        // 404s "browser-like" UAs on this endpoint.
+        // curl-style UA — Bytewave's nginx 404s "browser-like" UAs on
+        // this endpoint regardless of content-type. curl/* sails through.
         'User-Agent': 'curl/8.0.0',
         'Accept': 'application/json',
-        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Type': 'application/json',
       },
       body,
     });
@@ -64,9 +64,10 @@ export async function sendBytwaveSms(to: string, message: string): Promise<Bytwa
   let json: any = null;
   try { json = text ? JSON.parse(text) : null; } catch {/* not json */}
 
-  // Redacted URL for diagnostics — useful when Bytewave validates the
-  // body and we want to see which fields the dispatcher actually sent.
-  const redactedBody = body.replace(/api_token=[^&]+/, 'api_token=<REDACTED>');
+  // Redacted body for diagnostics — useful when Bytewave validates and
+  // we want to see what the dispatcher actually sent. JSON now, so the
+  // regex matches the "api_token":"..." pattern instead of url-encoded.
+  const redactedBody = body.replace(/"api_token":"[^"]+"/, '"api_token":"<REDACTED>"');
 
   if (json?.status === 'error') {
     return {
