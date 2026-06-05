@@ -67,13 +67,24 @@ export const config = {
     username: process.env.AT_USERNAME ?? 'sandbox',
     apiKey: process.env.AT_API_KEY ?? '',
     senderId: process.env.AT_SENDER_ID ?? '',
-    // Bytwave creds. Endpoint is overridable because their docs versions
-    // sometimes route through different hosts (api.bytwave.co.ke,
-    // sms.bytwave.com, etc). Payload format is either JSON (default) or
-    // form-urlencoded depending on what your account expects.
+    // Bytwave (Bytewave Networks) creds. Multi-tenant is on the roadmap —
+    // for now these are the single shared-tenant defaults. DB settings
+    // (sms.bytwave.* keys) override these at runtime.
+    //
+    // SECURITY NOTE: hardcoding the API token here puts it in the git
+    // repo. Acceptable for a private-repo MVP, NOT for a public repo or
+    // after multi-tenant ships. When multi-tenant lands:
+    //   1) rotate this token in the Bytewave portal
+    //   2) store per-tenant tokens in a tenants table
+    //   3) blank the default below back to ''
     bytwave: {
-      apiKey: process.env.BYTWAVE_API_KEY ?? '',
-      endpoint: process.env.BYTWAVE_ENDPOINT ?? 'https://api.bytwave.co.ke/v1/sms/send',
+      apiKey: process.env.BYTWAVE_API_KEY
+        ?? '347|7QuqqfS6anwTyGNm32nt5McOCqcBqAjqjGqtnI6bfb239a36',
+      // Bytewave Networks' HTTP-API base. The actual SMS-send path under
+      // it varies by version of their docs — try /messages first, fall
+      // back via /settings UI override if 404.
+      endpoint: process.env.BYTWAVE_ENDPOINT
+        ?? 'https://portal.bytewavenetworks.com/api/http/messages',
       senderId: process.env.BYTWAVE_SENDER_ID ?? '',
       payloadFormat: (process.env.BYTWAVE_PAYLOAD_FORMAT ?? 'json') as 'json' | 'form',
     },

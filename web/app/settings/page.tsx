@@ -68,7 +68,7 @@ export default function SettingsPage() {
   const [smsForm, setSmsForm] = useState({
     provider: 'africastalking' as 'africastalking' | 'bytwave',
     atUsername: 'sandbox', atApiKey: '', atSenderId: '',
-    bytwaveApiKey: '', bytwaveEndpoint: 'https://api.bytwave.co.ke/v1/sms/send',
+    bytwaveApiKey: '', bytwaveEndpoint: 'https://portal.bytewavenetworks.com/api/http/messages',
     bytwaveSenderId: '', bytwavePayloadFormat: 'json' as 'json' | 'form',
   });
   const [smsSaving, setSmsSaving] = useState(false);
@@ -393,7 +393,7 @@ export default function SettingsPage() {
             <label>Endpoint URL</label>
             <input value={smsForm.bytwaveEndpoint}
               onChange={(e) => setSmsForm({ ...smsForm, bytwaveEndpoint: e.target.value })}
-              placeholder="https://api.bytwave.co.ke/v1/sms/send" />
+              placeholder="https://portal.bytewavenetworks.com/api/http/messages" />
           </div>
           <div>
             <label>Sender ID</label>
