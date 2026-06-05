@@ -1130,6 +1130,22 @@ api.post('/routers/:id/reprovision', requireAuth('admin', 'staff'), ah(async (re
   res.json(await routers.reprovisionRouter(req.params.id));
 }));
 
+// Lightweight re-push of just the captive HTML templates + walled-garden
+// entries. Doesn't touch bridge/pool/firewall — safe to run on live routers
+// with active users. Triggered automatically after global branding edits;
+// also exposed as a manual button on the routers page for re-syncing one
+// router after WiFi changes or to recover from a partial earlier failure.
+api.post('/routers/:id/sync-templates', requireAuth('admin', 'staff'), ah(async (req, res) => {
+  res.json(await routers.syncRouterTemplates(req.params.id));
+}));
+
+// Bulk sync — fans out to every reachable router (has tunnel IP) with
+// bounded concurrency. Returns per-router results so the UI can show
+// which routers succeeded vs failed in one pass.
+api.post('/admin/routers/sync-all-templates', requireAuth('admin', 'staff'), ah(async (_req, res) => {
+  res.json(await routers.syncAllRouterTemplates());
+}));
+
 // Build a RouterOS script that turns a LAN interface into a JTM hotspot.
 // Detect router model + interfaces over the tunnel. Powers the wizard's
 // port-selection step so the admin doesn't have to type interface names.

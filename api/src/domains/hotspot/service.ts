@@ -249,6 +249,23 @@ export async function setGlobalBranding(input: {
   if (sets.length === 0) return getGlobalBranding();
   sets.push(`updated_at = now()`);
   await query(`UPDATE hotspot_branding SET ${sets.join(', ')} WHERE id = TRUE`, vals);
+
+  // Branding drives what the captive templates render — push the refreshed
+  // templates to every reachable router in the background. Fire-and-forget:
+  // the admin's PUT returns immediately, and per-router results show up in
+  // the routers page sync-status badges within ~5-10s. A failed sync on
+  // some routers doesn't roll back the branding change.
+  void (async () => {
+    try {
+      const routerSvc = await import('../routers/service.js');
+      const { results, total } = await routerSvc.syncAllRouterTemplates();
+      const okCount = results.filter((r) => r.ok).length;
+      console.log(`[branding] templates fanned out to ${okCount}/${total} routers`);
+    } catch (err) {
+      console.error('[branding] template fan-out failed:', (err as Error).message);
+    }
+  })();
+
   return getGlobalBranding();
 }
 
