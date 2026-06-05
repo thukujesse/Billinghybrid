@@ -111,7 +111,7 @@ export async function traceForMac(mac: string, limit = 200): Promise<TraceRow[]>
       SELECT 'portal_event'::text AS source,
              id::text, created_at, event_type,
              mac, phone, success, reason, detail,
-             source_ip::text AS source_ip, user_agent,
+             source_ip, user_agent,
              router_id::text AS router_id, tenant
         FROM portal_events
        WHERE mac = $1
@@ -128,7 +128,7 @@ export async function traceForMac(mac: string, limit = 200): Promise<TraceRow[]>
                'fingerprint_match', fingerprint_match,
                'notes', notes
              ) AS detail,
-             source_ip::text AS source_ip, user_agent,
+             source_ip, user_agent,
              NULL::text AS router_id, NULL::text AS tenant
         FROM auto_reconnect_log
        WHERE mac = $1
@@ -151,7 +151,7 @@ export async function traceForPhone(phone: string, limit = 200): Promise<TraceRo
       SELECT 'portal_event'::text AS source,
              id::text, created_at, event_type,
              mac, phone, success, reason, detail,
-             source_ip::text AS source_ip, user_agent,
+             source_ip, user_agent,
              router_id::text AS router_id, tenant
         FROM portal_events
        WHERE phone = $1
@@ -168,7 +168,7 @@ export async function traceForPhone(phone: string, limit = 200): Promise<TraceRo
                'fingerprint_match', fingerprint_match,
                'notes', notes
              ) AS detail,
-             source_ip::text AS source_ip, user_agent,
+             source_ip, user_agent,
              NULL::text AS router_id, NULL::text AS tenant
         FROM auto_reconnect_log
        WHERE phone = $1
