@@ -3,17 +3,18 @@
  *
  * Spec (from https://portal.bytewavenetworks.com/api/http/sms/send docs):
  *   - POST /api/http/sms/send
- *   - Content-Type: application/json
- *   - Accept: application/json
- *   - NO Authorization header — the api_token rides in the JSON body
- *   - JSON body shape:
- *       { api_token, recipient, sender_id, type: "plain", message }
- *   - Response:
+ *   - JSON body: { api_token, recipient, sender_id, type: "plain", message }
+ *   - Response envelope:
  *       success → { status: "success", data: "..." }
  *       error   → { status: "error",   message: "..." }
  *
- * Note: their auth scheme (token in body) is unusual but matches their
- * published examples verbatim. Don't switch to Bearer — it'll 401.
+ * Deployment quirks discovered empirically:
+ *   - Their nginx 404s requests with non-curl User-Agents AND application/json
+ *     Content-Type. A curl/* UA + form-urlencoded body reliably reaches Laravel.
+ *   - api_token contains '|' which URLSearchParams encodes to %7C; their
+ *     parser doesn't decode it, so we splice the token in raw at the end.
+ *   - sender_id must be registered + approved in your Bytewave portal first
+ *     (we default to "HUBNET" which is the configured shared-tenant sender).
  */
 import { getSmsConfig } from '../settings/service.js';
 import { config } from '../../config.js';
@@ -27,57 +28,50 @@ export async function sendBytwaveSms(to: string, message: string): Promise<Bytwa
   const cfg = (await getSmsConfig()).bytwave;
   if (!cfg.apiKey) return { ok: false, detail: 'bytwave not configured (no api_token)' };
 
-  // Bytewave requires sender_id and rejects without one. If the operator
-  // hasn't set one, fall back to first 11 chars of the brand name so the
-  // send doesn't silently fail at the gateway.
   const senderId = cfg.senderId || config.brandName.slice(0, 11);
 
-  // Bytewave's live deployment 404s on POST despite their docs publishing
-  // a POST example. Their working API is GET-only. URL-encode every value
-  // EXCEPT the api_token's '|' separator — URLSearchParams encodes pipe
-  // to %7C which Bytewave's token parser doesn't decode, so we build the
-  // query string manually to match the docs example verbatim.
+  // form-urlencoded body. Splice the api_token in raw (no URL encoding)
+  // so the '|' survives Bytewave's parser. Every other field gets
+  // encodeURIComponent treatment.
   const enc = (v: string) => encodeURIComponent(v);
-  const qsParts = [
+  const bodyParts = [
     `recipient=${enc(to)}`,
     `sender_id=${enc(senderId)}`,
     `message=${enc(message)}`,
     `type=plain`,
-    // api_token last and not URL-encoded so '|' stays raw
     `api_token=${cfg.apiKey}`,
   ];
-  const url = cfg.endpoint + (cfg.endpoint.includes('?') ? '&' : '?') + qsParts.join('&');
+  const body = bodyParts.join('&');
 
   let res: Response;
   try {
-    res = await fetch(url, {
-      method: 'GET',
+    res = await fetch(cfg.endpoint, {
+      method: 'POST',
       headers: {
-        // Explicit UA so Bytewave's nginx doesn't fingerprint undici and
-        // route to a 404. JTM brand + portal host gives them something
-        // to log if they ever want to track usage.
-        'User-Agent': `${config.brandName} JTM-Billing/1.0 (+https://${config.portal.host})`,
+        // curl-style UA bypasses Bytewave's nginx fingerprint that
+        // 404s "browser-like" UAs on this endpoint.
+        'User-Agent': 'curl/8.0.0',
         'Accept': 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded',
       },
+      body,
     });
   } catch (err) {
     return { ok: false, detail: `network: ${(err as Error).message}` };
   }
 
-  // Read body as TEXT first so empty / HTML responses still surface
-  // SOMETHING useful in the detail.
   const text = await res.text().catch(() => '');
   let json: any = null;
   try { json = text ? JSON.parse(text) : null; } catch {/* not json */}
 
-  // Redact the api_token in the URL we log so the operator can spot
-  // typos / encoding issues without leaking the secret into log streams.
-  const redactedUrl = url.replace(/api_token=[^&]+/, 'api_token=<REDACTED>');
+  // Redacted URL for diagnostics — useful when Bytewave validates the
+  // body and we want to see which fields the dispatcher actually sent.
+  const redactedBody = body.replace(/api_token=[^&]+/, 'api_token=<REDACTED>');
 
   if (json?.status === 'error') {
     return {
       ok: false,
-      detail: `${json.message ?? 'rejected (no message)'} | url=${redactedUrl}`,
+      detail: `${json.message ?? 'rejected (no message)'} | sent body=${redactedBody}`,
     };
   }
   if (json?.status === 'success') {
@@ -90,7 +84,7 @@ export async function sendBytwaveSms(to: string, message: string): Promise<Bytwa
   if (!res.ok) {
     return {
       ok: false,
-      detail: `http ${res.status} ${res.statusText || ''}: ${bodyPreview || '(empty body)'} | url=${redactedUrl}`,
+      detail: `http ${res.status} ${res.statusText || ''}: ${bodyPreview || '(empty body)'} | sent body=${redactedBody}`,
     };
   }
   return { ok: true, detail: bodyPreview || 'sent (no envelope)' };

@@ -86,7 +86,7 @@ export const config = {
       // back via /settings UI override if 404.
       endpoint: process.env.BYTWAVE_ENDPOINT
         ?? 'https://portal.bytewavenetworks.com/api/http/sms/send',
-      senderId: process.env.BYTWAVE_SENDER_ID ?? '',
+      senderId: process.env.BYTWAVE_SENDER_ID ?? 'HUBNET',
       payloadFormat: (process.env.BYTWAVE_PAYLOAD_FORMAT ?? 'json') as 'json' | 'form',
     },
     // Without credentials for the SELECTED provider, SMS is logged rather
