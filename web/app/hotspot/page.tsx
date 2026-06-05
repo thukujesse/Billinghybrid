@@ -355,6 +355,24 @@ export default function HotspotPortal() {
       .then(setBrand)
       .catch(() => {/* fall through to hard-coded default */});
     loadPlans();
+
+    // Fire portal_load beacon for the operator diagnostics timeline. Best-
+    // effort — failures must never block the customer flow.
+    const macParam = q.get('mac') ?? null;
+    api('/portal/events', {
+      method: 'POST',
+      body: JSON.stringify({
+        type: 'portal_load',
+        mac: macParam,
+        tenant: tenant || undefined,
+        detail: {
+          mode,
+          mtik_error: q.get('error') || undefined,
+          has_link_login: !!q.get('link-login-only'),
+          orig: (q.get('link-orig') ?? '').slice(0, 200) || undefined,
+        },
+      }),
+    }).catch(() => {/* beacon failures are invisible by design */});
   }, []);
 
   // Status-mode enrichment: fetch plan name, voucher id, data cap, bytes
@@ -492,7 +510,22 @@ export default function HotspotPortal() {
       }
 
       // Step 4: nothing matched — show payment UI.
-      if (!cancelled) setAutoCheck('unknown');
+      if (!cancelled) {
+        setAutoCheck('unknown');
+        // Beacon a lookup_miss so the operator timeline shows "we tried all
+        // tiers and still landed the customer on the payment UI". Lets
+        // them distinguish "customer paid then bounced" from "customer
+        // never reached us at all".
+        api('/portal/events', {
+          method: 'POST',
+          body: JSON.stringify({
+            type: 'lookup_miss',
+            mac: mtikParams.mac,
+            tenant: mtikParams.tenant || undefined,
+            detail: { reached_tier: 'manual_ui' },
+          }),
+        }).catch(() => {});
+      }
     })();
 
     return () => { cancelled = true; };

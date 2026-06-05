@@ -268,6 +268,7 @@ export default async function Dashboard() {
         <QuickActionTile href="/customers" icon="+" label="New PPPoE customer" description="Onboard a customer + service" />
         <QuickActionTile href="/users/hotspot" icon="◴" label="Hotspot users" description="Live grants + STK status" />
         <QuickActionTile href="/network" icon="▲" label="Network monitor" description="Routers + sessions + bandwidth" />
+        <QuickActionTile href="/diagnostics" icon="◎" label="Captive diagnostics" description="Trace MAC or phone through the portal" />
         <QuickActionTile href="/alerts" icon="!" label="Alerts" description={`${openAlerts.length} open`} />
         <QuickActionTile href="/reports" icon="$" label="Reports" description="Revenue + CSV exports" />
         <QuickActionTile href="/settings" icon="⚙" label="Settings" description="M-Pesa + SMS + branding" />

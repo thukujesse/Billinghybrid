@@ -4,6 +4,7 @@ import { badRequest, conflict, notFound } from '../../lib/errors.js';
 import { config } from '../../config.js';
 import { stkPush, normalizeMsisdn, parseCallback } from '../payments/daraja.js';
 import { isMpesaSimulated } from '../settings/service.js';
+import { emit as emitPortalEvent } from '../portal/events.js';
 
 export interface HotspotGrant {
   /** Username to pass to MikroTik hotspot login (typically = voucher code). */
@@ -38,7 +39,13 @@ export async function redeemVoucher(input: {
   // over WhatsApp lets multiple devices ride the same plan.
   const { normalizeMac } = await import('../hotspotDevices/service.js');
   const mac = normalizeMac(input.mac);
-  if (!mac) throw badRequest('device MAC required (captive portal must include ?mac=...)');
+  if (!mac) {
+    void emitPortalEvent({
+      type: 'voucher_redeem', mac: input.mac ?? null, success: false,
+      reason: 'no_mac', detail: { code_prefix: code.slice(0, 4) },
+    });
+    throw badRequest('device MAC required (captive portal must include ?mac=...)');
+  }
 
   return withTransaction(async (c) => {
     // Lock voucher row + load plan in one go.
@@ -61,10 +68,26 @@ export async function redeemVoucher(input: {
       [code]
     );
     const voucher = r.rows[0];
-    if (!voucher) throw notFound('voucher');
-    if (voucher.status !== 'unused') throw conflict(`voucher is ${voucher.status}`);
+    if (!voucher) {
+      void emitPortalEvent({
+        type: 'voucher_redeem', mac, success: false, reason: 'not_found',
+        detail: { code_prefix: code.slice(0, 4) },
+      });
+      throw notFound('voucher');
+    }
+    if (voucher.status !== 'unused') {
+      void emitPortalEvent({
+        type: 'voucher_redeem', mac, success: false, reason: voucher.status,
+        detail: { code_prefix: code.slice(0, 4), voucher_id: voucher.voucher_id, plan: voucher.plan_name },
+      });
+      throw conflict(`voucher is ${voucher.status}`);
+    }
     if (voucher.voucher_expires && new Date(voucher.voucher_expires) < new Date()) {
       await c.query(`UPDATE vouchers SET status='expired' WHERE id=$1`, [voucher.voucher_id]);
+      void emitPortalEvent({
+        type: 'voucher_redeem', mac, success: false, reason: 'expired',
+        detail: { code_prefix: code.slice(0, 4), voucher_id: voucher.voucher_id, plan: voucher.plan_name },
+      });
       throw conflict('voucher has expired');
     }
 
@@ -101,6 +124,19 @@ export async function redeemVoucher(input: {
       [mac, String(validitySeconds), rateLimit, validitySeconds]
     );
 
+    void emitPortalEvent({
+      type: 'voucher_redeem', mac, success: true,
+      detail: {
+        code_prefix: code.slice(0, 4),
+        voucher_id: voucher.voucher_id,
+        plan: voucher.plan_name,
+        validity_seconds: validitySeconds,
+      },
+    });
+    void emitPortalEvent({
+      type: 'grant_issued', mac, success: true,
+      detail: { source: 'voucher', plan: voucher.plan_name, validity_seconds: validitySeconds },
+    });
     return {
       username: mac,
       password: mac,
@@ -279,6 +315,18 @@ export async function initPurchase(input: {
     [checkoutRequestId, plan.id, phone, input.mac ?? null, amountKes, input.userAgent ?? null]
   );
 
+  void emitPortalEvent({
+    type: 'stk_init', mac: input.mac ?? null, phone, success: true,
+    userAgent: input.userAgent ?? null,
+    detail: {
+      checkout_request_id: checkoutRequestId,
+      plan_id: plan.id,
+      plan_name: plan.name,
+      amount_kes: amountKes,
+      simulated,
+    },
+  });
+
   return { checkoutRequestId, amountKes, customerMessage, simulated };
 }
 
@@ -400,6 +448,11 @@ export async function completePurchase(input: {
         WHERE id=$1`,
       [row.id, input.failureReason ?? 'STK push rejected']
     );
+    void emitPortalEvent({
+      type: 'stk_callback', mac: null, phone: row.phone, success: false,
+      reason: input.failureReason ?? 'rejected',
+      detail: { checkout_request_id: input.checkoutRequestId, purchase_id: row.id },
+    });
     return;
   }
 
@@ -412,6 +465,17 @@ export async function completePurchase(input: {
         WHERE id=$1`,
       [row.id, input.receipt ?? null]
     );
+    void emitPortalEvent({
+      type: 'stk_callback', phone: row.phone, success: true,
+      detail: {
+        checkout_request_id: input.checkoutRequestId,
+        purchase_id: row.id,
+        flow: 'wallet_topup',
+        amount_kes: row.amount_kes,
+        receipt: input.receipt ?? null,
+        customer_id: row.wallet_topup_customer_id,
+      },
+    });
     const { creditWalletFromPurchase } = await import('../customers/wallet.js');
     try {
       await creditWalletFromPurchase({
@@ -440,6 +504,17 @@ export async function completePurchase(input: {
         WHERE id=$1`,
       [row.id, input.receipt ?? null]
     );
+    void emitPortalEvent({
+      type: 'stk_callback', phone: row.phone, success: true,
+      detail: {
+        checkout_request_id: input.checkoutRequestId,
+        purchase_id: row.id,
+        flow: 'renew',
+        service_id: row.service_id,
+        amount_kes: row.amount_kes,
+        receipt: input.receipt ?? null,
+      },
+    });
     // Dynamic import to avoid circular dependency (customers/service.ts also
     // pushes radius things via this same callback path).
     const { setServiceStatus } = await import('../customers/service.js');
@@ -490,6 +565,20 @@ export async function completePurchase(input: {
         WHERE id=$1`,
       [row.id, username, validitySeconds, rateLimit, input.receipt ?? null]
     );
+  });
+  void emitPortalEvent({
+    type: 'stk_callback', phone: row.phone, success: true,
+    detail: {
+      checkout_request_id: input.checkoutRequestId,
+      purchase_id: row.id,
+      flow: 'guest_hotspot',
+      amount_kes: row.amount_kes,
+      receipt: input.receipt ?? null,
+    },
+  });
+  void emitPortalEvent({
+    type: 'grant_issued', phone: row.phone, success: true,
+    detail: { source: 'mpesa_hotspot', purchase_id: row.id, validity_days: row.validity_days },
   });
 }
 

@@ -49,6 +49,7 @@ import * as audit from '../domains/audit/service.js';
 import { registerNetworkRoutes } from './routes/network.js';
 import { registerWalletRoutes } from './routes/wallet.js';
 import { registerReportsRoutes } from './routes/reports.js';
+import { registerDiagnosticsRoutes } from './routes/diagnostics.js';
 
 export const api = Router();
 
@@ -59,6 +60,7 @@ export const api = Router();
 registerNetworkRoutes(api);
 registerWalletRoutes(api);
 registerReportsRoutes(api);
+registerDiagnosticsRoutes(api);
 
 // ------------------------------- Auth -------------------------------
 // Staff/admin password login.

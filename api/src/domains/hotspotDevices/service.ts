@@ -16,6 +16,7 @@ import { query, withTransaction } from '../../db/pool.js';
 import { badRequest, notFound } from '../../lib/errors.js';
 import { normalizeMsisdn } from '../payments/daraja.js';
 import { notify } from '../notifications/service.js';
+import { emit as emitPortalEvent } from '../portal/events.js';
 
 export interface ActiveDevice {
   mac: string;
@@ -135,6 +136,10 @@ export async function quickConnect(input: {
     if (!src) {
       const tokens = await import('./tokens.js');
       await tokens.logAttempt({ method: 'manual', outcome: 'no_match', mac, phone, ip: input.ip, userAgent: input.userAgent });
+      void emitPortalEvent({
+        type: 'quick_connect', mac, phone, success: false, reason: 'no_active_session',
+        sourceIp: input.ip, userAgent: input.userAgent,
+      });
       throw notFound('no active session for this phone — please pay first');
     }
 
@@ -160,6 +165,15 @@ export async function quickConnect(input: {
 
     const tokens = await import('./tokens.js');
     await tokens.logAttempt({ method: 'manual', outcome: 'success', mac, phone, ip: input.ip, userAgent: input.userAgent });
+    void emitPortalEvent({
+      type: 'quick_connect', mac, phone, success: true,
+      sourceIp: input.ip, userAgent: input.userAgent,
+      detail: { rebound_from_mac: src.mac === mac ? null : src.mac },
+    });
+    void emitPortalEvent({
+      type: 'grant_issued', mac, phone, success: true,
+      detail: { source: 'quick_connect', rebound_from_mac: src.mac === mac ? null : src.mac },
+    });
 
     // Fire-and-forget SMS so the legitimate customer notices misuse if any.
     // Failure here is non-fatal — the device is already connected.
@@ -229,6 +243,12 @@ export async function rebindStart(input: {
   // Fire-and-forget SMS; failure here shouldn't break the API call.
   notify('sms', phone, `HUB Wi-Fi: your code is ${code}. Valid for 5 minutes.`)
     .catch((e) => console.error('[rebind] sms failed:', e));
+
+  void emitPortalEvent({
+    type: 'rebind_start', mac, phone, success: true,
+    sourceIp: input.sourceIp, userAgent: input.userAgent,
+    detail: { otp_id: ins.rows[0].id },
+  });
 
   const last4 = phone.slice(-4);
   return {
@@ -318,6 +338,19 @@ export async function rebindVerify(input: {
       phone: src.phone!,
       mac: otp.new_mac,
       fingerprintHash: input.fingerprintHash ?? null,
+    });
+
+    void emitPortalEvent({
+      type: 'rebind_verify', mac: otp.new_mac, phone: otp.phone, success: true,
+      detail: { otp_id: otp.id, rebound_from_mac: src.mac, token_id: tok.tokenId },
+    });
+    void emitPortalEvent({
+      type: 'grant_issued', mac: otp.new_mac, phone: otp.phone, success: true,
+      detail: { source: 'rebind', rebound_from_mac: src.mac },
+    });
+    void emitPortalEvent({
+      type: 'token_mint', mac: otp.new_mac, phone: otp.phone, success: true,
+      detail: { token_id: tok.tokenId, trigger: 'rebind_verify' },
     });
 
     const secondsRemaining = Math.max(0, Math.floor((new Date(src.expires_at).getTime() - Date.now()) / 1000));
