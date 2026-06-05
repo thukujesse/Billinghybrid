@@ -161,17 +161,6 @@ export async function quickConnect(input: {
     const tokens = await import('./tokens.js');
     await tokens.logAttempt({ method: 'manual', outcome: 'success', mac, phone, ip: input.ip, userAgent: input.userAgent });
 
-    // Only SMS-alert when Quick Connect actually rebound the grant onto a
-    // DIFFERENT device. When src.mac === mac, the customer is just re-using
-    // Quick Connect from the same phone they already paid on — no security
-    // event, no SMS needed (otherwise every refresh / re-test spams them
-    // with a misleading "if it wasn't you, reply revoke" message).
-    if (src.mac !== mac) {
-      const last4 = mac.replace(/:/g, '').slice(-4);
-      notify('sms', phone, `HUB Wi-Fi: device ${last4} just connected using your number. If this wasn't you, reply to revoke.`)
-        .catch((e) => console.error('[quick-connect] sms notify failed:', e));
-    }
-
     const secondsRemaining = Math.max(0, Math.floor((new Date(src.expires_at).getTime() - Date.now()) / 1000));
     return {
       active: true,
