@@ -122,20 +122,50 @@ export default function SettingsPage() {
     if (!testPhone) return;
     setSmsTestSending(true);
     try {
-      const r = await api<{ ok: boolean; sent_to: string; message: string }>('/settings/sms/test', {
+      const r = await api<{
+        ok: boolean; provider: string; sent_to: string; message: string;
+        detail: string; simulated?: boolean;
+      }>('/settings/sms/test', {
         method: 'POST',
         body: JSON.stringify({ phone: testPhone }),
       });
+      // Surface the FULL provider response in the toast so the operator
+      // doesn't have to dig through Render logs to see why a send failed.
+      // For success: "via bytwave → sent · sent to 254..."
+      // For sim:     "SIMULATED — no API key set for bytwave"
+      // For fail:    "via bytwave → FAILED — bytwave error 401: invalid key"
+      const prefix = r.simulated ? 'SIMULATED' : `via ${r.provider}`;
+      const arrow  = r.ok ? '→ sent' : '→ FAILED';
       setToast({
         ok: r.ok,
-        msg: r.ok
-          ? `Test sent to ${r.sent_to} — check the phone and the API log for the [notify:sms->...] line.`
-          : `Test failed`,
+        msg: `${prefix} ${arrow} · ${r.detail}${r.ok ? ` · sent to ${r.sent_to}` : ''}`,
       });
     } catch (e: any) {
       setToast({ ok: false, msg: e.message });
     } finally {
       setSmsTestSending(false);
+    }
+  };
+
+  // One-tap "show me what's actually in the DB" helper. Pulls /debug and
+  // dumps to the toast so the operator can verify the saved key length
+  // without re-typing the secret.
+  const debugSms = async () => {
+    try {
+      const d = await api<{
+        active_provider: string; active_provider_key_set: boolean;
+        active_provider_key_length: number; will_simulate: boolean;
+        africastalking: { username: string; sender_id: string; api_key_set: boolean; api_key_length: number };
+        bytwave: { endpoint: string; sender_id: string; payload_format: string; api_key_set: boolean; api_key_length: number };
+      }>('/settings/sms/debug');
+      const lines = [
+        `Active: ${d.active_provider} (will ${d.will_simulate ? 'SIMULATE' : 'send'})`,
+        `AT key: ${d.africastalking.api_key_set ? `set (${d.africastalking.api_key_length} chars)` : 'NOT SET'} · sender: ${d.africastalking.sender_id || '—'}`,
+        `Bytwave key: ${d.bytwave.api_key_set ? `set (${d.bytwave.api_key_length} chars)` : 'NOT SET'} · ${d.bytwave.endpoint} · sender: ${d.bytwave.sender_id || '—'}`,
+      ];
+      setToast({ ok: !d.will_simulate, msg: lines.join(' · ') });
+    } catch (e: any) {
+      setToast({ ok: false, msg: e.message });
     }
   };
 
@@ -405,7 +435,10 @@ export default function SettingsPage() {
               onChange={(e) => setTestPhone(e.target.value)}
               placeholder="2547XXXXXXXX" />
           </div>
-          <div style={{ flex: '0 0 auto', alignSelf: 'flex-end' }}>
+          <div style={{ flex: '0 0 auto', alignSelf: 'flex-end', display: 'flex', gap: 6 }}>
+            <button className="ghost" onClick={debugSms} type="button">
+              Debug
+            </button>
             <button className="ghost" onClick={sendTestSms} disabled={!testPhone || smsTestSending}>
               {smsTestSending ? 'Sending…' : 'Send test'}
             </button>

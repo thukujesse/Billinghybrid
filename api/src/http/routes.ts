@@ -696,18 +696,85 @@ api.post('/settings/sms/test', requireAuth('admin'), ah(async (req, res) => {
   }), req.body);
   // Normalize Kenyan local-format input (0748..., 7488..., +254...) to
   // bare E.164 (2547...) which is what every SMS gateway expects.
-  // Production code already runs through normalizeMsisdn at customer
-  // create time; the test endpoint takes raw input so we do it here.
   const { normalizeMsisdn } = await import('../domains/payments/daraja.js');
   const normalized = normalizeMsisdn(body.phone);
-  const { notify } = await import('../domains/notifications/service.js');
-  const text = body.message ?? `Test SMS from ${(await settings.getSmsConfigPublic()).provider} via JTM at ${new Date().toISOString()}`;
-  try {
-    await notify('sms', normalized, text);
-    res.json({ ok: true, sent_to: normalized, message: text });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: (err as Error).message });
+
+  // Bypass notify() and call the active provider DIRECTLY so we can
+  // surface the real response detail to the dashboard. notify() is
+  // fire-and-forget by design (must not break business flows); the
+  // test endpoint is the one place we want full transparency.
+  const smsCfg = await settings.getSmsConfig();
+  const apiKey = smsCfg.provider === 'bytwave'
+    ? smsCfg.bytwave.apiKey
+    : smsCfg.africastalking.apiKey;
+  const text = body.message ?? `Test SMS from ${smsCfg.provider} via JTM at ${new Date().toISOString()}`;
+
+  if (!apiKey) {
+    return res.json({
+      ok: false,
+      provider: smsCfg.provider,
+      sent_to: normalized,
+      message: text,
+      detail: 'No API key configured for the active provider. Saved key may not have persisted — paste it again under the provider section and click Save.',
+      simulated: true,
+    });
   }
+
+  try {
+    let result: { ok: boolean; detail: string };
+    let raw: unknown = null;
+    if (smsCfg.provider === 'bytwave') {
+      const { sendBytwaveSms } = await import('../domains/notifications/bytwave.js');
+      result = await sendBytwaveSms(normalized, text);
+    } else {
+      const { sendSms } = await import('../domains/notifications/africastalking.js');
+      result = await sendSms(normalized, text);
+    }
+    res.json({
+      ok: result.ok,
+      provider: smsCfg.provider,
+      sent_to: normalized,
+      message: text,
+      detail: result.detail,
+      raw,
+    });
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      provider: smsCfg.provider,
+      sent_to: normalized,
+      message: text,
+      detail: `exception: ${(err as Error).message}`,
+    });
+  }
+}));
+
+// Debug endpoint — shows what the SMS dispatcher will actually use,
+// with secrets redacted. Use to confirm DB settings persisted correctly
+// when the test endpoint is silently simulating.
+api.get('/settings/sms/debug', requireAuth('admin'), ah(async (_req, res) => {
+  const cfg = await settings.getSmsConfig();
+  const pub = await settings.getSmsConfigPublic();
+  const activeKey = cfg.provider === 'bytwave' ? cfg.bytwave.apiKey : cfg.africastalking.apiKey;
+  res.json({
+    active_provider: cfg.provider,
+    active_provider_key_set: !!activeKey,
+    active_provider_key_length: activeKey?.length ?? 0,
+    will_simulate: !activeKey,
+    africastalking: {
+      username: cfg.africastalking.username,
+      sender_id: cfg.africastalking.senderId,
+      api_key_set: pub.africastalking.apiKeySet,
+      api_key_length: cfg.africastalking.apiKey?.length ?? 0,
+    },
+    bytwave: {
+      endpoint: cfg.bytwave.endpoint,
+      sender_id: cfg.bytwave.senderId,
+      payload_format: cfg.bytwave.payloadFormat,
+      api_key_set: pub.bytwave.apiKeySet,
+      api_key_length: cfg.bytwave.apiKey?.length ?? 0,
+    },
+  });
 }));
 
 // ---------------------- Hotspot captive portal ----------------------
