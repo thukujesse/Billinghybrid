@@ -23,12 +23,6 @@ export interface Router {
   brand_name: string | null;
   brand_color: string | null;
   brand_tagline: string | null;
-  // Template-sync state (migration 038). Null on routers that have
-  // never been synced (newly provisioned or pre-migration).
-  last_template_sync_at: string | null;
-  last_template_sync_status: 'ok' | 'failed' | 'pending' | null;
-  last_template_sync_error: string | null;
-  template_sync_version: string | null;
 }
 
 export interface DetectedRouter {
@@ -53,8 +47,6 @@ export interface DetectedRouter {
 const SAFE_COLS = `id, name, host, api_port, type, site, status, created_at,
   wg_public_key, wg_tunnel_ip, last_handshake_at, ssh_port,
   brand_slug, brand_name, brand_color, brand_tagline,
-  last_template_sync_at, last_template_sync_status,
-  last_template_sync_error, template_sync_version,
   CASE
     WHEN last_handshake_at IS NULL THEN 'pending'
     WHEN last_handshake_at > now() - interval '3 minutes' THEN 'connected'
@@ -1016,170 +1008,6 @@ export async function reprovisionRouter(routerId: string): Promise<ReprovisionRe
   }
 
   return { router, oneLiner, mikrotikScript, autoApplied, autoApplyOutput };
-}
-
-// =====================================================================
-// Template sync — lightweight re-push of captive HTML + walled-garden,
-// without re-running the heavy bridge / pool / firewall setup. Use this
-// when:
-//   - Global hotspot branding changes (templates change, walled-garden
-//     stays — but we re-add anyway to repair drift).
-//   - Operator clicks "Sync templates" on the routers page.
-//   - Anyone hits POST /admin/routers/sync-all-templates.
-//
-// Doesn't touch /ip hotspot profile, pools, bridges, or firewall rules —
-// only the template files + walled-garden entries. Safe to run on a live
-// router with active hotspot users (templates serve on next captive load).
-// =====================================================================
-
-export interface SyncResult {
-  routerId: string;
-  routerName: string;
-  ok: boolean;
-  detail: string;
-  durationMs: number;
-}
-
-const TEMPLATE_NAMES = [
-  'login.html', 'alogin.html', 'status.html', 'logout.html',
-  'error.html', 'redirect.html', 'rlogin.html', 'md5.js',
-] as const;
-
-/** Build the minimal "refresh templates + walled-garden" RouterOS script. */
-function renderTemplateSyncScript(brandSlug: string): { script: string; version: string } {
-  const portalHost = config.portal.host;
-  const portalIp = config.portal.ip;
-  const tplBase = `${config.publicApiUrl}/api/hotspot/templates`;
-
-  // sync_version captures the inputs that determine what gets pushed.
-  // If the operator changes the portal host, the next sync produces a
-  // different version → routers stamped with the old version show as
-  // 'stale' in the UI even though their last_template_sync_status is 'ok'.
-  const version = crypto
-    .createHash('sha1')
-    .update([portalHost, portalIp, brandSlug, TEMPLATE_NAMES.join(',')].join('|'))
-    .digest('hex')
-    .slice(0, 12);
-
-  const lines: string[] = [
-    `:put "[sync] starting template + walled-garden refresh for slug=${brandSlug}"`,
-    // Walled-garden — wipe-and-recreate so duplicate entries don't pile up
-    // across re-syncs. Comments scoped to "jtm" so non-JTM operator entries
-    // (e.g. payment-gateway whitelist they added manually) survive.
-    `/ip hotspot walled-garden remove [find comment="jtm"]`,
-    `/ip hotspot walled-garden ip remove [find comment="jtm"]`,
-    `/ip hotspot walled-garden add dst-host=${portalHost} action=allow comment="jtm"`,
-    `/ip hotspot walled-garden ip add dst-address=${portalIp} dst-port=443 protocol=tcp action=accept comment="jtm"`,
-    `/ip hotspot walled-garden ip add dst-address=${portalIp} dst-port=80 protocol=tcp action=accept comment="jtm"`,
-    // Templates — each MikroTik /tool fetch overwrites the existing file
-    // atomically. mode=https since publicApiUrl is HTTPS in production.
-    ...TEMPLATE_NAMES.map(
-      (n) => `/tool fetch url="${tplBase}/${n}?slug=${encodeURIComponent(brandSlug)}" dst-path=hotspot/${n} mode=https`
-    ),
-    // Verification — if a fetch failed, /tool fetch echoes "failure: ..."
-    // to stdout but exit code is 0. Count the files we expect and report.
-    `:put ("[sync] walled-garden entries: " . [:len [/ip hotspot walled-garden find comment="jtm"]] . " host + " . [:len [/ip hotspot walled-garden ip find comment="jtm"]] . " ip rules")`,
-    `:put "[sync] template refresh complete · version=${version}"`,
-  ];
-
-  return { script: lines.join('\n'), version };
-}
-
-/**
- * Push templates + walled-garden to one router. Updates the router's
- * last_template_sync_at + status + error columns regardless of outcome,
- * so the UI badge always reflects reality.
- *
- * Throws on bad input (router not found, no tunnel IP) — but a successful
- * SSH that returned non-zero is recorded as 'failed' WITHOUT throwing,
- * so callers fanning out across N routers see the whole picture.
- */
-export async function syncRouterTemplates(routerId: string): Promise<SyncResult> {
-  const start = Date.now();
-  const router = await getRouter(routerId);
-  if (!router.wg_tunnel_ip) {
-    const detail = 'router has no tunnel IP — provision it first';
-    await markSyncResult(routerId, false, detail, null);
-    return { routerId, routerName: router.name, ok: false, detail, durationMs: Date.now() - start };
-  }
-  if (!wgManager.isEnabled()) {
-    const detail = 'wg-manager not configured on API (cannot SSH to router)';
-    await markSyncResult(routerId, false, detail, null);
-    return { routerId, routerName: router.name, ok: false, detail, durationMs: Date.now() - start };
-  }
-
-  // Mark pending so the UI shows the operation in flight even if SSH hangs.
-  await query(
-    `UPDATE routers SET last_template_sync_status='pending', last_template_sync_error=NULL WHERE id=$1`,
-    [routerId]
-  );
-
-  const brandSlug = router.brand_slug ?? router.id;
-  const { script, version } = renderTemplateSyncScript(brandSlug);
-
-  let sshOk = false;
-  let detail = '';
-  try {
-    const sshPort = await resolveSshPort(router);
-    const r = await wgManager.execOnRouter(router.wg_tunnel_ip, script, { sshPort });
-    sshOk = r.returncode === 0;
-    detail = (r.stdout + r.stderr).trim().split('\n').slice(-10).join(' | ').slice(0, 500);
-    // /tool fetch exits 0 even when individual fetches fail — grep stdout
-    // for "failure:" lines which RouterOS emits per failed file.
-    if (sshOk && /failure:/i.test(r.stdout)) {
-      sshOk = false;
-      const failures = [...r.stdout.matchAll(/failure:[^\n]+/gi)].map((m) => m[0]).slice(0, 3).join(' | ');
-      detail = `template fetch failed: ${failures}`;
-    }
-  } catch (err) {
-    detail = `ssh: ${(err as Error).message}`;
-  }
-
-  await markSyncResult(routerId, sshOk, detail, sshOk ? version : null);
-  return { routerId, routerName: router.name, ok: sshOk, detail, durationMs: Date.now() - start };
-}
-
-async function markSyncResult(
-  routerId: string,
-  ok: boolean,
-  detail: string,
-  version: string | null
-): Promise<void> {
-  await query(
-    `UPDATE routers SET
-       last_template_sync_at = now(),
-       last_template_sync_status = $2,
-       last_template_sync_error = $3,
-       template_sync_version = COALESCE($4, template_sync_version)
-     WHERE id = $1`,
-    [routerId, ok ? 'ok' : 'failed', ok ? null : detail.slice(0, 1000), version]
-  );
-}
-
-/**
- * Fan out a template-sync to every router that's currently reachable
- * (has a tunnel IP). Used after global branding changes — admin saves
- * once, every venue gets the new templates without manual per-router
- * clicks. Concurrent (per-router SSH is independent), but capped so we
- * don't open 50 SSH sessions to wg-manager at once.
- */
-export async function syncAllRouterTemplates(): Promise<{ results: SyncResult[]; total: number }> {
-  const r = await query<{ id: string }>(
-    `SELECT id FROM routers WHERE wg_tunnel_ip IS NOT NULL ORDER BY created_at DESC`
-  );
-  const ids = r.rows.map((row) => row.id);
-  const results: SyncResult[] = [];
-  // Bounded concurrency — 4 in flight at a time is comfortable for SSH.
-  const CONCURRENCY = 4;
-  for (let i = 0; i < ids.length; i += CONCURRENCY) {
-    const batch = ids.slice(i, i + CONCURRENCY);
-    const batchResults = await Promise.all(batch.map((id) => syncRouterTemplates(id).catch((err) => ({
-      routerId: id, routerName: '', ok: false,
-      detail: (err as Error).message, durationMs: 0,
-    } as SyncResult))));
-    results.push(...batchResults);
-  }
-  return { results, total: ids.length };
 }
 
 /**
