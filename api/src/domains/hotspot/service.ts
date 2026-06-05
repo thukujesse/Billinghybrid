@@ -441,6 +441,7 @@ export async function completePurchase(input: {
   // own transactions) for renew-flow purchases.
   const r = await query<{
     id: string; plan_id: string; phone: string; amount_kes: number;
+    mac_address: string | null;
     validity_days: number;
     speed_down_kbps: number | null; speed_up_kbps: number | null;
     status: string;
@@ -448,7 +449,7 @@ export async function completePurchase(input: {
     wallet_topup_customer_id: string | null;
   }>(
     `SELECT hp.id, hp.plan_id, hp.phone, hp.amount_kes, hp.status,
-            hp.service_id, hp.wallet_topup_customer_id,
+            hp.mac_address, hp.service_id, hp.wallet_topup_customer_id,
             p.validity_days, p.speed_down_kbps, p.speed_up_kbps
        FROM hotspot_purchases hp
        JOIN plans p ON p.id = hp.plan_id
@@ -543,59 +544,108 @@ export async function completePurchase(input: {
     return;
   }
 
-  // Guest hotspot flow (original): finalize by minting fresh credentials.
-  await withTransaction(async (c) => {
+  // Guest hotspot flow: write active_devices keyed by MAC so the
+  // FreeRADIUS authorize_check_query override (which joins active_devices)
+  // accepts the customer's next Access-Request. MikroTik is configured
+  // with mac-as-username-and-password (configureServices line 689), so
+  // the User-Name on the wire is the MAC, NOT whatever the portal POSTs.
+  // Storing radcheck/radreply keyed by a random "hs-xxx" username would
+  // never match and the customer would never connect — that was the
+  // pre-fix bug that broke post-payment + returning-customer reconnect.
+  //
+  // Same shape as redeemVoucher's grant write (just source='hotspot_purchase'
+  // vs 'voucher') so both flows produce identical active_devices rows and
+  // share the lookup() / quickConnect() / rebindVerify() reconnect paths.
+  const { normalizeMac } = await import('../hotspotDevices/service.js');
+  const mac = row.mac_address ? normalizeMac(row.mac_address) : null;
+  const validitySeconds = Math.max(60, row.validity_days * 86400);
+  const rateLimit = row.speed_down_kbps && row.speed_up_kbps
+    ? `${row.speed_up_kbps}k/${row.speed_down_kbps}k`
+    : null;
 
-    // Success: generate session credentials + radcheck/radreply.
-    const username = 'hs-' + crypto.randomBytes(4).toString('hex');
-    const validitySeconds = Math.max(60, row.validity_days * 86400);
-    const rateLimit = row.speed_down_kbps && row.speed_up_kbps
-      ? `${row.speed_up_kbps}k/${row.speed_down_kbps}k`
-      : null;
-
-    await c.query(
-      `INSERT INTO radcheck (username, attribute, op, value)
-       VALUES ($1, 'Cleartext-Password', ':=', $1)`,
-      [username]
-    );
-    await c.query(
-      `INSERT INTO radreply (username, attribute, op, value)
-       VALUES ($1, 'Session-Timeout', ':=', $2)`,
-      [username, String(validitySeconds)]
-    );
-    await c.query(
-      `INSERT INTO radreply (username, attribute, op, value)
-       VALUES ($1, 'Idle-Timeout', ':=', '600')`,
-      [username]
-    );
-    if (rateLimit) {
+  if (mac) {
+    await withTransaction(async (c) => {
+      await c.query(
+        `INSERT INTO active_devices (
+           mac, expires_at, rate_limit, session_timeout_seconds, idle_timeout_seconds,
+           source, phone, purchase_id
+         ) VALUES ($1, now() + ($2 || ' seconds')::interval, $3, $4, 600, 'hotspot_purchase', $5, $6)
+         ON CONFLICT (mac) DO UPDATE SET
+           expires_at = GREATEST(active_devices.expires_at, EXCLUDED.expires_at),
+           rate_limit = EXCLUDED.rate_limit,
+           session_timeout_seconds = EXCLUDED.session_timeout_seconds,
+           source = 'hotspot_purchase',
+           phone = EXCLUDED.phone,
+           purchase_id = EXCLUDED.purchase_id,
+           last_seen = now()`,
+        [mac, String(validitySeconds), rateLimit, validitySeconds, row.phone, row.id]
+      );
+      await c.query(
+        `UPDATE hotspot_purchases
+            SET status='success', username=$2, validity_seconds=$3,
+                rate_limit=$4, receipt=$5, completed_at=now()
+          WHERE id=$1`,
+        [row.id, mac, validitySeconds, rateLimit, input.receipt ?? null]
+      );
+    });
+  } else {
+    // Fallback: purchase has no MAC (rare — captive portal didn't pass it,
+    // or the customer paid via a non-captive path). Keep the radcheck path
+    // so the http-pap login fallback still works. login-by=http-pap is
+    // configured on the MikroTik profile alongside mac auth.
+    await withTransaction(async (c) => {
+      const username = 'hs-' + crypto.randomBytes(4).toString('hex');
+      await c.query(
+        `INSERT INTO radcheck (username, attribute, op, value)
+         VALUES ($1, 'Cleartext-Password', ':=', $1)`,
+        [username]
+      );
       await c.query(
         `INSERT INTO radreply (username, attribute, op, value)
-         VALUES ($1, 'Mikrotik-Rate-Limit', '=', $2)`,
-        [username, rateLimit]
+         VALUES ($1, 'Session-Timeout', ':=', $2)`,
+        [username, String(validitySeconds)]
       );
-    }
-    await c.query(
-      `UPDATE hotspot_purchases
-          SET status='success', username=$2, validity_seconds=$3,
-              rate_limit=$4, receipt=$5, completed_at=now()
-        WHERE id=$1`,
-      [row.id, username, validitySeconds, rateLimit, input.receipt ?? null]
-    );
-  });
+      await c.query(
+        `INSERT INTO radreply (username, attribute, op, value)
+         VALUES ($1, 'Idle-Timeout', ':=', '600')`,
+        [username]
+      );
+      if (rateLimit) {
+        await c.query(
+          `INSERT INTO radreply (username, attribute, op, value)
+           VALUES ($1, 'Mikrotik-Rate-Limit', '=', $2)`,
+          [username, rateLimit]
+        );
+      }
+      await c.query(
+        `UPDATE hotspot_purchases
+            SET status='success', username=$2, validity_seconds=$3,
+                rate_limit=$4, receipt=$5, completed_at=now()
+          WHERE id=$1`,
+        [row.id, username, validitySeconds, rateLimit, input.receipt ?? null]
+      );
+    });
+  }
+
   void emitPortalEvent({
-    type: 'stk_callback', phone: row.phone, success: true,
+    type: 'stk_callback', mac, phone: row.phone, success: true,
     detail: {
       checkout_request_id: input.checkoutRequestId,
       purchase_id: row.id,
       flow: 'guest_hotspot',
+      auth_path: mac ? 'mac-auth' : 'radcheck-fallback',
       amount_kes: row.amount_kes,
       receipt: input.receipt ?? null,
     },
   });
   void emitPortalEvent({
-    type: 'grant_issued', phone: row.phone, success: true,
-    detail: { source: 'mpesa_hotspot', purchase_id: row.id, validity_days: row.validity_days },
+    type: 'grant_issued', mac, phone: row.phone, success: true,
+    detail: {
+      source: 'mpesa_hotspot',
+      purchase_id: row.id,
+      validity_days: row.validity_days,
+      auth_path: mac ? 'mac-auth' : 'radcheck-fallback',
+    },
   });
 }
 
