@@ -27,6 +27,37 @@ interface AlertRow {
   opened_at: string;
 }
 
+interface PortalSummary {
+  windowHours: number;
+  total: number;
+  byType: Record<string, number>;
+  successRate: number | null;
+  stkSuccessRate: number | null;
+  uniqueMacs: number;
+  uniquePhones: number;
+}
+
+interface PortalFailure {
+  id: string;
+  created_at: string;
+  event_type: string;
+  mac: string | null;
+  phone: string | null;
+  reason: string | null;
+  detail: Record<string, unknown>;
+}
+
+const PORTAL_EVENT_LABEL: Record<string, string> = {
+  portal_load: 'Portal load',
+  quick_connect: 'Quick connect',
+  voucher_redeem: 'Voucher',
+  stk_init: 'STK push',
+  stk_callback: 'STK callback',
+  rebind_start: 'Rebind OTP',
+  rebind_verify: 'Rebind verify',
+  lookup_miss: 'Lookup miss',
+};
+
 /** Tiny inline sparkline — 12 monthly revenue points → polyline area chart. */
 function Sparkline({ data, color = '#2563eb', height = 36, width = 160 }: {
   data: number[]; color?: string; height?: number; width?: number;
@@ -156,16 +187,22 @@ export default async function Dashboard() {
   let outstanding: Outstanding | null = null;
   let mrr: PppoeMrr | null = null;
   let openAlerts: AlertRow[] = [];
+  let portalSummary: PortalSummary | null = null;
+  let portalFailures: PortalFailure[] = [];
   let error: string | null = null;
   try {
     // Headline tile + supporting series in parallel — page is server-rendered
     // so this is one round-trip from the operator's POV.
-    [data, revenue, outstanding, mrr, openAlerts] = await Promise.all([
+    [data, revenue, outstanding, mrr, openAlerts, portalSummary, portalFailures] = await Promise.all([
       api('/dashboard'),
       api<RevenuePoint[]>('/reports/revenue-combined?months=12'),
       api<Outstanding>('/reports/outstanding-renewals'),
       api<PppoeMrr>('/reports/pppoe-mrr'),
       api<AlertRow[]>('/admin/alerts?status=open&limit=5'),
+      // Portal diagnostics widget — soft-fail to null/[] so a missing
+      // table on a fresh deploy doesn't blank the whole dashboard.
+      api<PortalSummary>('/admin/diagnostics/summary?hours=24').catch(() => null),
+      api<PortalFailure[]>('/admin/diagnostics/recent-failures?hours=24&limit=5').catch(() => []),
     ]);
   } catch (e: any) {
     error = e.message;
@@ -385,6 +422,103 @@ export default async function Dashboard() {
             </>
           )}
         </section>
+
+        {/* Captive-portal diagnostics widget — 24h headline numbers + recent
+            failures with one-click trace links. Soft-fails when the portal_events
+            table doesn't exist yet (fresh deploy before migration runs). */}
+        {portalSummary && (
+          <section>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+              <h2 style={{ fontSize: 16, marginTop: 0 }}>Captive portal · 24h</h2>
+              <a href="/diagnostics" style={{ fontSize: 12, color: '#2563eb', textDecoration: 'none' }}>Open trace →</a>
+            </div>
+            <div style={{
+              background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden',
+            }}>
+              {[
+                { label: 'Events', value: portalSummary.total.toLocaleString(), color: '#0f172a', dot: '#64748b' },
+                {
+                  label: 'STK success',
+                  value: portalSummary.stkSuccessRate == null ? '—' : `${portalSummary.stkSuccessRate}%`,
+                  color: portalSummary.stkSuccessRate == null ? '#94a3b8'
+                       : portalSummary.stkSuccessRate >= 90 ? '#15803d'
+                       : portalSummary.stkSuccessRate >= 70 ? '#a16207'
+                       : '#b91c1c',
+                  dot: portalSummary.stkSuccessRate == null ? '#94a3b8'
+                     : portalSummary.stkSuccessRate >= 90 ? '#22c55e'
+                     : portalSummary.stkSuccessRate >= 70 ? '#d97706'
+                     : '#dc2626',
+                },
+                {
+                  label: 'Overall success',
+                  value: portalSummary.successRate == null ? '—' : `${portalSummary.successRate}%`,
+                  color: portalSummary.successRate == null ? '#94a3b8'
+                       : portalSummary.successRate >= 90 ? '#15803d'
+                       : '#475569',
+                  dot: portalSummary.successRate == null ? '#94a3b8'
+                     : portalSummary.successRate >= 90 ? '#22c55e'
+                     : '#94a3b8',
+                },
+                { label: 'Unique devices', value: `${portalSummary.uniqueMacs} / ${portalSummary.uniquePhones} phones`, color: '#475569', dot: '#94a3b8' },
+              ].map((row, i) => (
+                <div key={row.label} style={{
+                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                  padding: '12px 16px',
+                  borderTop: i === 0 ? 'none' : '1px solid #f1f5f9',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ width: 6, height: 6, borderRadius: '50%', background: row.dot }} />
+                    <span style={{ fontSize: 13, color: '#475569' }}>{row.label}</span>
+                  </div>
+                  <strong style={{ color: row.color, fontSize: 14 }}>{row.value}</strong>
+                </div>
+              ))}
+            </div>
+
+            {portalFailures.length > 0 ? (
+              <>
+                <h2 style={{ fontSize: 14, marginTop: 20, color: '#64748b' }}>
+                  Recent failures <span style={{ fontWeight: 400, color: '#94a3b8' }}>· last 24h</span>
+                </h2>
+                <div style={{
+                  background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden',
+                }}>
+                  {portalFailures.map((f, i) => {
+                    const traceHref = f.mac
+                      ? `/diagnostics?mac=${encodeURIComponent(f.mac)}`
+                      : f.phone
+                      ? `/diagnostics?phone=${encodeURIComponent(f.phone)}`
+                      : '/diagnostics';
+                    return (
+                      <a key={f.id} href={traceHref} style={{
+                        display: 'flex', alignItems: 'center', gap: 10,
+                        padding: '10px 14px', textDecoration: 'none', color: 'inherit',
+                        borderTop: i === 0 ? 'none' : '1px solid #f1f5f9',
+                      }}>
+                        <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#dc2626', flexShrink: 0 }} />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 12, color: '#0f172a' }}>
+                            <strong>{PORTAL_EVENT_LABEL[f.event_type] ?? f.event_type}</strong>
+                            {f.reason && <span style={{ color: '#b91c1c', marginLeft: 6 }}>· {f.reason}</span>}
+                          </div>
+                          <div style={{ fontSize: 10, color: '#94a3b8', display: 'flex', gap: 8, marginTop: 2 }}>
+                            {f.phone && <code style={{ fontFamily: 'ui-monospace, monospace' }}>{f.phone}</code>}
+                            {f.mac && <code style={{ fontFamily: 'ui-monospace, monospace' }}>{f.mac}</code>}
+                            <span style={{ marginLeft: 'auto' }}>{new Date(f.created_at).toLocaleTimeString()}</span>
+                          </div>
+                        </div>
+                      </a>
+                    );
+                  })}
+                </div>
+              </>
+            ) : portalSummary.total > 0 ? (
+              <p className="sub" style={{ marginTop: 16, fontSize: 12 }}>No failures in the last 24h — captive flow is clean.</p>
+            ) : (
+              <p className="sub" style={{ marginTop: 16, fontSize: 12 }}>No captive activity yet today.</p>
+            )}
+          </section>
+        )}
       </div>
 
       {/* Invoices summary — keep as the existing table for compat. */}

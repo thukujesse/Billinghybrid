@@ -191,6 +191,36 @@ export interface RecentSummary {
   uniquePhones: number;
 }
 
+export interface RecentFailure {
+  id: string;
+  created_at: string;
+  event_type: string;
+  mac: string | null;
+  phone: string | null;
+  reason: string | null;
+  detail: Record<string, unknown>;
+}
+
+/**
+ * Most recent failed events — drives the dashboard "needs attention" list.
+ * Pulls from portal_events only (not auto_reconnect_log) since auto-grant
+ * misses are expected behaviour, not failures the operator needs to act on.
+ */
+export async function recentFailures(windowHours = 24, limit = 5): Promise<RecentFailure[]> {
+  const h = Math.min(Math.max(windowHours, 1), 168);
+  const n = Math.min(Math.max(limit, 1), 50);
+  const r = await query<RecentFailure>(
+    `SELECT id::text, created_at, event_type, mac, phone, reason, detail
+       FROM portal_events
+      WHERE success = FALSE
+        AND created_at > now() - ($1 || ' hours')::interval
+      ORDER BY created_at DESC
+      LIMIT $2`,
+    [String(h), n]
+  );
+  return r.rows;
+}
+
 export async function recentSummary(windowHours = 24): Promise<RecentSummary> {
   const h = Math.min(Math.max(windowHours, 1), 168);
   const r = await query<{
