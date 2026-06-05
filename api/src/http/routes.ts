@@ -690,39 +690,45 @@ api.put('/settings/sms', requireAuth('admin'), ah(async (req, res) => {
   res.json(await settings.getSmsConfigPublic());
 }));
 api.post('/settings/sms/test', requireAuth('admin'), ah(async (req, res) => {
-  const body = parse(z.object({
-    phone: z.string().min(7),
-    message: z.string().max(160).optional(),
-  }), req.body);
-  // Normalize Kenyan local-format input (0748..., 7488..., +254...) to
-  // bare E.164 (2547...) which is what every SMS gateway expects.
-  const { normalizeMsisdn } = await import('../domains/payments/daraja.js');
-  const normalized = normalizeMsisdn(body.phone);
-
-  // Bypass notify() and call the active provider DIRECTLY so we can
-  // surface the real response detail to the dashboard. notify() is
-  // fire-and-forget by design (must not break business flows); the
-  // test endpoint is the one place we want full transparency.
-  const smsCfg = await settings.getSmsConfig();
-  const apiKey = smsCfg.provider === 'bytwave'
-    ? smsCfg.bytwave.apiKey
-    : smsCfg.africastalking.apiKey;
-  const text = body.message ?? `Test SMS from ${smsCfg.provider} via JTM at ${new Date().toISOString()}`;
-
-  if (!apiKey) {
-    return res.json({
-      ok: false,
-      provider: smsCfg.provider,
-      sent_to: normalized,
-      message: text,
-      detail: 'No API key configured for the active provider. Saved key may not have persisted — paste it again under the provider section and click Save.',
-      simulated: true,
-    });
-  }
-
+  // Wrap the WHOLE handler so any sync throw (normalizeMsisdn validation,
+  // DB error, missing import) returns a JSON body with the exception
+  // detail rather than a generic 500 from ah(). The dashboard toast
+  // shows whatever ends up in `detail`.
+  let phase = 'parse';
   try {
+    const body = parse(z.object({
+      phone: z.string().min(7),
+      message: z.string().max(160).optional(),
+    }), req.body);
+
+    phase = 'normalize';
+    // normalizeMsisdn throws on anything that isn't a recognised Kenyan
+    // mobile format. Fall back to the raw input so unusual numbers (or
+    // international ones) still hit the provider for a real-world error.
+    const { normalizeMsisdn } = await import('../domains/payments/daraja.js');
+    let normalized = String(body.phone).trim();
+    try { normalized = normalizeMsisdn(normalized); } catch { /* keep raw */ }
+
+    phase = 'config';
+    const smsCfg = await settings.getSmsConfig();
+    const apiKey = smsCfg.provider === 'bytwave'
+      ? smsCfg.bytwave.apiKey
+      : smsCfg.africastalking.apiKey;
+    const text = body.message ?? `Test SMS from ${smsCfg.provider} via JTM at ${new Date().toISOString()}`;
+
+    if (!apiKey) {
+      return res.json({
+        ok: false,
+        provider: smsCfg.provider,
+        sent_to: normalized,
+        message: text,
+        detail: `No API key for ${smsCfg.provider}. Saved key may not have persisted — re-paste in the ${smsCfg.provider} section and Save.`,
+        simulated: true,
+      });
+    }
+
+    phase = 'dispatch';
     let result: { ok: boolean; detail: string };
-    let raw: unknown = null;
     if (smsCfg.provider === 'bytwave') {
       const { sendBytwaveSms } = await import('../domains/notifications/bytwave.js');
       result = await sendBytwaveSms(normalized, text);
@@ -730,21 +736,23 @@ api.post('/settings/sms/test', requireAuth('admin'), ah(async (req, res) => {
       const { sendSms } = await import('../domains/notifications/africastalking.js');
       result = await sendSms(normalized, text);
     }
-    res.json({
+    return res.json({
       ok: result.ok,
       provider: smsCfg.provider,
       sent_to: normalized,
       message: text,
       detail: result.detail,
-      raw,
     });
   } catch (err) {
-    res.status(500).json({
+    // Surface the actual exception type + message so the toast shows
+    // something useful. status 200 with ok:false so the UI gets the body.
+    const e = err as Error;
+    return res.json({
       ok: false,
-      provider: smsCfg.provider,
-      sent_to: normalized,
-      message: text,
-      detail: `exception: ${(err as Error).message}`,
+      provider: 'unknown',
+      sent_to: null,
+      message: null,
+      detail: `exception during ${phase}: ${e?.name ?? 'Error'}: ${e?.message ?? String(err)}`,
     });
   }
 }));
