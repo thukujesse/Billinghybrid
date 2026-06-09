@@ -16,7 +16,7 @@ import * as subscribers from '../domains/subscribers/service.js';
 import * as subscriptions from '../domains/subscriptions/service.js';
 import * as billing from '../domains/billing/service.js';
 import * as payments from '../domains/payments/service.js';
-import { parseCallback } from '../domains/payments/daraja.js';
+import { parseCallback, stkPush } from '../domains/payments/daraja.js';
 import * as vouchers from '../domains/vouchers/service.js';
 import * as resellers from '../domains/resellers/service.js';
 import * as usage from '../domains/usage/service.js';
@@ -661,6 +661,27 @@ api.put('/settings/mpesa', requireAuth('admin'), ah(async (req, res) => {
   }), req.body);
   await settings.setMpesaConfig(body, (req.user as { username?: string } | undefined)?.username);
   res.json(await settings.getMpesaConfigPublic());
+}));
+// Fire a live STK push to validate the saved Daraja creds end-to-end (prompt ->
+// callback). Small default amount; uses the hotspot callback path so a real pay
+// also exercises settlement. Returns the Daraja error verbatim on failure.
+api.post('/settings/mpesa/test', requireAuth('admin'), ah(async (req, res) => {
+  const body = parse(z.object({
+    phone: z.string().min(7),
+    amount: z.number().int().positive().optional(),
+  }), req.body);
+  try {
+    const r = await stkPush({
+      phone: body.phone,
+      amountKes: body.amount ?? 1,
+      accountReference: 'TEST',
+      description: 'STK test',
+      callbackUrl: `${config.publicApiUrl}/api/hotspot/mpesa/callback`,
+    });
+    res.json({ ok: true, checkoutRequestId: r.checkoutRequestId, customerMessage: r.customerMessage });
+  } catch (e: any) {
+    res.json({ ok: false, error: e?.message ?? 'STK push failed' });
+  }
 }));
 
 // ---------- SMS provider settings ----------

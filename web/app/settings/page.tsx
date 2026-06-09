@@ -39,6 +39,8 @@ export default function SettingsPage() {
   });
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [mpesaTestPhone, setMpesaTestPhone] = useState('');
+  const [mpesaTesting, setMpesaTesting] = useState(false);
 
   // Hotspot template branding (logo, ISP name, tagline, brand color).
   // Drives the captive portal at billing.hubnetwifi.co.ke/hotspot.
@@ -266,6 +268,27 @@ export default function SettingsPage() {
     }
   };
 
+  const sendTestStk = async () => {
+    if (!mpesaTestPhone) return;
+    setMpesaTesting(true);
+    try {
+      const r = await api<{ ok: boolean; checkoutRequestId?: string; customerMessage?: string; error?: string }>(
+        '/settings/mpesa/test',
+        { method: 'POST', body: JSON.stringify({ phone: mpesaTestPhone }) }
+      );
+      setToast({
+        ok: r.ok,
+        msg: r.ok
+          ? `STK sent — check ${mpesaTestPhone} for the prompt (${r.checkoutRequestId})`
+          : `STK failed: ${r.error}`,
+      });
+    } catch (e: any) {
+      setToast({ ok: false, msg: e.message });
+    } finally {
+      setMpesaTesting(false);
+    }
+  };
+
   const usePresetSandbox = () => {
     setForm({
       ...form,
@@ -348,6 +371,27 @@ export default function SettingsPage() {
           <button className="ghost" onClick={usePresetSandbox} disabled={saving}>
             Pre-fill sandbox passkey
           </button>
+        </div>
+
+        <div style={{ marginTop: 20, borderTop: '1px solid var(--border, #e2e8f0)', paddingTop: 16 }}>
+          <h3 style={{ marginTop: 0, fontSize: 14 }}>Test STK push</h3>
+          <p className="sub" style={{ marginTop: 0 }}>
+            Fires a live KES&nbsp;1 STK to the phone using the saved creds — confirm the prompt
+            arrives and the callback settles. Save your credentials first.
+          </p>
+          <div className="row">
+            <div style={{ flex: 1 }}>
+              <label>Phone</label>
+              <input value={mpesaTestPhone}
+                onChange={(e) => setMpesaTestPhone(e.target.value)}
+                placeholder="2547XXXXXXXX" />
+            </div>
+            <div style={{ flex: '0 0 auto', alignSelf: 'flex-end' }}>
+              <button className="ghost" onClick={sendTestStk} disabled={!mpesaTestPhone || mpesaTesting}>
+                {mpesaTesting ? 'Sending…' : 'Send test STK'}
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 
