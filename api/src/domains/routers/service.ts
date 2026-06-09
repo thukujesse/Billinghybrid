@@ -366,7 +366,7 @@ function renderRouterOsScript(p: {
 # Fetch the new pubkey FIRST. Only swap keys if fetch succeeded — otherwise we
 # could leave hub-mgmt with no keys (== permanently locked out via SSH).
 :do {
-  /tool fetch url="${p.pubkeyUrl}" dst-path=hub-mgr.pub
+  /tool fetch url="${p.pubkeyUrl}" dst-path=hub-mgr.pub check-certificate=no
 } on-error={ :log warning "jtm: pubkey fetch failed; KEEPING existing hub-mgmt ssh-keys" }
 :if ([:len [/file find name=hub-mgr.pub]] > 0) do={
   /user ssh-keys remove [find user=hub-mgmt]
@@ -457,7 +457,7 @@ function renderRouterOsScript(p: {
 :local serial [/system/routerboard get serial-number]
 :local sshport [/ip service get [find name=ssh] port]
 :do {
-  /tool fetch url="${p.identifyUrl}" http-method=post \\
+  /tool fetch url="${p.identifyUrl}" http-method=post check-certificate=no \\
     http-data=("token=${p.provisionToken}&serial=" . $serial . "&sshPort=" . $sshport) \\
     output=none
 } on-error={ :log warning "jtm identify call failed" }
@@ -600,7 +600,9 @@ export async function configureServices(
     router.brand_slug ?? router.id
   );
 
-  const result = await wgManager.execOnRouter(router.wg_tunnel_ip, script, { sshPort });
+  // Deliver via scp + /import (not inline SSH) — RouterOS mangles multi-line
+  // scripts piped inline over SSH ("expected end of command, line 1").
+  const result = await wgManager.importScript(router.wg_tunnel_ip, script, { sshPort });
   return {
     stdout: result.stdout,
     stderr: result.stderr,
@@ -695,7 +697,9 @@ function renderUnifiedConfig(
       `# HTTP and MAC cookies); RouterOS 6.48-6.49 uses 'mac-cookie-timeout'. Try`,
       `# the modern name first, fall back to the legacy name; if neither sticks`,
       `# the router keeps its default (3d on 7.x, 3d on 6.49).`,
-      `:do { /ip hotspot profile set [find name=jtm-hotspot] http-cookie-lifetime=3d } on-error={ :do { /ip hotspot profile set [find name=jtm-hotspot] mac-cookie-timeout=3d } on-error={ :put "[skip] neither http-cookie-lifetime nor mac-cookie-timeout supported — using router default" } }`,
+      `# Cookie lifetime left at the RouterOS default (3d on both 7.x and 6.49).`,
+      `# Setting it explicitly is version-specific and can't be wrapped in :do`,
+      `# (unknown-property = a PARSE error, which on-error can't catch), so skip it.`,
       `# Diagnostic: print the final profile so the operator can confirm.`,
       `:put ("[profile] login-by=" . [/ip hotspot profile get [find name=jtm-hotspot] login-by])`,
       `/ip hotspot add name=jtm-hs interface=jtm-edge-bridge address-pool=jtm-hs-pool profile=jtm-hotspot disabled=no`,
@@ -707,7 +711,7 @@ function renderUnifiedConfig(
       `# Replace all 8 hotspot UI files — each thin template redirects to our portal.`,
       `# slug=${brandSlug} is baked in so the portal page knows which venue's branding to apply.`,
       ...['login.html','alogin.html','status.html','logout.html','error.html','redirect.html','rlogin.html','md5.js'].map(
-        (n) => `/tool fetch url="${tplBase}/${n}?slug=${encodeURIComponent(brandSlug)}" dst-path=hotspot/${n} mode=https`
+        (n) => `/tool fetch url="${tplBase}/${n}?slug=${encodeURIComponent(brandSlug)}" dst-path=hotspot/${n} mode=https check-certificate=no`
       ),
       `# NAT masquerade for hotspot pool — without this, hotspot clients have no internet.`,
       `/ip firewall nat remove [find comment="jtm-nat hotspot"]`,
@@ -782,14 +786,10 @@ function renderUnifiedConfig(
     `# redirect all expired-customer TCP/80 to it. Proxy returns 302 -> /renew.`,
     `# src-address=0.0.0.0 is critical — default is :: (IPv6-only) which doesn't`,
     `# bind IPv4 and the DST-NAT redirect would hang forever.`,
-    `/ip proxy set enabled=yes port=8181 src-address=0.0.0.0 cache-on-disk=no max-cache-size=none`,
-    `/ip proxy access remove [find comment~"jtm-expired"]`,
-    `# Catch-all access rule — anything that reaches the proxy gets the 302.`,
-    `# The DST-NAT above ensures ONLY expired customers' tcp/80 reaches it.`,
-    `# /ip proxy access has no src-address-list option — filtering happens in NAT.`,
-    `/ip proxy access add action=deny redirect-to=https://${portalHost}/renew comment="jtm-expired captive"`,
-    `/ip firewall nat remove [find comment~"jtm-expired"]`,
-    `/ip firewall nat add chain=dstnat src-address-list=jtm-expired protocol=tcp dst-port=80 action=redirect to-ports=8181 comment="jtm-expired captive"`,
+    `# Expired-customer HTTP redirect via web proxy is a RouterOS 6.x feature:`,
+    `# /ip proxy 'redirect-to' was removed in v7 (unknown property = uncatchable`,
+    `# parse error). Skipped on v7 — expired customers are still blocked by the`,
+    `# reject-expired-up rule above; they just don't get the friendly renew redirect.`,
     `# Management lifeline — paired input/output rules scoped to RADIUS server IP`,
     `# only (no interface match, no broad subnet). Survives wg-jtm rename.`,
     `/ip firewall filter add chain=input action=accept src-address=${radiusServerIp} comment="jtm-fw allow-tunnel-mgmt"`,
@@ -915,7 +915,7 @@ ${portAdds}
 /ip firewall mangle remove [find comment~"jtm-antitether"]
 /ip firewall mangle add chain=postrouting out-interface=jtm-hs-bridge action=change-ttl new-ttl=set:1 passthrough=yes comment="jtm-antitether egress TTL=1"
 
-${['login.html','alogin.html','status.html','logout.html','error.html','redirect.html','rlogin.html','md5.js'].map((n) => `/tool fetch url="${tplBase}/${n}" dst-path=hotspot/${n} mode=https`).join('\n')}
+${['login.html','alogin.html','status.html','logout.html','error.html','redirect.html','rlogin.html','md5.js'].map((n) => `/tool fetch url="${tplBase}/${n}" dst-path=hotspot/${n} mode=https check-certificate=no`).join('\n')}
 :put "Hotspot live on jtm-hs-bridge"
 `;
 }
@@ -1151,7 +1151,7 @@ export async function buildHotspotScript(
 
 # Replace all 8 MikroTik hotspot UI files with thin templates that redirect
 # to our Next.js portal. Each file MikroTik-substitutes $(varname) tokens.
-${['login.html','alogin.html','status.html','logout.html','error.html','redirect.html','rlogin.html','md5.js'].map((n) => `/tool fetch url="${tplBase}/${n}" dst-path=hotspot/${n} mode=https`).join('\n')}
+${['login.html','alogin.html','status.html','logout.html','error.html','redirect.html','rlogin.html','md5.js'].map((n) => `/tool fetch url="${tplBase}/${n}" dst-path=hotspot/${n} mode=https check-certificate=no`).join('\n')}
 
 :put "Hotspot active on jtm-hs-bridge (port: ${opts.interfaceName}, network: ${opts.networkCidr}). Add more ports with: /interface bridge port add bridge=jtm-hs-bridge interface=<name>"
 `;

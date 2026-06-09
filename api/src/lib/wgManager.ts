@@ -109,6 +109,32 @@ export async function execOnRouter(
 }
 
 /**
+ * Deliver a multi-line RouterOS script to the MikroTik as a FILE (scp over the
+ * tunnel) and /import it. RouterOS mangles multi-line scripts piped inline over
+ * SSH ("expected end of command, line 1"); importing a file parses correctly.
+ */
+export async function importScript(
+  tunnelIp: string,
+  script: string,
+  opts: { sshPort?: number; user?: string } = {}
+): Promise<ExecResult> {
+  const r = await fetch(`${config.wireguard.managerUrl}/routers/${tunnelIp}/import`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeader() },
+    body: JSON.stringify({
+      script,
+      sshPort: opts.sshPort,
+      user: opts.user ?? 'hub-mgmt',
+    }),
+  });
+  const body = (await r.json()) as ExecResult & { error?: string };
+  if (!r.ok && r.status !== 502) {
+    throw new Error(`wg-manager import failed (${r.status}): ${body.error ?? 'unknown'}`);
+  }
+  return body;
+}
+
+/**
  * Probe SSH ports (22, 21, 2222, 8022) for one that accepts our hub-mgmt key
  * auth. Returns the working port or null if none respond.
  */
