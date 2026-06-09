@@ -1,12 +1,16 @@
 import { query } from '../../db/pool.js';
 import { config } from '../../config.js';
 
+export type CollectionMethod = 'stk' | 'c2b';
+
 export interface MpesaConfig {
   env: 'sandbox' | 'production';
   consumerKey: string;
   consumerSecret: string;
   passkey: string;
   shortcode: string;
+  /** How customers pay: 'stk' = push prompt; 'c2b' = pay Paybill, account=phone. */
+  collectionMethod: CollectionMethod;
 }
 
 /** Public view of M-Pesa config — secrets are NEVER returned, only whether
@@ -19,6 +23,7 @@ export interface MpesaConfigPublic {
   consumerSecretSet: boolean;
   passkeySet: boolean;
   simulated: boolean;
+  collectionMethod: CollectionMethod;
 }
 
 async function readSettings(prefix: string): Promise<Map<string, string>> {
@@ -41,6 +46,7 @@ export async function getMpesaConfig(): Promise<MpesaConfig> {
     consumerSecret: map.get('mpesa.consumer_secret') ?? config.mpesa.consumerSecret,
     passkey: map.get('mpesa.passkey') ?? config.mpesa.passkey,
     shortcode: map.get('mpesa.shortcode') ?? config.mpesa.shortcode,
+    collectionMethod: ((map.get('mpesa.collection_method') ?? 'stk') as CollectionMethod),
   };
 }
 
@@ -53,6 +59,7 @@ export async function getMpesaConfigPublic(): Promise<MpesaConfigPublic> {
     consumerSecretSet: !!c.consumerSecret,
     passkeySet: !!c.passkey,
     simulated: !c.consumerKey || !c.consumerSecret || !c.passkey,
+    collectionMethod: c.collectionMethod,
   };
 }
 
@@ -172,6 +179,7 @@ export async function setMpesaConfig(
   if (input.consumerKey !== undefined) entries.push(['mpesa.consumer_key', input.consumerKey, true]);
   if (input.consumerSecret !== undefined) entries.push(['mpesa.consumer_secret', input.consumerSecret, true]);
   if (input.passkey !== undefined) entries.push(['mpesa.passkey', input.passkey, true]);
+  if (input.collectionMethod !== undefined) entries.push(['mpesa.collection_method', input.collectionMethod, false]);
 
   for (const [key, value, isSecret] of entries) {
     if (value === '') {

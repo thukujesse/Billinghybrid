@@ -9,6 +9,7 @@ interface MpesaPublic {
   consumerSecretSet: boolean;
   passkeySet: boolean;
   simulated: boolean;
+  collectionMethod: 'stk' | 'c2b';
 }
 
 interface SmsPublic {
@@ -36,11 +37,13 @@ export default function SettingsPage() {
     consumerKey: '',
     consumerSecret: '',
     passkey: '',
+    collectionMethod: 'stk' as 'stk' | 'c2b',
   });
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<{ ok: boolean; msg: string } | null>(null);
   const [mpesaTestPhone, setMpesaTestPhone] = useState('');
   const [mpesaTesting, setMpesaTesting] = useState(false);
+  const [registeringC2b, setRegisteringC2b] = useState(false);
 
   // Hotspot template branding (logo, ISP name, tagline, brand color).
   // Drives the captive portal at billing.hubnetwifi.co.ke/hotspot.
@@ -55,7 +58,7 @@ export default function SettingsPage() {
     api<MpesaPublic>('/settings/mpesa')
       .then((m) => {
         setMpesa(m);
-        setForm((f) => ({ ...f, env: m.env, shortcode: m.shortcode }));
+        setForm((f) => ({ ...f, env: m.env, shortcode: m.shortcode, collectionMethod: m.collectionMethod }));
       })
       .catch((e: any) => setToast({ ok: false, msg: e.message }));
 
@@ -249,6 +252,7 @@ export default function SettingsPage() {
       const body: Record<string, unknown> = {
         env: form.env,
         shortcode: form.shortcode,
+        collectionMethod: form.collectionMethod,
       };
       // Only send secret fields if non-empty — empty means "leave as-is".
       if (form.consumerKey) body.consumerKey = form.consumerKey;
@@ -286,6 +290,27 @@ export default function SettingsPage() {
       setToast({ ok: false, msg: e.message });
     } finally {
       setMpesaTesting(false);
+    }
+  };
+
+  const registerC2bUrls = async () => {
+    setRegisteringC2b(true);
+    try {
+      const r = await api<{ ResponseDescription?: string; errorMessage?: string }>(
+        '/settings/mpesa/register-c2b',
+        { method: 'POST' }
+      );
+      const ok = !r.errorMessage;
+      setToast({
+        ok,
+        msg: ok
+          ? `C2B URLs registered with Safaricom ✓ ${r.ResponseDescription ?? ''}`
+          : `Register failed: ${r.errorMessage}`,
+      });
+    } catch (e: any) {
+      setToast({ ok: false, msg: e.message });
+    } finally {
+      setRegisteringC2b(false);
     }
   };
 
@@ -340,6 +365,24 @@ export default function SettingsPage() {
           </div>
         </div>
 
+        <div className="row">
+          <div style={{ flex: 1 }}>
+            <label>Collection method</label>
+            <select
+              value={form.collectionMethod}
+              onChange={(e) => setForm({ ...form, collectionMethod: e.target.value as 'stk' | 'c2b' })}
+            >
+              <option value="stk">STK Push (auto prompt on customer phone)</option>
+              <option value="c2b">C2B Paybill (customer pays Paybill, account = phone)</option>
+            </select>
+            <p className="sub" style={{ marginTop: 4 }}>
+              {form.collectionMethod === 'c2b'
+                ? 'Portal shows "Pay Bill → shortcode → Account = your phone". Requires registering C2B URLs (below) once.'
+                : 'Portal sends an STK push to the customer\'s phone. Needs Passkey + Consumer Key/Secret.'}
+            </p>
+          </div>
+        </div>
+
         <label>Consumer Key {mpesa?.consumerKeySet && <span style={{ color: 'var(--green)' }}>✓ set</span>}</label>
         <input
           type="password"
@@ -372,6 +415,20 @@ export default function SettingsPage() {
             Pre-fill sandbox passkey
           </button>
         </div>
+
+        {form.collectionMethod === 'c2b' && (
+          <div style={{ marginTop: 20, borderTop: '1px solid var(--border, #e2e8f0)', paddingTop: 16 }}>
+            <h3 style={{ marginTop: 0, fontSize: 14 }}>C2B Paybill setup</h3>
+            <p className="sub" style={{ marginTop: 0 }}>
+              One-time: register the confirmation/validation URLs with Safaricom so payments to
+              Paybill <strong>{form.shortcode}</strong> POST back to us and auto-activate the customer.
+              Save your Consumer Key/Secret + Shortcode first.
+            </p>
+            <button className="ghost" onClick={registerC2bUrls} disabled={registeringC2b || saving}>
+              {registeringC2b ? 'Registering…' : 'Register C2B URLs'}
+            </button>
+          </div>
+        )}
 
         <div style={{ marginTop: 20, borderTop: '1px solid var(--border, #e2e8f0)', paddingTop: 16 }}>
           <h3 style={{ marginTop: 0, fontSize: 14 }}>Test STK push</h3>

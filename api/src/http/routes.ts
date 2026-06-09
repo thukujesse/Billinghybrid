@@ -659,6 +659,7 @@ api.put('/settings/mpesa', requireAuth('admin'), ah(async (req, res) => {
     consumerKey: z.string().optional(),
     consumerSecret: z.string().optional(),
     passkey: z.string().optional(),
+    collectionMethod: z.enum(['stk', 'c2b']).optional(),
   }), req.body);
   await settings.setMpesaConfig(body, (req.user as { username?: string } | undefined)?.username);
   res.json(await settings.getMpesaConfigPublic());
@@ -713,6 +714,11 @@ api.post('/hotspot/pay-c2b', ah(async (req, res) => {
     planId: body.plan_id, phone: body.phone, mac: body.mac,
     userAgent: req.headers['user-agent'],
   }));
+}));
+// Public: tells the captive portal which payment flow to run (STK vs C2B paybill).
+api.get('/hotspot/pay-config', ah(async (_req, res) => {
+  const m = await settings.getMpesaConfigPublic();
+  res.json({ collectionMethod: m.collectionMethod, paybill: m.shortcode });
 }));
 
 // ---------- SMS provider settings ----------

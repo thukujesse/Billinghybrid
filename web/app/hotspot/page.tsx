@@ -24,6 +24,8 @@ interface PurchaseInit {
   amountKes: number;
   customerMessage: string;
   simulated: boolean;
+  // Present only for the C2B (pay-bill) flow:
+  payInstructions?: { method: 'paybill'; paybill: string; account: string; amountKes: number };
 }
 
 interface Branding {
@@ -287,6 +289,8 @@ export default function HotspotPortal() {
   const [error, setError] = useState<string | null>(null);
   const [purchase, setPurchase] = useState<PurchaseInit | null>(null);
   const [purchaseStatus, setPurchaseStatus] = useState<string>('');
+  // Which payment flow the ISP configured: 'stk' = push prompt, 'c2b' = pay-bill.
+  const [payMethod, setPayMethod] = useState<'stk' | 'c2b'>('stk');
   const [pollElapsed, setPollElapsed] = useState(0);
   const [brand, setBrand] = useState<Branding>(DEFAULT_BRANDING);
   // Auto-grant fast path: if the connecting MAC is in active_devices we
@@ -560,6 +564,10 @@ export default function HotspotPortal() {
       })
       .catch((e: any) => setPlansError(e.message))
       .finally(() => setPlansLoading(false));
+    // Learn which payment flow the ISP configured (STK vs C2B paybill).
+    api<{ collectionMethod: 'stk' | 'c2b' }>('/hotspot/pay-config')
+      .then((c) => setPayMethod(c.collectionMethod))
+      .catch(() => {/* default to STK */});
   };
 
   // Quick Connect: phone-based session lookup. Customer paid before from
@@ -631,15 +639,20 @@ export default function HotspotPortal() {
     setError(null);
     setPollElapsed(0);
     try {
-      const p = await api<PurchaseInit>('/hotspot/pay', {
+      const endpoint = payMethod === 'c2b' ? '/hotspot/pay-c2b' : '/hotspot/pay';
+      const p = await api<PurchaseInit>(endpoint, {
         method: 'POST',
         body: JSON.stringify({ plan_id: planId, phone: phoneNormalized, mac: mtikParams?.mac }),
       });
       window.localStorage.setItem(PHONE_KEY, phoneNormalized);
       setPurchase(p);
-      setPurchaseStatus(p.simulated
-        ? 'Simulation mode — confirming…'
-        : 'STK push sent. Check your phone for the M-Pesa prompt.');
+      setPurchaseStatus(
+        payMethod === 'c2b'
+          ? (p.customerMessage ||
+              `Pay Bill ${p.payInstructions?.paybill} → Account ${p.payInstructions?.account} → KES ${p.amountKes}`)
+          : (p.simulated
+              ? 'Simulation mode — confirming…'
+              : 'STK push sent. Check your phone for the M-Pesa prompt.'));
       pollPurchase(p);
     } catch (e: any) {
       setError(e.message);
@@ -658,7 +671,8 @@ export default function HotspotPortal() {
     // for THIS browser on future visits even if localStorage is cleared.
     const fp = await getFingerprint();
     const start = performance.now();
-    const deadline = start + 90_000;
+    // C2B: customer leaves to pay the Paybill manually — give them longer.
+    const deadline = start + (payMethod === 'c2b' ? 240_000 : 90_000);
     const tick = async () => {
       try {
         const s = await api<{ status: string; grant?: GrantResult; failureReason?: string; token?: string }>(
@@ -971,16 +985,35 @@ export default function HotspotPortal() {
 
             {purchase ? (
               <>
-                <div style={styles.okToast}>
-                  {purchaseStatus}
-                  <br />
-                  <small>{purchase.customerMessage}</small>
-                </div>
+                {purchase.payInstructions ? (
+                  // C2B pay-bill: show the steps the customer types into M-Pesa.
+                  <div style={styles.okToast}>
+                    <strong>Pay with M-Pesa to connect:</strong>
+                    <div style={{ marginTop: 8, lineHeight: 1.9 }}>
+                      <div>1. Lipa na M-Pesa → <strong>Pay Bill</strong></div>
+                      <div>2. Business no: <strong style={{ fontSize: 18 }}>{purchase.payInstructions.paybill}</strong></div>
+                      <div>3. Account no: <strong style={{ fontSize: 18 }}>{purchase.payInstructions.account}</strong> (your phone)</div>
+                      <div>4. Amount: <strong style={{ fontSize: 18 }}>KES {purchase.amountKes}</strong></div>
+                    </div>
+                    <p style={{ ...styles.sub, marginTop: 8, marginBottom: 0 }}>
+                      You'll connect automatically once payment is received — keep this page open.
+                    </p>
+                  </div>
+                ) : (
+                  <div style={styles.okToast}>
+                    {purchaseStatus}
+                    <br />
+                    <small>{purchase.customerMessage}</small>
+                  </div>
+                )}
                 <p style={{ ...styles.sub, textAlign: 'center', marginTop: 12 }}>
-                  Waiting for M-Pesa… <strong>{pollElapsed}s</strong>
+                  {purchase.payInstructions ? 'Waiting for your payment…' : 'Waiting for M-Pesa…'}{' '}
+                  <strong>{pollElapsed}s</strong>
                 </p>
                 {pollElapsed >= 30 && (
-                  <button onClick={resendStk} style={styles.btnGhost}>Didn't receive prompt? Resend</button>
+                  <button onClick={resendStk} style={styles.btnGhost}>
+                    {purchase.payInstructions ? 'Start over' : "Didn't receive prompt? Resend"}
+                  </button>
                 )}
               </>
             ) : (
@@ -1112,7 +1145,9 @@ export default function HotspotPortal() {
                       disabled={!phoneValid || submitting}
                       style={{ ...styles.btnPrimary, opacity: !phoneValid || submitting ? 0.5 : 1 }}
                     >
-                      {submitting ? 'Sending STK push…' : 'Pay & Connect'}
+                      {submitting
+                        ? (payMethod === 'c2b' ? 'Getting pay details…' : 'Sending STK push…')
+                        : (payMethod === 'c2b' ? 'Show Pay Bill details' : 'Pay & Connect')}
                     </button>
                   </div>
                 )}
