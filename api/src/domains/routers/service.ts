@@ -214,7 +214,7 @@ export async function provisionRouter(input: {
   let vpsAutoAdded = false;
   if (wgManager.isEnabled()) {
     try {
-      await wgManager.addPeer(keys.publicKey, tunnelIp);
+      await wgManager.addPeer(keys.publicKey, tunnelIp, radiusSecret, input.name);
       vpsAutoAdded = true;
     } catch (err) {
       await query('DELETE FROM routers WHERE id = $1', [router.id]);

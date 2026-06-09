@@ -17,11 +17,21 @@ export function isEnabled(): boolean {
   return !!config.wireguard.managerToken;
 }
 
-export async function addPeer(publicKey: string, tunnelIp: string): Promise<void> {
+export async function addPeer(
+  publicKey: string,
+  tunnelIp: string,
+  radiusSecret?: string,
+  name?: string
+): Promise<void> {
+  // Option B: this VPS owns its local RADIUS DB. Pass the per-router RADIUS
+  // secret so wg-manager registers the `nas` row in the VPS-local DB (and
+  // reloads FreeRADIUS) — otherwise the NAS lands only in the dashboard's
+  // remote DB and the FreeRADIUS that actually serves the router never
+  // trusts it.
   const r = await fetch(`${config.wireguard.managerUrl}/peers`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeader() },
-    body: JSON.stringify({ publicKey, tunnelIp }),
+    body: JSON.stringify({ publicKey, tunnelIp, radiusSecret, name }),
   });
   if (!r.ok) {
     throw new Error(`wg-manager add failed (${r.status}): ${await r.text()}`);
