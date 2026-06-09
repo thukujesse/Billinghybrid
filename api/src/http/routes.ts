@@ -17,6 +17,7 @@ import * as subscriptions from '../domains/subscriptions/service.js';
 import * as billing from '../domains/billing/service.js';
 import * as payments from '../domains/payments/service.js';
 import { parseCallback, stkPush } from '../domains/payments/daraja.js';
+import * as c2b from '../domains/payments/c2b.js';
 import * as vouchers from '../domains/vouchers/service.js';
 import * as resellers from '../domains/resellers/service.js';
 import * as usage from '../domains/usage/service.js';
@@ -682,6 +683,36 @@ api.post('/settings/mpesa/test', requireAuth('admin'), ah(async (req, res) => {
   } catch (e: any) {
     res.json({ ok: false, error: e?.message ?? 'STK push failed' });
   }
+}));
+
+// ---------- M-Pesa C2B (your own Paybill) ----------
+// One-time: register C2B confirmation/validation URLs with Safaricom for your shortcode.
+api.post('/settings/mpesa/register-c2b', requireAuth('admin'), ah(async (_req, res) => {
+  res.json(await c2b.registerC2bUrls());
+}));
+// Safaricom C2B confirmation — match by account-ref (phone) + amount, settle, grant.
+// Always ACK 0 so Safaricom doesn't retry-storm; matching/settlement is internal.
+api.post('/payments/c2b/confirmation', ah(async (req, res) => {
+  try { await c2b.handleC2bConfirmation(req.body); }
+  catch (e) { console.error('[c2b] confirmation error', e); }
+  res.json({ ResultCode: 0, ResultDesc: 'Accepted' });
+}));
+// C2B validation (only invoked if external validation is enabled on the shortcode). Accept all.
+api.post('/payments/c2b/validation', ah(async (_req, res) => {
+  res.json({ ResultCode: 0, ResultDesc: 'Accepted' });
+}));
+// Create a pending C2B purchase (no STK) + return Pay-Bill instructions; the
+// portal shows these and polls /hotspot/pay/:id until the confirmation settles it.
+api.post('/hotspot/pay-c2b', ah(async (req, res) => {
+  const body = parse(z.object({
+    plan_id: z.string().uuid(),
+    phone: z.string().min(7),
+    mac: z.string().optional(),
+  }), req.body);
+  res.status(201).json(await c2b.initC2bPurchase({
+    planId: body.plan_id, phone: body.phone, mac: body.mac,
+    userAgent: req.headers['user-agent'],
+  }));
 }));
 
 // ---------- SMS provider settings ----------
