@@ -18,6 +18,7 @@ import * as billing from '../domains/billing/service.js';
 import * as payments from '../domains/payments/service.js';
 import { parseCallback, stkPush } from '../domains/payments/daraja.js';
 import * as c2b from '../domains/payments/c2b.js';
+import * as jenga from '../domains/payments/jenga.js';
 import * as vouchers from '../domains/vouchers/service.js';
 import * as resellers from '../domains/resellers/service.js';
 import * as usage from '../domains/usage/service.js';
@@ -721,6 +722,20 @@ api.post('/hotspot/pay-c2b', ah(async (req, res) => {
 api.get('/hotspot/pay-config', ah(async (_req, res) => {
   const m = await settings.getMpesaConfigPublic();
   res.json({ collectionMethod: m.collectionMethod, paybill: m.shortcode });
+}));
+// Jenga / Equity (JengaHQ) IPN webhook for bank-paybill collections. Maps the
+// Jenga payload into the shared C2B settlement engine (reference match -> grant).
+// Always 200 so Jenga doesn't retry-storm; matching is internal. Optional
+// shared secret: set JENGA_IPN_TOKEN and register the callback URL with
+// ?token=<that value> so only Jenga's posts are accepted.
+api.post('/payments/jenga/ipn', ah(async (req, res) => {
+  const expected = process.env.JENGA_IPN_TOKEN;
+  if (expected && req.query.token !== expected) {
+    return res.status(401).json({ status: 'unauthorized' });
+  }
+  try { await jenga.handleJengaIpn(req.body); }
+  catch (e) { console.error('[jenga-ipn] handler error:', e); }
+  res.json({ status: 'success' });
 }));
 
 // ---------- SMS provider settings ----------
