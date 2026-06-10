@@ -372,13 +372,13 @@ export default function SettingsPage() {
               value={form.collectionMethod}
               onChange={(e) => setForm({ ...form, collectionMethod: e.target.value as 'stk' | 'c2b' })}
             >
-              <option value="stk">STK Push (auto prompt on customer phone)</option>
-              <option value="c2b">C2B Paybill (customer pays Paybill, account = phone)</option>
+              <option value="stk">STK Push — prompt on customer&apos;s phone</option>
+              <option value="c2b">Paybill / Bank — pay our Paybill, account = phone (auto-approved)</option>
             </select>
             <p className="sub" style={{ marginTop: 4 }}>
               {form.collectionMethod === 'c2b'
-                ? 'Portal shows "Pay Bill → shortcode → Account = your phone". Requires registering C2B URLs (below) once.'
-                : 'Portal sends an STK push to the customer\'s phone. Needs Passkey + Consumer Key/Secret.'}
+                ? 'Customer pays the Paybill with account = their phone; Safaricom\'s callback auto-registers and approves them. No STK and no M-Pesa API of your own — so this also covers operators who only collect into a bank. Register the C2B URLs once (below).'
+                : 'Portal sends an STK push to the customer\'s phone. Needs your own Passkey + Consumer Key/Secret.'}
             </p>
           </div>
         </div>
@@ -418,11 +418,12 @@ export default function SettingsPage() {
 
         {form.collectionMethod === 'c2b' && (
           <div style={{ marginTop: 20, borderTop: '1px solid var(--border, #e2e8f0)', paddingTop: 16 }}>
-            <h3 style={{ marginTop: 0, fontSize: 14 }}>C2B Paybill setup</h3>
+            <h3 style={{ marginTop: 0, fontSize: 14 }}>Paybill / Bank setup (no per-tenant API)</h3>
             <p className="sub" style={{ marginTop: 0 }}>
-              One-time: register the confirmation/validation URLs with Safaricom so payments to
-              Paybill <strong>{form.shortcode}</strong> POST back to us and auto-activate the customer.
-              Save your Consumer Key/Secret + Shortcode first.
+              One-time: register the confirmation/validation URLs with Safaricom so every payment to
+              Paybill <strong>{form.shortcode}</strong> POSTs back here and auto-activates the customer
+              by their phone number. This single Paybill sits behind operators who have no M-Pesa API
+              of their own (e.g. they only collect into a bank). Save Consumer Key/Secret + Shortcode first.
             </p>
             <button className="ghost" onClick={registerC2bUrls} disabled={registeringC2b || saving}>
               {registeringC2b ? 'Registering…' : 'Register C2B URLs'}
