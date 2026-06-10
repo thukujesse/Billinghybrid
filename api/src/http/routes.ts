@@ -1176,6 +1176,11 @@ api.post('/hotspot/mpesa/callback', ah(async (req, res) => {
 // this to mark a fake purchase successful. Routed through the same queue
 // as real callbacks so the worker path is exercised end-to-end in dev.
 api.post('/hotspot/pay/:checkoutRequestId/confirm-test', ah(async (req, res) => {
+  // DEV-ONLY: this marks a purchase paid with no money. Hard-gate behind the
+  // same flag as simulation so it can never grant free access in production.
+  if (process.env.HOTSPOT_SIMULATION !== 'true') {
+    return res.status(403).json({ error: 'simulation disabled' });
+  }
   await paymentEvents.enqueue(
     'manual_hotspot',
     req.params.checkoutRequestId,

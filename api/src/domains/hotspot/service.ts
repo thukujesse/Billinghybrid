@@ -251,16 +251,24 @@ export async function initPurchase(input: {
   if (!/^254\d{9}$/.test(phone)) throw badRequest('invalid phone');
 
   const amountKes = Math.round(plan.price_cents / 100);
-  const simulated = await isMpesaSimulated();
+  // Simulation = an instant FREE grant. It is a DEV-ONLY convenience and must
+  // never run in production. Missing Daraja creds is normal when collecting via
+  // IntaSend / Paybill-C2B, so it must NOT imply "simulate" — gate strictly on
+  // an explicit env flag (HOTSPOT_SIMULATION=true), default off.
+  const noCreds = await isMpesaSimulated();
+  const simulated = process.env.HOTSPOT_SIMULATION === 'true' && noCreds;
   let checkoutRequestId: string;
   let customerMessage: string;
 
   if (simulated) {
-    // No M-Pesa creds — generate a fake checkoutRequestId. Portal can call
-    // /confirm-test to mark this purchase successful for end-to-end testing.
+    // Dev only — portal calls /confirm-test to mark this successful for testing.
     checkoutRequestId = 'SIM-' + crypto.randomBytes(8).toString('hex').toUpperCase();
     customerMessage = `[Simulation] Would have charged ${phone} KES ${amountKes}`;
   } else {
+    if (noCreds) {
+      // No real STK rail configured — fail instead of granting free access.
+      throw badRequest('M-Pesa STK is not configured. Add Daraja credentials in Settings, or switch the collection method to IntaSend or Paybill/Bank.');
+    }
     const res = await stkPush({
       phone,
       amountKes,
