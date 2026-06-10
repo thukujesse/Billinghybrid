@@ -9,7 +9,15 @@ interface MpesaPublic {
   consumerSecretSet: boolean;
   passkeySet: boolean;
   simulated: boolean;
-  collectionMethod: 'stk' | 'c2b';
+  collectionMethod: 'stk' | 'c2b' | 'intasend';
+}
+
+interface IntasendPublic {
+  env: 'sandbox' | 'live';
+  publicKeySet: boolean;
+  secretKeySet: boolean;
+  challengeSet: boolean;
+  configured: boolean;
 }
 
 interface SmsPublic {
@@ -37,13 +45,18 @@ export default function SettingsPage() {
     consumerKey: '',
     consumerSecret: '',
     passkey: '',
-    collectionMethod: 'stk' as 'stk' | 'c2b',
+    collectionMethod: 'stk' as 'stk' | 'c2b' | 'intasend',
   });
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<{ ok: boolean; msg: string } | null>(null);
   const [mpesaTestPhone, setMpesaTestPhone] = useState('');
   const [mpesaTesting, setMpesaTesting] = useState(false);
   const [registeringC2b, setRegisteringC2b] = useState(false);
+
+  // IntaSend aggregator config (env + keys + webhook challenge).
+  const [intasend, setIntasend] = useState<IntasendPublic | null>(null);
+  const [intaForm, setIntaForm] = useState({ env: 'sandbox' as 'sandbox' | 'live', publicKey: '', secretKey: '', challenge: '' });
+  const [intaSaving, setIntaSaving] = useState(false);
 
   // Hotspot template branding (logo, ISP name, tagline, brand color).
   // Drives the captive portal at billing.hubnetwifi.co.ke/hotspot.
@@ -61,6 +74,29 @@ export default function SettingsPage() {
         setForm((f) => ({ ...f, env: m.env, shortcode: m.shortcode, collectionMethod: m.collectionMethod }));
       })
       .catch((e: any) => setToast({ ok: false, msg: e.message }));
+
+  const loadIntasend = () =>
+    api<IntasendPublic>('/settings/intasend')
+      .then((i) => { setIntasend(i); setIntaForm((f) => ({ ...f, env: i.env })); })
+      .catch(() => {/* endpoint absent before deploy — ignore */});
+
+  const saveIntasend = async () => {
+    setIntaSaving(true);
+    try {
+      const body: Record<string, unknown> = { env: intaForm.env };
+      if (intaForm.publicKey) body.publicKey = intaForm.publicKey;
+      if (intaForm.secretKey) body.secretKey = intaForm.secretKey;
+      if (intaForm.challenge) body.challenge = intaForm.challenge;
+      const i = await api<IntasendPublic>('/settings/intasend', { method: 'PUT', body: JSON.stringify(body) });
+      setIntasend(i);
+      setIntaForm((f) => ({ ...f, publicKey: '', secretKey: '', challenge: '' }));
+      setToast({ ok: true, msg: 'IntaSend settings saved' });
+    } catch (e: any) {
+      setToast({ ok: false, msg: e.message });
+    } finally {
+      setIntaSaving(false);
+    }
+  };
 
   const loadBrand = () =>
     api<HotspotBranding>('/admin/hotspot-branding')
@@ -185,7 +221,7 @@ export default function SettingsPage() {
     }
   };
 
-  useEffect(() => { load(); loadBrand(); loadSms(); }, []);
+  useEffect(() => { load(); loadBrand(); loadSms(); loadIntasend(); }, []);
 
   const saveBrand = async () => {
     setBrandSaving(true);
@@ -370,14 +406,17 @@ export default function SettingsPage() {
             <label>Collection method</label>
             <select
               value={form.collectionMethod}
-              onChange={(e) => setForm({ ...form, collectionMethod: e.target.value as 'stk' | 'c2b' })}
+              onChange={(e) => setForm({ ...form, collectionMethod: e.target.value as 'stk' | 'c2b' | 'intasend' })}
             >
-              <option value="stk">STK Push — prompt on customer&apos;s phone</option>
+              <option value="stk">STK Push — prompt on customer&apos;s phone (your own Daraja)</option>
               <option value="c2b">Paybill / Bank — pay our Paybill, account = phone (auto-approved)</option>
+              <option value="intasend">IntaSend aggregator — M-Pesa STK, no own paybill (settles to your bank)</option>
             </select>
             <p className="sub" style={{ marginTop: 4 }}>
               {form.collectionMethod === 'c2b'
                 ? 'Customer pays the Paybill with account = their phone; Safaricom\'s callback auto-registers and approves them. No STK and no M-Pesa API of your own — so this also covers operators who only collect into a bank. Register the C2B URLs once (below).'
+                : form.collectionMethod === 'intasend'
+                ? 'Portal triggers an M-Pesa STK via IntaSend (no Safaricom paybill of your own). IntaSend\'s webhook auto-activates the customer and settles funds to your bank. Add your IntaSend keys below.'
                 : 'Portal sends an STK push to the customer\'s phone. Needs your own Passkey + Consumer Key/Secret.'}
             </p>
           </div>
@@ -428,6 +467,42 @@ export default function SettingsPage() {
             <button className="ghost" onClick={registerC2bUrls} disabled={registeringC2b || saving}>
               {registeringC2b ? 'Registering…' : 'Register C2B URLs'}
             </button>
+          </div>
+        )}
+
+        {form.collectionMethod === 'intasend' && (
+          <div style={{ marginTop: 20, borderTop: '1px solid var(--border, #e2e8f0)', paddingTop: 16 }}>
+            <h3 style={{ marginTop: 0, fontSize: 14 }}>
+              IntaSend setup {intasend?.configured && <span style={{ color: 'var(--green)' }}>✓ configured</span>}
+            </h3>
+            <p className="sub" style={{ marginTop: 0 }}>
+              Sign up at intasend.com → API keys. Paste your <strong>Secret key</strong> (and Publishable key),
+              pick the environment, and set a <strong>webhook challenge</strong> (any secret string) here AND in the
+              IntaSend dashboard. Register your webhook URL there as:
+              <br />
+              <code>https://demo.hubnetwifi.co.ke/api/payments/intasend/webhook</code>
+            </p>
+            <div className="row">
+              <div style={{ flex: '0 0 160px' }}>
+                <label>Environment</label>
+                <select value={intaForm.env} onChange={(e) => setIntaForm({ ...intaForm, env: e.target.value as 'sandbox' | 'live' })}>
+                  <option value="sandbox">Sandbox (test)</option>
+                  <option value="live">Live</option>
+                </select>
+              </div>
+            </div>
+            <label>Publishable key {intasend?.publicKeySet && <span style={{ color: 'var(--green)' }}>✓ set</span>}</label>
+            <input value={intaForm.publicKey} onChange={(e) => setIntaForm({ ...intaForm, publicKey: e.target.value })}
+              placeholder={intasend?.publicKeySet ? '••• leave empty to keep current' : 'ISPubKey_...'} />
+            <label>Secret key {intasend?.secretKeySet && <span style={{ color: 'var(--green)' }}>✓ set</span>}</label>
+            <input type="password" value={intaForm.secretKey} onChange={(e) => setIntaForm({ ...intaForm, secretKey: e.target.value })}
+              placeholder={intasend?.secretKeySet ? '••• leave empty to keep current' : 'ISSecretKey_...'} />
+            <label>Webhook challenge {intasend?.challengeSet && <span style={{ color: 'var(--green)' }}>✓ set</span>}</label>
+            <input type="password" value={intaForm.challenge} onChange={(e) => setIntaForm({ ...intaForm, challenge: e.target.value })}
+              placeholder={intasend?.challengeSet ? '••• leave empty to keep current' : 'a secret you also set in IntaSend'} />
+            <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+              <button onClick={saveIntasend} disabled={intaSaving}>{intaSaving ? 'Saving…' : 'Save IntaSend'}</button>
+            </div>
           </div>
         )}
 

@@ -289,8 +289,9 @@ export default function HotspotPortal() {
   const [error, setError] = useState<string | null>(null);
   const [purchase, setPurchase] = useState<PurchaseInit | null>(null);
   const [purchaseStatus, setPurchaseStatus] = useState<string>('');
-  // Which payment flow the ISP configured: 'stk' = push prompt, 'c2b' = pay-bill.
-  const [payMethod, setPayMethod] = useState<'stk' | 'c2b'>('stk');
+  // Which payment flow the ISP configured: 'stk' = Daraja push, 'c2b' = pay-bill,
+  // 'intasend' = STK via the IntaSend aggregator.
+  const [payMethod, setPayMethod] = useState<'stk' | 'c2b' | 'intasend'>('stk');
   const [pollElapsed, setPollElapsed] = useState(0);
   const [brand, setBrand] = useState<Branding>(DEFAULT_BRANDING);
   // Auto-grant fast path: if the connecting MAC is in active_devices we
@@ -565,7 +566,7 @@ export default function HotspotPortal() {
       .catch((e: any) => setPlansError(e.message))
       .finally(() => setPlansLoading(false));
     // Learn which payment flow the ISP configured (STK vs C2B paybill).
-    api<{ collectionMethod: 'stk' | 'c2b' }>('/hotspot/pay-config')
+    api<{ collectionMethod: 'stk' | 'c2b' | 'intasend' }>('/hotspot/pay-config')
       .then((c) => setPayMethod(c.collectionMethod))
       .catch(() => {/* default to STK */});
   };
@@ -639,7 +640,10 @@ export default function HotspotPortal() {
     setError(null);
     setPollElapsed(0);
     try {
-      const endpoint = payMethod === 'c2b' ? '/hotspot/pay-c2b' : '/hotspot/pay';
+      const endpoint =
+        payMethod === 'c2b' ? '/hotspot/pay-c2b' :
+        payMethod === 'intasend' ? '/hotspot/pay-intasend' :
+        '/hotspot/pay';
       const p = await api<PurchaseInit>(endpoint, {
         method: 'POST',
         body: JSON.stringify({ plan_id: planId, phone: phoneNormalized, mac: mtikParams?.mac }),
@@ -650,9 +654,9 @@ export default function HotspotPortal() {
         payMethod === 'c2b'
           ? (p.customerMessage ||
               `Pay Bill ${p.payInstructions?.paybill} → Account ${p.payInstructions?.account} → KES ${p.amountKes}`)
-          : (p.simulated
+          : (p.customerMessage || (p.simulated
               ? 'Simulation mode — confirming…'
-              : 'STK push sent. Check your phone for the M-Pesa prompt.'));
+              : 'STK push sent. Check your phone for the M-Pesa prompt.')));
       pollPurchase(p);
     } catch (e: any) {
       setError(e.message);

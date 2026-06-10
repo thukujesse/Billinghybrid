@@ -1,7 +1,7 @@
 import { query } from '../../db/pool.js';
 import { config } from '../../config.js';
 
-export type CollectionMethod = 'stk' | 'c2b';
+export type CollectionMethod = 'stk' | 'c2b' | 'intasend';
 
 export interface MpesaConfig {
   env: 'sandbox' | 'production';
@@ -67,6 +67,77 @@ export async function getMpesaConfigPublic(): Promise<MpesaConfigPublic> {
 export async function isMpesaSimulated(): Promise<boolean> {
   const c = await getMpesaConfig();
   return !c.consumerKey || !c.consumerSecret || !c.passkey;
+}
+
+// =====================================================================
+// IntaSend aggregator — collects M-Pesa (STK / paybill) + cards without
+// your own Daraja paybill. Same DB-overrides-env pattern as M-Pesa.
+// =====================================================================
+
+export interface IntasendConfig {
+  env: 'sandbox' | 'live';
+  publicKey: string;
+  secretKey: string;
+  /** Webhook 'challenge' string set in the IntaSend dashboard — proves a
+   *  webhook POST is genuinely from IntaSend. */
+  challenge: string;
+}
+
+export interface IntasendConfigPublic {
+  env: 'sandbox' | 'live';
+  publicKeySet: boolean;
+  secretKeySet: boolean;
+  challengeSet: boolean;
+  configured: boolean;
+}
+
+export async function getIntasendConfig(): Promise<IntasendConfig> {
+  const map = await readSettings('intasend.');
+  return {
+    env: ((map.get('intasend.env') ?? process.env.INTASEND_ENV ?? 'sandbox') as 'sandbox' | 'live'),
+    publicKey: map.get('intasend.public_key') ?? process.env.INTASEND_PUBLIC_KEY ?? '',
+    secretKey: map.get('intasend.secret_key') ?? process.env.INTASEND_SECRET_KEY ?? '',
+    challenge: map.get('intasend.challenge') ?? process.env.INTASEND_CHALLENGE ?? '',
+  };
+}
+
+export async function getIntasendConfigPublic(): Promise<IntasendConfigPublic> {
+  const c = await getIntasendConfig();
+  return {
+    env: c.env,
+    publicKeySet: !!c.publicKey,
+    secretKeySet: !!c.secretKey,
+    challengeSet: !!c.challenge,
+    configured: !!c.secretKey,
+  };
+}
+
+export async function setIntasendConfig(
+  input: Partial<IntasendConfig>,
+  updatedBy?: string
+): Promise<void> {
+  const entries: Array<[string, string, boolean]> = [];
+  if (input.env !== undefined) entries.push(['intasend.env', input.env, false]);
+  if (input.publicKey !== undefined) entries.push(['intasend.public_key', input.publicKey, false]);
+  if (input.secretKey !== undefined) entries.push(['intasend.secret_key', input.secretKey, true]);
+  if (input.challenge !== undefined) entries.push(['intasend.challenge', input.challenge, true]);
+
+  for (const [key, value, isSecret] of entries) {
+    if (value === '') {
+      await query(`DELETE FROM settings WHERE key = $1`, [key]);
+    } else {
+      await query(
+        `INSERT INTO settings (key, value, is_secret, updated_by)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (key) DO UPDATE SET
+           value = EXCLUDED.value,
+           is_secret = EXCLUDED.is_secret,
+           updated_at = now(),
+           updated_by = EXCLUDED.updated_by`,
+        [key, value, isSecret, updatedBy ?? 'admin']
+      );
+    }
+  }
 }
 
 // =====================================================================

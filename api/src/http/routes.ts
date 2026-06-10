@@ -19,6 +19,7 @@ import * as payments from '../domains/payments/service.js';
 import { parseCallback, stkPush } from '../domains/payments/daraja.js';
 import * as c2b from '../domains/payments/c2b.js';
 import * as jenga from '../domains/payments/jenga.js';
+import * as intasend from '../domains/payments/intasend.js';
 import * as vouchers from '../domains/vouchers/service.js';
 import * as resellers from '../domains/resellers/service.js';
 import * as usage from '../domains/usage/service.js';
@@ -662,7 +663,7 @@ api.put('/settings/mpesa', requireAuth('admin'), ah(async (req, res) => {
     consumerKey: z.string().optional(),
     consumerSecret: z.string().optional(),
     passkey: z.string().optional(),
-    collectionMethod: z.enum(['stk', 'c2b']).optional(),
+    collectionMethod: z.enum(['stk', 'c2b', 'intasend']).optional(),
   }), req.body);
   await settings.setMpesaConfig(body, (req.user as { username?: string } | undefined)?.username);
   res.json(await settings.getMpesaConfigPublic());
@@ -693,6 +694,20 @@ api.post('/settings/mpesa/test', requireAuth('admin'), ah(async (req, res) => {
 // One-time: register C2B confirmation/validation URLs with Safaricom for your shortcode.
 api.post('/settings/mpesa/register-c2b', requireAuth('admin'), ah(async (_req, res) => {
   res.json(await c2b.registerC2bUrls());
+}));
+// IntaSend aggregator settings (env + keys + webhook challenge).
+api.get('/settings/intasend', requireAuth('admin', 'staff'), ah(async (_req, res) => {
+  res.json(await settings.getIntasendConfigPublic());
+}));
+api.put('/settings/intasend', requireAuth('admin'), ah(async (req, res) => {
+  const body = parse(z.object({
+    env: z.enum(['sandbox', 'live']).optional(),
+    publicKey: z.string().optional(),
+    secretKey: z.string().optional(),
+    challenge: z.string().optional(),
+  }), req.body);
+  await settings.setIntasendConfig(body, (req.user as { username?: string } | undefined)?.username);
+  res.json(await settings.getIntasendConfigPublic());
 }));
 // Safaricom C2B confirmation — match by account-ref (phone) + amount, settle, grant.
 // Always ACK 0 so Safaricom doesn't retry-storm; matching/settlement is internal.
@@ -736,6 +751,24 @@ api.post('/payments/jenga/ipn', ah(async (req, res) => {
   try { await jenga.handleJengaIpn(req.body); }
   catch (e) { console.error('[jenga-ipn] handler error:', e); }
   res.json({ status: 'success' });
+}));
+// IntaSend collection webhook — verify challenge, map api_ref -> our reference, grant.
+api.post('/payments/intasend/webhook', ah(async (req, res) => {
+  try { await intasend.handleIntasendWebhook(req.body); }
+  catch (e) { console.error('[intasend-webhook] handler error:', e); }
+  res.status(200).json({ status: 'ok' }); // always ack so IntaSend doesn't retry-storm
+}));
+// Portal: create pending + fire an IntaSend M-Pesa STK push (api_ref = HUB reference).
+api.post('/hotspot/pay-intasend', ah(async (req, res) => {
+  const body = parse(z.object({
+    plan_id: z.string(),
+    phone: z.string().min(7),
+    mac: z.string().optional(),
+  }), req.body);
+  res.status(201).json(await intasend.initIntasendPurchase({
+    planId: body.plan_id, phone: body.phone, mac: body.mac,
+    userAgent: req.headers['user-agent'],
+  }));
 }));
 
 // ---------- SMS provider settings ----------
