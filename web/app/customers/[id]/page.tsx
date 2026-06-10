@@ -577,7 +577,7 @@ export default function CustomerDetail() {
             <p className="sub">No audited activity for this customer yet.</p>
           ) : activity.map((e) => (
             <div key={e.id} style={{
-              background: '#fff', border: '1px solid var(--border, #e2e8f0)',
+              background: 'var(--card-2)', border: '1px solid var(--border)',
               borderRadius: 8, padding: 12, marginBottom: 8, fontSize: 13,
             }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
@@ -668,7 +668,7 @@ export default function CustomerDetail() {
           display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100,
         }} onClick={() => setAdjust(null)}>
           <div style={{
-            background: '#fff', borderRadius: 12, padding: 24, maxWidth: 420, width: '90%',
+            background: 'var(--card)', borderRadius: 12, padding: 24, maxWidth: 420, width: '90%',
           }} onClick={(e) => e.stopPropagation()}>
             <h3 style={{ marginTop: 0 }}>Adjust wallet balance</h3>
             <p className="sub">

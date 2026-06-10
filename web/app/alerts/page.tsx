@@ -171,7 +171,7 @@ export default function AlertsPage() {
                     {a.status}
                   </span>
                 </div>
-                <div style={{ fontSize: 13, color: '#0f172a' }}>{a.message}</div>
+                <div style={{ fontSize: 13, color: 'var(--text)' }}>{a.message}</div>
                 {Object.keys(a.details).length > 0 && (
                   <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6, fontFamily: 'ui-monospace, monospace' }}>
                     {JSON.stringify(a.details)}

@@ -137,7 +137,7 @@ function RouterCard({ r }: { r: RouterStatus }) {
 
   return (
     <div style={{
-      background: '#fff', border: '1px solid var(--border, #e2e8f0)',
+      background: 'var(--card)', border: '1px solid var(--border)',
       borderRadius: 10, padding: 14, marginBottom: 10,
     }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>

@@ -61,15 +61,15 @@ function HeroCard({
 }) {
   return (
     <div style={{
-      background: '#fff',
-      border: '1px solid #e2e8f0',
+      background: 'var(--card)',
+      border: '1px solid var(--border)',
       borderRadius: 12,
       padding: '16px 18px',
       display: 'flex', flexDirection: 'column', justifyContent: 'space-between',
       minHeight: 110,
       position: 'relative',
       overflow: 'hidden',
-      boxShadow: '0 1px 2px rgba(15,23,42,0.04)',
+      boxShadow: 'var(--shadow)',
     }}>
       {accentBar && (
         <div style={{
@@ -77,14 +77,14 @@ function HeroCard({
         }} />
       )}
       <div>
-        <div style={{ fontSize: 10, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.6, fontWeight: 700 }}>
+        <div style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.6, fontWeight: 700 }}>
           {label}
         </div>
-        <div style={{ fontSize: 24, fontWeight: 700, color: '#0f172a', marginTop: 6, lineHeight: 1.1 }}>
+        <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--text)', marginTop: 6, lineHeight: 1.1 }}>
           {value}
         </div>
         {sublabel && (
-          <div style={{ fontSize: 11, color: sublabelColor ?? '#94a3b8', marginTop: 4 }}>
+          <div style={{ fontSize: 11, color: sublabelColor ?? 'var(--muted)', marginTop: 4 }}>
             {sublabel}
           </div>
         )}
@@ -102,10 +102,10 @@ function StatusPill({
   label, count, tone,
 }: { label: string; count: number; tone: 'ok' | 'warn' | 'crit' | 'mute' }) {
   const colors = {
-    ok:   { bg: 'rgba(22,163,74,0.10)',  fg: '#15803d', dot: '#22c55e' },
-    warn: { bg: 'rgba(217,119,6,0.10)',  fg: '#a16207', dot: '#d97706' },
-    crit: { bg: 'rgba(220,38,38,0.10)',  fg: '#b91c1c', dot: '#dc2626' },
-    mute: { bg: 'rgba(100,116,139,0.08)', fg: '#475569', dot: '#94a3b8' },
+    ok:   { bg: 'var(--green-weak)',  fg: 'var(--green)',  dot: '#22c55e' },
+    warn: { bg: 'var(--orange-weak)', fg: 'var(--orange)', dot: '#d97706' },
+    crit: { bg: 'var(--red-weak)',    fg: 'var(--red)',    dot: '#dc2626' },
+    mute: { bg: 'var(--card-2)',      fg: 'var(--text-2)', dot: 'var(--muted)' },
   }[tone];
   return (
     <span style={{
@@ -128,8 +128,8 @@ function QuickActionTile({
 }: { href: string; icon: string; label: string; description: string }) {
   return (
     <a href={href} style={{
-      background: '#fff',
-      border: '1px solid #e2e8f0',
+      background: 'var(--card)',
+      border: '1px solid var(--border)',
       borderRadius: 10,
       padding: 14,
       display: 'flex', alignItems: 'center', gap: 12,
@@ -143,8 +143,8 @@ function QuickActionTile({
         fontSize: 18, fontWeight: 700, flexShrink: 0,
       }}>{icon}</div>
       <div style={{ minWidth: 0 }}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: '#0f172a' }}>{label}</div>
-        <div style={{ fontSize: 11, color: '#64748b' }}>{description}</div>
+        <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{label}</div>
+        <div style={{ fontSize: 11, color: 'var(--muted)' }}>{description}</div>
       </div>
     </a>
   );
@@ -229,7 +229,7 @@ export default async function Dashboard() {
           label="Revenue · 12 mo"
           value={money(total12mo)}
           sublabel={momPct !== null ? `${momPct >= 0 ? '↗' : '↘'} ${momPct >= 0 ? '+' : ''}${momPct}% vs prior month` : 'first month'}
-          sublabelColor={momPct === null ? '#94a3b8' : momPct >= 0 ? '#15803d' : '#b91c1c'}
+          sublabelColor={momPct === null ? 'var(--muted)' : momPct >= 0 ? '#15803d' : '#b91c1c'}
           accent="#2563eb"
           accentBar
           sparkline={revSpark}
@@ -245,7 +245,7 @@ export default async function Dashboard() {
           label="Renewals at risk · 7d"
           value={money(outstandingTotal)}
           sublabel={`${(outstanding?.expiring_24h.count ?? 0) + (outstanding?.expiring_7d.count ?? 0)} expiring soon`}
-          sublabelColor={outstandingTotal > 0 ? '#d97706' : '#94a3b8'}
+          sublabelColor={outstandingTotal > 0 ? '#d97706' : 'var(--muted)'}
           accent="#d97706"
           accentBar
         />
@@ -282,22 +282,22 @@ export default async function Dashboard() {
         <section>
           <h2 style={{ fontSize: 16, marginTop: 0 }}>PPPoE state</h2>
           <div style={{
-            background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden',
+            background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden',
           }}>
             {[
               { label: 'Active', value: pppoe.active, color: '#15803d', dot: '#22c55e' },
-              { label: 'Expiring < 24h', value: pppoe.expiring_24h, color: pppoe.expiring_24h > 0 ? '#a16207' : '#94a3b8', dot: '#d97706' },
-              { label: 'Expired', value: pppoe.expired, color: pppoe.expired > 0 ? '#b91c1c' : '#94a3b8', dot: '#dc2626' },
-              { label: 'Suspended', value: pppoe.suspended, color: '#475569', dot: '#94a3b8' },
+              { label: 'Expiring < 24h', value: pppoe.expiring_24h, color: pppoe.expiring_24h > 0 ? '#a16207' : 'var(--muted)', dot: '#d97706' },
+              { label: 'Expired', value: pppoe.expired, color: pppoe.expired > 0 ? '#b91c1c' : 'var(--muted)', dot: '#dc2626' },
+              { label: 'Suspended', value: pppoe.suspended, color: 'var(--text-2)', dot: 'var(--muted)' },
             ].map((row, i) => (
               <div key={row.label} style={{
                 display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                 padding: '12px 16px',
-                borderTop: i === 0 ? 'none' : '1px solid #f1f5f9',
+                borderTop: i === 0 ? 'none' : '1px solid var(--border-2)',
               }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <span style={{ width: 6, height: 6, borderRadius: '50%', background: row.dot }} />
-                  <span style={{ fontSize: 13, color: '#475569' }}>{row.label}</span>
+                  <span style={{ fontSize: 13, color: 'var(--text-2)' }}>{row.label}</span>
                 </div>
                 <strong style={{ color: row.color, fontSize: 16 }}>{row.value}</strong>
               </div>
@@ -306,11 +306,11 @@ export default async function Dashboard() {
 
           {totalCount(subs) > 0 && (
             <>
-              <h2 style={{ fontSize: 14, marginTop: 20, color: '#64748b' }}>Legacy subscribers</h2>
+              <h2 style={{ fontSize: 14, marginTop: 20, color: 'var(--muted)' }}>Legacy subscribers</h2>
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                 {Object.entries(subs).map(([k, v]) => (
                   <span key={k} style={{
-                    background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6,
+                    background: 'var(--card-2)', border: '1px solid var(--border)', borderRadius: 6,
                     padding: '4px 10px', fontSize: 12,
                   }}>
                     {k}: <strong>{String(v)}</strong>
@@ -327,27 +327,27 @@ export default async function Dashboard() {
             <p className="sub">No payments yet.</p>
           ) : (
             <div style={{
-              background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden',
+              background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden',
             }}>
               {(data.recent_payments ?? []).slice(0, 6).map((p: any, i: number) => (
                 <div key={p.id} style={{
                   display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                   padding: '10px 14px',
-                  borderTop: i === 0 ? 'none' : '1px solid #f1f5f9',
+                  borderTop: i === 0 ? 'none' : '1px solid var(--border-2)',
                 }}>
                   <div style={{ minWidth: 0 }}>
                     <div style={{ fontSize: 13, fontWeight: 600 }}>
                       {money(Number(p.amount_cents))}
                       <span style={{
                         marginLeft: 8, fontSize: 10, padding: '2px 6px', borderRadius: 4,
-                        background: p.status === 'success' ? 'rgba(22,163,74,0.12)' : 'rgba(217,119,6,0.12)',
-                        color: p.status === 'success' ? '#15803d' : '#a16207',
+                        background: p.status === 'success' ? 'var(--green-weak)' : 'var(--orange-weak)',
+                        color: p.status === 'success' ? 'var(--green)' : 'var(--orange)',
                         textTransform: 'uppercase', fontWeight: 700, letterSpacing: 0.4,
                       }}>{p.status}</span>
                     </div>
-                    <div style={{ fontSize: 11, color: '#94a3b8' }}>{p.provider}</div>
+                    <div style={{ fontSize: 11, color: 'var(--muted)' }}>{p.provider}</div>
                   </div>
-                  <div style={{ fontSize: 11, color: '#94a3b8', textAlign: 'right', flexShrink: 0 }}>
+                  <div style={{ fontSize: 11, color: 'var(--muted)', textAlign: 'right', flexShrink: 0 }}>
                     {new Date(p.created_at).toLocaleString()}
                   </div>
                 </div>
@@ -357,15 +357,15 @@ export default async function Dashboard() {
 
           {openAlerts.length > 0 && (
             <>
-              <h2 style={{ fontSize: 14, marginTop: 20, color: '#64748b' }}>Open alerts</h2>
+              <h2 style={{ fontSize: 14, marginTop: 20, color: 'var(--muted)' }}>Open alerts</h2>
               <div style={{
-                background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden',
+                background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden',
               }}>
                 {openAlerts.map((a, i) => (
                   <a key={a.id} href="/alerts" style={{
                     display: 'flex', alignItems: 'center', gap: 10,
                     padding: '10px 14px', textDecoration: 'none', color: 'inherit',
-                    borderTop: i === 0 ? 'none' : '1px solid #f1f5f9',
+                    borderTop: i === 0 ? 'none' : '1px solid var(--border-2)',
                   }}>
                     <span style={{
                       width: 6, height: 6, borderRadius: '50%', flexShrink: 0,
@@ -373,8 +373,8 @@ export default async function Dashboard() {
                       boxShadow: a.severity === 'critical' ? '0 0 6px currentColor' : undefined,
                     }} />
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 12, color: '#0f172a' }}>{a.message}</div>
-                      <div style={{ fontSize: 10, color: '#94a3b8' }}>
+                      <div style={{ fontSize: 12, color: 'var(--text)' }}>{a.message}</div>
+                      <div style={{ fontSize: 10, color: 'var(--muted)' }}>
                         {a.kind} · opened {new Date(a.opened_at).toLocaleString()}
                       </div>
                     </div>

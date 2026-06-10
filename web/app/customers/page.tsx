@@ -456,7 +456,7 @@ export default function Customers() {
           display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100,
         }} onClick={() => setRenewing(null)}>
           <div style={{
-            background: '#fff', borderRadius: 12, padding: 24, maxWidth: 420, width: '90%',
+            background: 'var(--card)', borderRadius: 12, padding: 24, maxWidth: 420, width: '90%',
           }} onClick={(e) => e.stopPropagation()}>
             <h3 style={{ marginTop: 0 }}>Renew {renewing.svc.username}</h3>
             <p className="sub">Skips M-Pesa. Use for cash payments, comps, or fixes.</p>
@@ -495,7 +495,7 @@ export default function Customers() {
           display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100,
         }} onClick={() => setChangingPlan(null)}>
           <div style={{
-            background: '#fff', borderRadius: 12, padding: 24, maxWidth: 420, width: '90%',
+            background: 'var(--card)', borderRadius: 12, padding: 24, maxWidth: 420, width: '90%',
           }} onClick={(e) => e.stopPropagation()}>
             <h3 style={{ marginTop: 0 }}>Change plan · {changingPlan.svc.username}</h3>
             <p className="sub">
@@ -531,7 +531,7 @@ export default function Customers() {
           display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100, padding: 16,
         }} onClick={() => !bulk.busy && setBulk((b) => ({ ...b, open: false }))}>
           <div style={{
-            background: '#fff', borderRadius: 12, padding: 24, maxWidth: 640, width: '100%', maxHeight: '90vh', overflow: 'auto',
+            background: 'var(--card)', borderRadius: 12, padding: 24, maxWidth: 640, width: '100%', maxHeight: '90vh', overflow: 'auto',
           }} onClick={(e) => e.stopPropagation()}>
             <h3 style={{ marginTop: 0 }}>Bulk import customers</h3>
             <p className="sub">

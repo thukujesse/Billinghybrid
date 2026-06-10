@@ -123,7 +123,7 @@ export default function AuditPage() {
         const c = fmtKind(e.kind);
         return (
           <div key={e.id} style={{
-            background: '#fff', border: '1px solid var(--border, #e2e8f0)',
+            background: 'var(--card)', border: '1px solid var(--border)',
             borderRadius: 10, padding: 14, marginBottom: 8,
           }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start' }}>
@@ -134,7 +134,7 @@ export default function AuditPage() {
                     padding: '2px 8px', borderRadius: 4, fontFamily: 'ui-monospace, monospace',
                   }}>{e.kind}</span>
                   <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-                    by <strong style={{ color: '#0f172a' }}>{e.actor_label}</strong>
+                    by <strong style={{ color: 'var(--text)' }}>{e.actor_label}</strong>
                     <span style={{ color: 'var(--muted)' }}> ({e.actor_role})</span>
                   </span>
                   <span style={{ fontSize: 11, color: 'var(--muted)' }}>· {timeAgo(e.created_at)}</span>
