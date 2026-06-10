@@ -992,7 +992,7 @@ export default function HotspotPortal() {
                     <div style={{ marginTop: 8, lineHeight: 1.9 }}>
                       <div>1. Lipa na M-Pesa → <strong>Pay Bill</strong></div>
                       <div>2. Business no: <strong style={{ fontSize: 18 }}>{purchase.payInstructions.paybill}</strong></div>
-                      <div>3. Account no: <strong style={{ fontSize: 18 }}>{purchase.payInstructions.account}</strong> (your phone)</div>
+                      <div>3. Account no: <strong style={{ fontSize: 18 }}>{purchase.payInstructions.account}</strong> (this exact reference)</div>
                       <div>4. Amount: <strong style={{ fontSize: 18 }}>KES {purchase.amountKes}</strong></div>
                     </div>
                     <p style={{ ...styles.sub, marginTop: 8, marginBottom: 0 }}>

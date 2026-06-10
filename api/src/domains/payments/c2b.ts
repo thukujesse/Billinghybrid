@@ -21,7 +21,23 @@ export interface C2bPurchaseResult {
   customerMessage: string;
 }
 
-/** Create a PENDING purchase keyed by phone, return the pay-bill instructions. */
+/** A short, keypad-friendly payment reference the customer types as the Paybill
+ *  account number (e.g. HUB458721). Stored as the purchase's checkout_request_id
+ *  so it's both the match key (callback BillRefNumber) and the portal poll key.
+ *  Unique among pending/recent purchases; retries on the rare collision. */
+async function generateReference(): Promise<string> {
+  for (let i = 0; i < 10; i++) {
+    const ref = 'HUB' + String(crypto.randomInt(100000, 1000000));
+    const clash = await query(`SELECT 1 FROM hotspot_purchases WHERE checkout_request_id=$1 LIMIT 1`, [ref]);
+    if (!clash.rowCount) return ref;
+  }
+  throw new Error('could not allocate a unique payment reference');
+}
+
+/** Create a PENDING purchase, return the pay-bill instructions. The customer
+ *  pays "Pay Bill <shortcode>, Account <reference>" and the callback matches
+ *  on that reference — robust for a real bank/aggregator (which returns the
+ *  typed account ref, not the payer's phone). */
 export async function initC2bPurchase(input: {
   planId: string; phone: string; mac?: string; userAgent?: string;
 }): Promise<C2bPurchaseResult> {
@@ -36,7 +52,7 @@ export async function initC2bPurchase(input: {
   if (!/^254\d{9}$/.test(phone)) throw badRequest('invalid phone');
   const amountKes = Math.round(plan.price_cents / 100);
   const mp = await getMpesaConfig();
-  const checkoutRequestId = 'C2B-' + crypto.randomBytes(8).toString('hex').toUpperCase();
+  const checkoutRequestId = await generateReference();
   await query(
     `INSERT INTO hotspot_purchases
        (checkout_request_id, plan_id, phone, mac_address, amount_kes, status, user_agent)
@@ -46,8 +62,8 @@ export async function initC2bPurchase(input: {
   return {
     checkoutRequestId,
     amountKes,
-    payInstructions: { method: 'paybill', paybill: mp.shortcode, account: phone, amountKes },
-    customerMessage: `Lipa na M-Pesa → Pay Bill → ${mp.shortcode} → Account ${phone} → KES ${amountKes}`,
+    payInstructions: { method: 'paybill', paybill: mp.shortcode, account: checkoutRequestId, amountKes },
+    customerMessage: `Lipa na M-Pesa → Pay Bill → ${mp.shortcode} → Account ${checkoutRequestId} → KES ${amountKes}`,
   };
 }
 
@@ -65,7 +81,9 @@ export interface C2bConfirmation {
 export async function handleC2bConfirmation(p: C2bConfirmation): Promise<{ matched: boolean; note: string }> {
   const transId = String(p.TransID ?? '').trim();
   const amount = Math.round(Number(p.TransAmount));
-  const billRef = normalizeMsisdn(String(p.BillRefNumber ?? ''));
+  // The account number the payer typed = our generated reference (e.g. HUB458721).
+  // Do NOT normalize as a phone — it's an alphanumeric reference.
+  const ref = String(p.BillRefNumber ?? '').trim().toUpperCase();
   const msisdn = normalizeMsisdn(String(p.MSISDN ?? ''));
   if (!transId || !Number.isFinite(amount) || amount <= 0) {
     return { matched: false, note: 'missing TransID/amount' };
@@ -74,17 +92,30 @@ export async function handleC2bConfirmation(p: C2bConfirmation): Promise<{ match
   const dup = await query(`SELECT 1 FROM hotspot_purchases WHERE receipt=$1 LIMIT 1`, [transId]);
   if (dup.rowCount) return { matched: true, note: 'duplicate, ignored' };
 
-  // Match most-recent pending purchase for this phone (account or payer) + amount.
-  const m = await query<{ checkout_request_id: string }>(
-    `SELECT checkout_request_id FROM hotspot_purchases
-      WHERE status='pending' AND amount_kes=$1 AND (phone=$2 OR phone=$3)
-      ORDER BY created_at DESC LIMIT 1`,
-    [amount, billRef, msisdn]
-  );
-  const row = m.rows[0];
+  // Primary match: the reference the customer typed as the account number.
+  let row = (await query<{ checkout_request_id: string; amount_kes: number }>(
+    `SELECT checkout_request_id, amount_kes FROM hotspot_purchases
+      WHERE status='pending' AND checkout_request_id = $1 LIMIT 1`,
+    [ref]
+  )).rows[0];
+  // Fallback: legacy phone-as-account (own-Safaricom-Paybill, customer typed their number).
   if (!row) {
-    console.warn(`[c2b] UNMATCHED payment TransID=${transId} amount=${amount} ref=${billRef} msisdn=${msisdn}`);
+    const phoneRef = normalizeMsisdn(ref);
+    row = (await query<{ checkout_request_id: string; amount_kes: number }>(
+      `SELECT checkout_request_id, amount_kes FROM hotspot_purchases
+        WHERE status='pending' AND amount_kes=$1 AND (phone=$2 OR phone=$3)
+        ORDER BY created_at DESC LIMIT 1`,
+      [amount, phoneRef, msisdn]
+    )).rows[0];
+  }
+  if (!row) {
+    console.warn(`[c2b] UNMATCHED payment TransID=${transId} amount=${amount} ref=${ref} msisdn=${msisdn}`);
     return { matched: false, note: 'no pending purchase matched (logged for manual claim)' };
+  }
+  // Guard: the payment must cover the package price (no partial activation).
+  if (amount < row.amount_kes) {
+    console.warn(`[c2b] UNDERPAID ref=${ref} TransID=${transId} paid=${amount} need=${row.amount_kes}`);
+    return { matched: false, note: 'underpaid — not activated' };
   }
   await completePurchase({ checkoutRequestId: row.checkout_request_id, success: true, receipt: transId });
   return { matched: true, note: 'settled' };
