@@ -34,6 +34,7 @@ const GROUPS: Group[] = [
   {
     key: 'network', label: 'Network', ico: '🌐', items: [
       { href: '/network', label: 'Overview' },
+      { href: '/network/twin', label: 'Live map' },
       { href: '/sessions', label: 'Sessions' },
       { href: '/payment-events', label: 'Payment queue' },
       { href: '/plugins', label: 'Plugins' },

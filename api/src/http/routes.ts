@@ -50,6 +50,7 @@ import * as audit from '../domains/audit/service.js';
 import { registerNetworkRoutes } from './routes/network.js';
 import { registerWalletRoutes } from './routes/wallet.js';
 import { registerReportsRoutes } from './routes/reports.js';
+import { registerTwinRoutes } from './routes/twin.js';
 
 export const api = Router();
 
@@ -58,6 +59,7 @@ export const api = Router();
 // function and add one line below. Each sub-module owns its own imports +
 // zod validation, so two features editing this file at once stop colliding.
 registerNetworkRoutes(api);
+registerTwinRoutes(api);
 registerWalletRoutes(api);
 registerReportsRoutes(api);
 
