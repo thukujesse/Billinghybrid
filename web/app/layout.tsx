@@ -1,6 +1,6 @@
 import './globals.css';
 import type { ReactNode } from 'react';
-import { Nav } from './components/Nav';
+import { Sidebar } from './components/Sidebar';
 
 export const metadata = {
   title: 'JTM ISP Billing',
@@ -9,7 +9,7 @@ export const metadata = {
 
 // Set the saved theme on <html> BEFORE first paint so there's no light/dark
 // flash on load. Runs inline (not React) since it must execute pre-hydration.
-const themeBootstrap = `(function(){try{var t=localStorage.getItem('jtm-theme');document.documentElement.setAttribute('data-theme',(t==='dark'||t==='light')?t:'light');}catch(e){document.documentElement.setAttribute('data-theme','light');}})();`;
+const themeBootstrap = `(function(){var d=document.documentElement;try{var t=localStorage.getItem('jtm-theme');d.setAttribute('data-theme',(t==='dark'||t==='light')?t:'light');var p=location.pathname,cust=/^\\/(hotspot|renew|portal)(\\/|$)/.test(p),s=localStorage.getItem('jtm-sidebar');if(cust){s='hidden';}else if(s!=='hidden'&&s!=='shown'){s=window.innerWidth<860?'hidden':'shown';}d.setAttribute('data-sidebar',s);}catch(e){d.setAttribute('data-theme','light');d.setAttribute('data-sidebar','shown');}})();`;
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
@@ -24,8 +24,8 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <script dangerouslySetInnerHTML={{ __html: themeBootstrap }} />
       </head>
       <body>
-        <Nav />
-        {children}
+        <Sidebar />
+        <div className="app-main">{children}</div>
       </body>
     </html>
   );

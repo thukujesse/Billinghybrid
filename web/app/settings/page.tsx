@@ -459,7 +459,7 @@ export default function SettingsPage() {
         The standard sandbox passkey + shortcode 174379 are pre-fillable above.
       </p>
 
-      <h2 style={{ marginTop: 32 }}>SMS provider</h2>
+      <h2 id="sms" style={{ marginTop: 32, scrollMarginTop: 16 }}>SMS provider</h2>
       {sms && (
         <div
           className={`toast ${sms.simulated ? 'err' : 'ok'}`}
