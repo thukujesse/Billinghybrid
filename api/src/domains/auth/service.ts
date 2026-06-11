@@ -48,6 +48,23 @@ export async function createUser(input: {
   }
 }
 
+/** First-run setup: true when no operator accounts exist yet, so the login
+ *  page can offer "create the first admin" instead of a sign-in form. */
+export async function setupStatus(): Promise<{ needsSetup: boolean }> {
+  const r = await query<{ n: number }>(`SELECT COUNT(*)::int AS n FROM users`);
+  return { needsSetup: (r.rows[0]?.n ?? 0) === 0 };
+}
+
+/** Bootstrap signup — creates the FIRST admin and signs them in. Refuses once
+ *  any account exists (after that, an admin invites staff via createUser). */
+export async function registerFirstAdmin(username: string, password: string): Promise<{ token: string; user: User }> {
+  const r = await query<{ n: number }>(`SELECT COUNT(*)::int AS n FROM users`);
+  if ((r.rows[0]?.n ?? 0) > 0) throw conflict('setup already complete — ask an admin to create your account');
+  const user = await createUser({ username, password, role: 'admin' });
+  const token = issueToken(user.id, user.role, { username: user.username });
+  return { token, user };
+}
+
 export async function loginPassword(username: string, password: string): Promise<{ token: string; user: User }> {
   const r = await query(
     `SELECT * FROM users WHERE username = $1`,

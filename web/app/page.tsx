@@ -1,3 +1,4 @@
+import { cookies } from 'next/headers';
 import { api, money } from '@/lib/api';
 
 export const dynamic = 'force-dynamic';
@@ -160,12 +161,16 @@ export default async function Dashboard() {
   try {
     // Headline tile + supporting series in parallel — page is server-rendered
     // so this is one round-trip from the operator's POV.
+    // SSR can't read localStorage — pull the JWT from the cookie set at login
+    // so protected reads (e.g. /admin/alerts) authenticate when AUTH_ENABLED=true.
+    const token = cookies().get('jtm_token')?.value;
+    const h = token ? { headers: { Authorization: `Bearer ${token}` } } : undefined;
     [data, revenue, outstanding, mrr, openAlerts] = await Promise.all([
-      api('/dashboard'),
-      api<RevenuePoint[]>('/reports/revenue-combined?months=12'),
-      api<Outstanding>('/reports/outstanding-renewals'),
-      api<PppoeMrr>('/reports/pppoe-mrr'),
-      api<AlertRow[]>('/admin/alerts?status=open&limit=5'),
+      api('/dashboard', h),
+      api<RevenuePoint[]>('/reports/revenue-combined?months=12', h),
+      api<Outstanding>('/reports/outstanding-renewals', h),
+      api<PppoeMrr>('/reports/pppoe-mrr', h),
+      api<AlertRow[]>('/admin/alerts?status=open&limit=5', h),
     ]);
   } catch (e: any) {
     error = e.message;

@@ -1,10 +1,10 @@
 'use client';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
+import { api, getToken, setToken } from '@/lib/api';
 
-// Hidden on customer-facing routes so a paying customer at the captive portal
-// doesn't see the admin sidebar.
-const CUSTOMER_PATHS = ['/hotspot', '/renew', '/portal'];
+// Hidden on the captive portal + the standalone login page.
+const CUSTOMER_PATHS = ['/hotspot', '/renew', '/portal', '/login'];
 
 type Item = { href: string; label: string };
 type Group = { key: string; label: string; ico: string; items: Item[] };
@@ -62,12 +62,24 @@ function setHtmlSidebar(state: 'shown' | 'hidden') {
 
 export function Sidebar() {
   const pathname = usePathname() ?? '';
+  const router = useRouter();
   const isCustomer = CUSTOMER_PATHS.some((p) => pathname === p || pathname.startsWith(p + '/'));
 
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
   const [hidden, setHidden] = useState(false);
   // Which group accordions are open. Seed with the group owning the active route.
   const [open, setOpen] = useState<Record<string, boolean>>({});
+  const [me, setMe] = useState<{ username?: string; role?: string } | null>(null);
+
+  // Who's signed in (drives the footer). Quietly null if not authenticated.
+  useEffect(() => {
+    if (typeof window !== 'undefined' && getToken()) {
+      api<{ username?: string; role?: string }>('/auth/me').then(setMe).catch(() => setMe(null));
+    } else {
+      setMe(null);
+    }
+  }, [pathname]);
+  const logout = () => { setToken(null); setMe(null); router.replace('/login'); };
 
   // Sync local state with what the pre-paint bootstrap already applied.
   useEffect(() => {
@@ -185,9 +197,21 @@ export function Sidebar() {
               title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
             >{theme === 'dark' ? '☀' : '☾'}</button>
           </div>
-          <div style={{ display: 'flex', gap: 14, padding: '2px 11px', fontSize: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '2px 11px', fontSize: 12 }}>
             <a href="/portal" style={{ color: 'var(--muted)' }}>Customer Portal →</a>
-            <a href="/login" style={{ color: 'var(--muted)', marginLeft: 'auto' }}>Sign in</a>
+            {me ? (
+              <span style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 'auto' }}>
+                <span style={{ color: 'var(--text)' }} title={me.role ? `Role: ${me.role}` : undefined}>
+                  {me.username}
+                </span>
+                <button
+                  onClick={logout}
+                  style={{ background: 'none', border: 'none', color: 'var(--muted)', fontSize: 12, cursor: 'pointer', padding: 0 }}
+                >Sign out</button>
+              </span>
+            ) : (
+              <a href="/login" style={{ color: 'var(--muted)', marginLeft: 'auto' }}>Sign in</a>
+            )}
           </div>
         </div>
       </aside>

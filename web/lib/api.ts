@@ -18,8 +18,14 @@ export const getToken = () =>
   typeof window !== 'undefined' ? window.localStorage.getItem(TOKEN_KEY) : null;
 export const setToken = (t: string | null) => {
   if (typeof window === 'undefined') return;
-  if (t) window.localStorage.setItem(TOKEN_KEY, t);
-  else window.localStorage.removeItem(TOKEN_KEY);
+  if (t) {
+    window.localStorage.setItem(TOKEN_KEY, t);
+    // Mirror into a cookie so server-rendered dashboard pages can authenticate.
+    document.cookie = `${TOKEN_KEY}=${t}; path=/; max-age=${60 * 60 * 24 * 7}; samesite=lax`;
+  } else {
+    window.localStorage.removeItem(TOKEN_KEY);
+    document.cookie = `${TOKEN_KEY}=; path=/; max-age=0`;
+  }
 };
 
 export async function api<T = any>(

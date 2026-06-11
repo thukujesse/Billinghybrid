@@ -77,6 +77,13 @@ api.post('/auth/login', loginLimit, ah(async (req, res) => {
   const body = parse(z.object({ username: z.string().min(1), password: z.string().min(1) }), req.body);
   res.json(await auth.loginPassword(body.username, body.password));
 }));
+// First-run: does any operator account exist? Drives the login-vs-signup UI.
+api.get('/auth/setup-status', ah(async (_req, res) => res.json(await auth.setupStatus())));
+// Bootstrap signup — creates the first admin only (refuses once one exists).
+api.post('/auth/register', loginLimit, ah(async (req, res) => {
+  const body = parse(z.object({ username: z.string().min(3), password: z.string().min(6) }), req.body);
+  res.json(await auth.registerFirstAdmin(body.username, body.password));
+}));
 // Create a staff user (admin only when auth is enabled).
 api.post('/auth/users', requireAuth('admin'), ah(async (req, res) => {
   const body = parse(z.object({
