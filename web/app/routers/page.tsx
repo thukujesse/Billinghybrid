@@ -431,29 +431,35 @@ function ConfigureWizard(props: {
             </p>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 16 }}>
               {usablePorts.length === 0 && <span className="sub">No usable ports detected.</span>}
-              {usablePorts.map((p) => (
-                <label
-                  key={p.name}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 6,
-                    padding: '6px 10px', borderRadius: 4,
-                    background: w.ports.has(p.name) ? 'rgba(56,189,248,0.15)' : 'transparent',
-                    border: '1px solid var(--border)', cursor: 'pointer',
-                  }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={w.ports.has(p.name)}
-                    onChange={() => onTogglePort(p.name)}
-                  />
-                  <span style={{ fontFamily: 'ui-monospace', fontSize: 12 }}>
-                    {p.name}{' '}
-                    <span style={{ color: 'var(--muted)' }}>
-                      {p.type}{p.running ? ' · up' : ' · down'}{p.inBridge ? ` · in ${p.inBridge}` : ''}
+              {usablePorts.map((p) => {
+                const selected = w.ports.has(p.name);
+                return (
+                  <label
+                    key={p.name}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 6,
+                      padding: '6px 10px', borderRadius: 6,
+                      // Selected = cyan; otherwise live ('up') ports glow green.
+                      background: selected ? 'rgba(56,189,248,0.15)' : p.running ? 'rgba(52,211,153,0.07)' : 'transparent',
+                      border: `1px solid ${selected ? 'var(--accent)' : p.running ? 'var(--green)' : 'var(--border)'}`,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selected}
+                      onChange={() => onTogglePort(p.name)}
+                    />
+                    <span style={{ fontFamily: 'ui-monospace', fontSize: 12 }}>
+                      <strong>{p.name}</strong>{' '}
+                      <span style={{ color: p.running ? 'var(--green)' : 'var(--muted)', fontWeight: p.running ? 600 : 400 }}>
+                        {p.running ? '● up' : '○ down'}
+                      </span>
+                      {p.inBridge && <span style={{ color: 'var(--muted)' }}> · in {p.inBridge}</span>}
                     </span>
-                  </span>
-                </label>
-              ))}
+                  </label>
+                );
+              })}
             </div>
 
             {w.services.has('hotspot') && (
