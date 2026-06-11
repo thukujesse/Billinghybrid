@@ -10,6 +10,7 @@ interface Plan {
   currency: string;
   billing_cycle: string;
   validity_days: number;
+  validity_minutes: number | null;
   data_cap_mb: number | null;
   speed_down_kbps: number | null;
   speed_up_kbps: number | null;
@@ -22,11 +23,27 @@ const EMPTY_FORM = {
   name: '',
   type: 'hotspot' as Plan['type'],
   price: '',
-  validity_days: '1',
+  validity_value: '1',
+  validity_unit: 'days' as 'minutes' | 'hours' | 'days',
   speed_down_mbps: '',
   speed_up_mbps: '',
   data_cap_mb: '',
 };
+
+const UNIT_MIN: Record<string, number> = { minutes: 1, hours: 60, days: 1440 };
+
+/** minutes → friendly label (60→"1h", 1440→"1d", 90→"90m"). */
+function fmtValidity(mins: number | null, days: number): string {
+  const m = mins ?? days * 1440;
+  if (m % 1440 === 0) return `${m / 1440}d`;
+  if (m % 60 === 0) return `${m / 60}h`;
+  return `${m}m`;
+}
+function splitValidity(mins: number): { value: number; unit: 'minutes' | 'hours' | 'days' } {
+  if (mins % 1440 === 0) return { value: mins / 1440, unit: 'days' };
+  if (mins % 60 === 0) return { value: mins / 60, unit: 'hours' };
+  return { value: mins, unit: 'minutes' };
+}
 
 export default function Plans() {
   const [list, setList] = useState<Plan[]>([]);
@@ -35,6 +52,8 @@ export default function Plans() {
   const [toast, setToast] = useState<{ ok: boolean; msg: string } | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<Partial<Plan> | null>(null);
+  const [editVVal, setEditVVal] = useState('1');
+  const [editVUnit, setEditVUnit] = useState<'minutes' | 'hours' | 'days'>('days');
 
   const load = () =>
     api<Plan[]>('/plans?all=true').then(setList).catch((e) => setToast({ ok: false, msg: e.message }));
@@ -46,7 +65,7 @@ export default function Plans() {
         name: form.name,
         type: form.type,
         price_cents: Math.round(Number(form.price) * 100),
-        validity_days: Number(form.validity_days),
+        validity_minutes: Math.max(1, Math.round(Number(form.validity_value) * UNIT_MIN[form.validity_unit])),
       };
       if (form.speed_down_mbps) payload.speed_down_kbps = Math.round(Number(form.speed_down_mbps) * 1000);
       if (form.speed_up_mbps) payload.speed_up_kbps = Math.round(Number(form.speed_up_mbps) * 1000);
@@ -69,10 +88,14 @@ export default function Plans() {
 
   const startEdit = (p: Plan) => {
     setEditingId(p.id);
+    const mins = p.validity_minutes ?? p.validity_days * 1440;
+    const sv = splitValidity(mins);
+    setEditVVal(String(sv.value));
+    setEditVUnit(sv.unit);
     setEditForm({
       name: p.name,
       price_cents: p.price_cents,
-      validity_days: p.validity_days,
+      validity_minutes: mins,
       speed_down_kbps: p.speed_down_kbps,
       speed_up_kbps: p.speed_up_kbps,
       data_cap_mb: p.data_cap_mb,
@@ -127,13 +150,15 @@ export default function Plans() {
             <input value={form.price} placeholder="20" onChange={(e) => setForm({ ...form, price: e.target.value })} inputMode="numeric" />
           </div>
           <div>
-            <label>Validity ({form.type === 'hotspot' ? 'days' : 'days'})</label>
-            <input value={form.validity_days} onChange={(e) => setForm({ ...form, validity_days: e.target.value })} inputMode="numeric" />
-            {form.type === 'hotspot' && (
-              <p className="sub" style={{ fontSize: 11, marginTop: 4, marginBottom: 0 }}>
-                For sub-day plans use a decimal (e.g. 0.04 = 1h, 0.25 = 6h)
-              </p>
-            )}
+            <label>Validity</label>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <input value={form.validity_value} onChange={(e) => setForm({ ...form, validity_value: e.target.value })} inputMode="numeric" style={{ flex: 1 }} />
+              <select value={form.validity_unit} onChange={(e) => setForm({ ...form, validity_unit: e.target.value as 'minutes' | 'hours' | 'days' })} style={{ width: 'auto', flex: '0 0 auto' }}>
+                <option value="minutes">Minutes</option>
+                <option value="hours">Hours</option>
+                <option value="days">Days</option>
+              </select>
+            </div>
           </div>
         </div>
         <div className="row" style={{ marginTop: 8 }}>
@@ -188,7 +213,12 @@ export default function Plans() {
                 <td><input value={editForm.name ?? ''} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} /></td>
                 <td><span className={`badge ${p.type === 'hotspot' ? 'active' : ''}`}>{labelType(p.type)}</span></td>
                 <td><input value={editForm.price_cents ? editForm.price_cents / 100 : ''} onChange={(e) => setEditForm({ ...editForm, price_cents: Math.round(Number(e.target.value) * 100) })} inputMode="numeric" /></td>
-                <td><input value={editForm.validity_days ?? ''} onChange={(e) => setEditForm({ ...editForm, validity_days: Number(e.target.value) })} inputMode="numeric" style={{ width: 60 }} />d</td>
+                <td style={{ whiteSpace: 'nowrap' }}>
+                  <input value={editVVal} onChange={(e) => { setEditVVal(e.target.value); setEditForm({ ...editForm, validity_minutes: Math.max(1, Math.round(Number(e.target.value) * UNIT_MIN[editVUnit])) }); }} inputMode="numeric" style={{ width: 48 }} />
+                  <select value={editVUnit} onChange={(e) => { const u = e.target.value as 'minutes' | 'hours' | 'days'; const mins = editForm.validity_minutes ?? 0; setEditVUnit(u); setEditVVal(String(mins / UNIT_MIN[u])); }} style={{ width: 'auto' }}>
+                    <option value="minutes">m</option><option value="hours">h</option><option value="days">d</option>
+                  </select>
+                </td>
                 <td>
                   <input value={editForm.speed_down_kbps ? editForm.speed_down_kbps / 1000 : ''} onChange={(e) => setEditForm({ ...editForm, speed_down_kbps: e.target.value ? Math.round(Number(e.target.value) * 1000) : null })} placeholder="↓ Mbps" inputMode="decimal" style={{ width: 70 }} />
                   /
@@ -206,7 +236,7 @@ export default function Plans() {
                 <td>{p.name}</td>
                 <td><span className={`badge ${p.type === 'hotspot' ? 'active' : ''}`}>{labelType(p.type)}</span></td>
                 <td>{money(p.price_cents, p.currency)}</td>
-                <td>{p.validity_days}d</td>
+                <td>{fmtValidity(p.validity_minutes, p.validity_days)}</td>
                 <td>{formatSpeed(p.speed_down_kbps, p.speed_up_kbps)}</td>
                 <td>{p.data_cap_mb ? `${(p.data_cap_mb / 1024).toFixed(1)} GB` : '∞'}</td>
                 <td>{p.active ? <span className="badge active">Active</span> : <span className="badge suspended">Inactive</span>}</td>

@@ -49,11 +49,12 @@ export async function redeemVoucher(input: {
       plan_id: string;
       plan_name: string;
       validity_days: number;
+      validity_minutes: number | null;
       speed_down_kbps: number | null;
       speed_up_kbps: number | null;
     }>(
       `SELECT v.id AS voucher_id, v.status, v.expires_at AS voucher_expires,
-              p.id AS plan_id, p.name AS plan_name, p.validity_days,
+              p.id AS plan_id, p.name AS plan_name, p.validity_days, p.validity_minutes,
               p.speed_down_kbps, p.speed_up_kbps
          FROM vouchers v
          JOIN plans p ON p.id = v.plan_id
@@ -68,8 +69,9 @@ export async function redeemVoucher(input: {
       throw conflict('voucher has expired');
     }
 
-    // Compute reply attributes from the plan.
-    const validitySeconds = Math.max(60, voucher.validity_days * 86400);
+    // Compute reply attributes from the plan. validity_minutes is canonical
+    // (supports sub-day plans); fall back to whole days for legacy rows.
+    const validitySeconds = Math.max(60, (voucher.validity_minutes ?? voucher.validity_days * 1440) * 60);
     const rateLimit = voucher.speed_down_kbps && voucher.speed_up_kbps
       ? `${voucher.speed_up_kbps}k/${voucher.speed_down_kbps}k`
       : null;
@@ -386,6 +388,7 @@ export async function completePurchase(input: {
     id: string; plan_id: string; phone: string; amount_kes: number;
     mac_address: string | null;
     validity_days: number;
+    validity_minutes: number | null;
     speed_down_kbps: number | null; speed_up_kbps: number | null;
     status: string;
     service_id: string | null;
@@ -393,7 +396,7 @@ export async function completePurchase(input: {
   }>(
     `SELECT hp.id, hp.plan_id, hp.phone, hp.amount_kes, hp.status,
             hp.mac_address, hp.service_id, hp.wallet_topup_customer_id,
-            p.validity_days, p.speed_down_kbps, p.speed_up_kbps
+            p.validity_days, p.validity_minutes, p.speed_down_kbps, p.speed_up_kbps
        FROM hotspot_purchases hp
        JOIN plans p ON p.id = hp.plan_id
       WHERE hp.checkout_request_id = $1`,
@@ -474,7 +477,7 @@ export async function completePurchase(input: {
   // share the lookup() / quickConnect() / rebindVerify() reconnect paths.
   const { normalizeMac } = await import('../hotspotDevices/service.js');
   const mac = row.mac_address ? normalizeMac(row.mac_address) : null;
-  const validitySeconds = Math.max(60, row.validity_days * 86400);
+  const validitySeconds = Math.max(60, (row.validity_minutes ?? row.validity_days * 1440) * 60);
   const rateLimit = row.speed_down_kbps && row.speed_up_kbps
     ? `${row.speed_up_kbps}k/${row.speed_down_kbps}k`
     : null;
