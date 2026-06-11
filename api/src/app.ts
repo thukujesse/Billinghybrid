@@ -4,6 +4,7 @@ import { api } from './http/routes.js';
 import { errorHandler } from './http/helpers.js';
 import { metricsMiddleware } from './http/middleware/metrics.js';
 import { requestLog } from './http/middleware/requestLog.js';
+import { tenantMiddleware } from './http/middleware/tenant.js';
 import { registry } from './lib/metrics.js';
 import { query } from './db/pool.js';
 import { registerBuiltinPlugins, loadPlugins } from './plugins/index.js';
@@ -16,6 +17,9 @@ export async function createApp() {
   app.use(express.json({ limit: '12mb' })); // headroom for base64 KYC uploads
   // MikroTik /tool fetch posts form-encoded data — needed for /routers/identify.
   app.use(express.urlencoded({ extended: false }));
+  // Bind the tenant context for the whole request (M1: default tenant).
+  // Must run before anything that issues a query().
+  app.use(tenantMiddleware);
   app.use(requestLog);
   app.use(metricsMiddleware);
 
