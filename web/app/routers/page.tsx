@@ -450,12 +450,11 @@ function ConfigureWizard(props: {
                       checked={selected}
                       onChange={() => onTogglePort(p.name)}
                     />
-                    <span style={{ fontFamily: 'ui-monospace', fontSize: 12 }}>
-                      <strong>{p.name}</strong>{' '}
-                      <span style={{ color: p.running ? 'var(--green)' : 'var(--muted)', fontWeight: p.running ? 600 : 400 }}>
-                        {p.running ? '● up' : '○ down'}
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <strong style={{ fontFamily: 'ui-monospace', fontSize: 13 }}>{p.name}</strong>
+                      <span style={{ color: p.running ? 'var(--green)' : 'var(--muted)', fontWeight: 600, fontSize: 12 }}>
+                        {p.running ? '● Up' : '○ Down'}
                       </span>
-                      {p.inBridge && <span style={{ color: 'var(--muted)' }}> · in {p.inBridge}</span>}
                     </span>
                   </label>
                 );
