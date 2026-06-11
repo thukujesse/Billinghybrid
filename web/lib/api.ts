@@ -7,7 +7,11 @@ const BAKED_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 const getBase = () => {
   if (typeof window === 'undefined') return BAKED_BASE;
   const host = window.location.hostname;
-  if (host.startsWith('billing.') || host.startsWith('portal.')) {
+  // Any platform host (demo/auth/billing/portal + every tenant subdomain) calls
+  // its OWN origin. This keeps the Host header intact so the API's Host→tenant
+  // routing hits the right database, and the MikroTik walled-garden only ever
+  // needs to allow the single host the user is actually on.
+  if (host.endsWith('hubnetwifi.co.ke')) {
     return window.location.origin;
   }
   return BAKED_BASE;

@@ -1,61 +1,46 @@
-# Auto-HTTPS for vpn.hubnetwifi.co.ke via Let's Encrypt.
-# /wg/* is reverse-proxied to the local wg-manager (token-authenticated).
-# Everything else returns 404 so the endpoint stays minimal-surface.
+# Live VPS edge config (38.54.122.235). All three app hosts terminate here;
+# Caddy auto-issues Let's Encrypt certs (HTTP-01 — Cloudflare is DNS-only).
+#
+#   vpn.   — WireGuard manager (8081) + provisioning API (8080)
+#   demo.  — the default tenant: dashboard (:3000) + API (:4000)
+#   auth.  — the SaaS front door: bare domain lands on /register
+#
+# Per-host routing keeps the Host header intact so the API's Host→tenant
+# middleware resolves the right tenant database.
 
 vpn.hubnetwifi.co.ke {
     handle_path /wg/* {
+        reverse_proxy 127.0.0.1:8081
+    }
+    handle {
         reverse_proxy 127.0.0.1:8080
     }
-    respond "JTM VPN endpoint" 404
+}
+demo.hubnetwifi.co.ke {
+    @api path /api/* /health /ready /metrics
+    handle @api {
+        reverse_proxy 127.0.0.1:4000
+    }
+    handle {
+        reverse_proxy 127.0.0.1:3000
+    }
+}
+auth.hubnetwifi.co.ke {
+    @api path /api/* /health /ready /metrics
+    handle @api {
+        reverse_proxy 127.0.0.1:4000
+    }
+    # This host is the SaaS front door — the bare domain lands on signup.
+    @home path /
+    handle @home {
+        redir * /register
+    }
+    handle {
+        reverse_proxy 127.0.0.1:3000
+    }
 }
 
-# Customer-facing captive portal at a stable hostname/IP. MikroTik
-# walled-garden allows this hostname/IP so unauthenticated clients can
-# reach /hotspot and /renew. We reverse-proxy ONLY the customer-facing
-# paths to Render — the admin dashboard (/customers, /plans, /routers,
-# etc.) is explicitly NOT exposed here, so an unauthenticated phone
-# can't reach it via the walled-garden bypass.
-#
-# Allowed:
-#   /hotspot, /renew                — customer pages
-#   /_next/*, /favicon.ico          — Next.js assets needed to render them
-#   /api/hotspot/*, /api/renew/*    — customer-facing APIs
-# Everything else                    — 404
-#
-# tls_server_name pins SNI to Render's hostname so Render's edge routes
-# correctly. Host header is overridden to match.
-billing.hubnetwifi.co.ke {
-    # Public API: hotspot (voucher / M-Pesa / branding) and renew (info / pay).
-    @public_api path /api/hotspot/* /api/renew/*
-    handle @public_api {
-        reverse_proxy https://jtm-api-h6o3.onrender.com {
-            header_up Host jtm-api-h6o3.onrender.com
-            transport http {
-                tls
-                tls_server_name jtm-api-h6o3.onrender.com
-            }
-        }
-    }
-
-    # Public web pages + their static assets. Anything outside these paths
-    # hits the catch-all 404 below — admin dashboard stays private.
-    @public_web path /hotspot /hotspot/* /renew /renew/* /_next/* /favicon.ico /robots.txt
-    handle @public_web {
-        reverse_proxy https://jtm-web-h6o3.onrender.com {
-            header_up Host jtm-web-h6o3.onrender.com
-            transport http {
-                tls
-                tls_server_name jtm-web-h6o3.onrender.com
-            }
-        }
-    }
-
-    # Optional UX nicety: bare https://billing.hubnetwifi.co.ke/ redirects
-    # to /hotspot so a phone visiting the root lands on the captive portal.
-    redir / /hotspot 302
-
-    # Everything else (dashboard pages, admin APIs, auth) — refused.
-    handle {
-        respond "Not Found" 404
-    }
+# Tunnel-local plaintext endpoint for MikroTiks fetching the SSH pubkey.
+http://10.66.0.1 {
+    reverse_proxy 127.0.0.1:8081
 }
