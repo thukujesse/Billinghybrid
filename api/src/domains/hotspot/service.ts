@@ -113,11 +113,15 @@ export async function redeemVoucher(input: {
   });
 }
 
+export type HotspotTemplate = 'classic' | 'aurora' | 'minimal' | 'sunset';
+export const HOTSPOT_TEMPLATES: HotspotTemplate[] = ['classic', 'aurora', 'minimal', 'sunset'];
+
 export interface HotspotBranding {
   name: string;
   color: string;
   tagline: string;
   logoUrl: string | null;
+  template: HotspotTemplate;
 }
 
 const HARDCODED_FALLBACK: HotspotBranding = {
@@ -125,11 +129,12 @@ const HARDCODED_FALLBACK: HotspotBranding = {
   color: '#2563eb',
   tagline: 'Connect to Wi-Fi',
   logoUrl: null,
+  template: 'classic',
 };
 
 async function getGlobalBranding(): Promise<HotspotBranding> {
-  const r = await query<{ name: string; color: string; tagline: string; logo_url: string | null }>(
-    `SELECT name, color, tagline, logo_url FROM hotspot_branding WHERE id = TRUE LIMIT 1`
+  const r = await query<{ name: string; color: string; tagline: string; logo_url: string | null; template: string }>(
+    `SELECT name, color, tagline, logo_url, template FROM hotspot_branding WHERE id = TRUE LIMIT 1`
   );
   const row = r.rows[0];
   if (!row) return HARDCODED_FALLBACK;
@@ -138,6 +143,7 @@ async function getGlobalBranding(): Promise<HotspotBranding> {
     color: row.color,
     tagline: row.tagline,
     logoUrl: row.logo_url,
+    template: (HOTSPOT_TEMPLATES.includes(row.template as HotspotTemplate) ? row.template : 'classic') as HotspotTemplate,
   };
 }
 
@@ -170,6 +176,7 @@ export async function getBranding(slug: string): Promise<HotspotBranding> {
     color: row.brand_color ?? fallback.color,
     tagline: row.brand_tagline ?? fallback.tagline,
     logoUrl: row.brand_logo_url ?? fallback.logoUrl,
+    template: fallback.template,  // template is a global choice (no per-router override)
   };
 }
 
@@ -187,9 +194,14 @@ export async function setGlobalBranding(input: {
   color?: string;
   tagline?: string;
   logoUrl?: string | null;
+  template?: string;
 }): Promise<HotspotBranding> {
   const sets: string[] = [];
   const vals: any[] = [];
+  if (input.template !== undefined) {
+    if (!HOTSPOT_TEMPLATES.includes(input.template as HotspotTemplate)) throw badRequest('unknown template');
+    vals.push(input.template); sets.push(`template = $${vals.length}`);
+  }
   if (input.name !== undefined) {
     if (!input.name.trim()) throw badRequest('name cannot be empty');
     vals.push(input.name.trim()); sets.push(`name = $${vals.length}`);

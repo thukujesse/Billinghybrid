@@ -1320,6 +1320,7 @@ api.put('/admin/hotspot-branding', requireAuth('admin'), ah(async (req, res) => 
     tagline: z.string().max(120).optional(),
     // logoUrl: null clears, undefined leaves alone, data: URL sets.
     logoUrl: z.string().max(280_000).nullable().optional(),
+    template: z.enum(['classic', 'aurora', 'minimal', 'sunset']).optional(),
   }), req.body);
   res.json(await hotspot.setGlobalBranding(body));
 }));

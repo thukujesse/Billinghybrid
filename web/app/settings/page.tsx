@@ -27,11 +27,30 @@ interface SmsPublic {
   simulated: boolean;
 }
 
+type HotspotTemplate = 'classic' | 'aurora' | 'minimal' | 'sunset';
 interface HotspotBranding {
   name: string;
   color: string;
   tagline: string;
   logoUrl: string | null;
+  template: HotspotTemplate;
+}
+
+const TEMPLATES: Array<{ id: HotspotTemplate; label: string; hint: string }> = [
+  { id: 'classic', label: 'Classic', hint: 'Soft tint, white card' },
+  { id: 'aurora', label: 'Aurora', hint: 'Bold brand gradient' },
+  { id: 'minimal', label: 'Minimal', hint: 'Flat, clean, no gradient' },
+  { id: 'sunset', label: 'Sunset', hint: 'Warm glass card' },
+];
+
+/** Mirror of the portal's per-template look (for the preview + picker swatches). */
+function templateLook(template: HotspotTemplate, color: string, rgb: string) {
+  switch (template) {
+    case 'aurora': return { pageBg: `linear-gradient(160deg, ${color} 0%, rgba(${rgb},0.6) 50%, #0b1220 135%)`, cardBg: '#ffffff', cardBorder: 'none', cardShadow: '0 18px 44px rgba(0,0,0,0.35)', wordmark: color };
+    case 'minimal': return { pageBg: '#f4f6f9', cardBg: '#ffffff', cardBorder: '1px solid #e5e9f0', cardShadow: 'none', wordmark: '#0f172a' };
+    case 'sunset': return { pageBg: `linear-gradient(160deg, rgba(${rgb},0.20) 0%, #fff7ed 48%, #fef2f2 100%)`, cardBg: 'rgba(255,255,255,0.88)', cardBorder: '1px solid rgba(255,255,255,0.7)', cardShadow: '0 12px 34px rgba(15,23,42,0.13)', wordmark: color };
+    default: return { pageBg: `linear-gradient(180deg, rgba(${rgb},0.05) 0%, #f8fafc 100%)`, cardBg: '#ffffff', cardBorder: '1px solid #e2e8f0', cardShadow: '0 10px 28px rgba(15,23,42,0.08)', wordmark: color };
+  }
 }
 
 interface HotspotPlanLite {
@@ -88,7 +107,7 @@ export default function SettingsPage() {
   // Drives the captive portal at billing.hubnetwifi.co.ke/hotspot.
   const [brand, setBrand] = useState<HotspotBranding | null>(null);
   const [brandForm, setBrandForm] = useState<HotspotBranding>({
-    name: '', color: '#2563eb', tagline: '', logoUrl: null,
+    name: '', color: '#2563eb', tagline: '', logoUrl: null, template: 'classic',
   });
   const [brandSaving, setBrandSaving] = useState(false);
   const logoInputRef = useRef<HTMLInputElement>(null);
@@ -264,6 +283,7 @@ export default function SettingsPage() {
           color: brandForm.color,
           tagline: brandForm.tagline,
           logoUrl: brandForm.logoUrl,
+          template: brandForm.template,
         }),
       });
       setBrand(updated);
@@ -739,6 +759,27 @@ export default function SettingsPage() {
           />
         </div>
 
+        <label style={{ marginTop: 14 }}>Design</label>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 }}>
+          {TEMPLATES.map((t) => {
+            const look = templateLook(t.id, brandForm.color, hexToRgb(brandForm.color));
+            const on = brandForm.template === t.id;
+            return (
+              <button key={t.id} type="button" onClick={() => setBrandForm({ ...brandForm, template: t.id })}
+                style={{ fontFamily: 'inherit', cursor: 'pointer', textAlign: 'left', padding: 0, borderRadius: 10, overflow: 'hidden',
+                  border: `2px solid ${on ? brandForm.color : 'var(--border)'}`, background: 'var(--card)' }}>
+                <div style={{ height: 44, background: look.pageBg, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <div style={{ width: 68, height: 24, background: look.cardBg, border: look.cardBorder, borderRadius: 6, boxShadow: look.cardShadow }} />
+                </div>
+                <div style={{ padding: '6px 10px' }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: on ? brandForm.color : 'var(--text)' }}>{t.label}{on ? ' ✓' : ''}</div>
+                  <div style={{ fontSize: 10, color: 'var(--muted)' }}>{t.hint}</div>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+
         <button onClick={saveBrand} disabled={brandSaving} style={{ marginTop: 16 }}>
           {brandSaving ? 'Saving…' : 'Save hotspot template'}
         </button>
@@ -760,6 +801,7 @@ export default function SettingsPage() {
 function PortalPreview({ brand, plans }: { brand: HotspotBranding; plans: HotspotPlanLite[] }) {
   const color = brand.color || '#2563eb';
   const rgb = hexToRgb(color);
+  const look = templateLook(brand.template ?? 'classic', color, rgb);
   const sample = plans.length
     ? plans.slice(0, 3).map((p) => ({
         name: p.name,
@@ -777,14 +819,14 @@ function PortalPreview({ brand, plans }: { brand: HotspotBranding; plans: Hotspo
       <div style={{ width: 300, borderRadius: 30, background: '#0f172a', padding: 10, boxShadow: '0 12px 32px rgba(15,23,42,0.25)' }}>
         <div style={{
           borderRadius: 22, overflow: 'hidden',
-          background: `linear-gradient(180deg, rgba(${rgb},0.06) 0%, #f6f8fb 100%)`,
+          background: look.pageBg,
           padding: 14,
         }}>
-          <div style={{ background: '#fff', border: '1px solid #e8edf3', borderRadius: 16, padding: 16, boxShadow: '0 8px 24px rgba(15,23,42,0.06)' }}>
+          <div style={{ background: look.cardBg, border: look.cardBorder, borderRadius: 16, padding: 16, boxShadow: look.cardShadow }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
               {brand.logoUrl && <img src={brand.logoUrl} alt="" style={{ height: 38, width: 38, objectFit: 'contain', flexShrink: 0 }} />}
               <div style={{ minWidth: 0 }}>
-                <div style={{ fontWeight: 800, fontSize: 19, color, lineHeight: 1.1, letterSpacing: '-0.02em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                <div style={{ fontWeight: 800, fontSize: 19, color: look.wordmark, lineHeight: 1.1, letterSpacing: '-0.02em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {brand.name || 'Your ISP'}
                 </div>
                 <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>{brand.tagline || 'Connect to Wi-Fi'}</div>

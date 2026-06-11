@@ -38,11 +38,13 @@ interface PurchaseInit {
   payInstructions?: { method: 'paybill'; paybill: string; account: string; amountKes: number };
 }
 
+type HotspotTemplate = 'classic' | 'aurora' | 'minimal' | 'sunset';
 interface Branding {
   name: string;
   color: string;
   tagline: string;
   logoUrl: string | null;
+  template: HotspotTemplate;
 }
 
 type Expanded = 'quick' | 'voucher' | null;
@@ -84,7 +86,48 @@ const DEFAULT_BRANDING: Branding = {
   color: '#2563eb',
   tagline: 'Connect to Wi-Fi',
   logoUrl: null,
+  template: 'classic',
 };
+
+/** Per-template visual overrides — all driven by the brand color. Layout stays
+ *  the same; the background, card and wordmark change the whole feel. */
+function templateLook(template: HotspotTemplate, color: string, rgb: string) {
+  switch (template) {
+    case 'aurora':
+      return {
+        pageBg: `linear-gradient(160deg, ${color} 0%, rgba(${rgb},0.6) 50%, #0b1220 135%)`,
+        pageColor: '#0f172a',
+        cardBg: '#ffffff', cardBorder: 'none',
+        cardShadow: '0 24px 60px rgba(0,0,0,0.35)',
+        wordmark: color,
+      };
+    case 'minimal':
+      return {
+        pageBg: '#f4f6f9',
+        pageColor: '#0f172a',
+        cardBg: '#ffffff', cardBorder: '1px solid #e5e9f0',
+        cardShadow: 'none',
+        wordmark: '#0f172a',
+      };
+    case 'sunset':
+      return {
+        pageBg: `linear-gradient(160deg, rgba(${rgb},0.20) 0%, #fff7ed 48%, #fef2f2 100%)`,
+        pageColor: '#0f172a',
+        cardBg: 'rgba(255,255,255,0.88)', cardBorder: '1px solid rgba(255,255,255,0.7)',
+        cardShadow: '0 16px 44px rgba(15,23,42,0.13)',
+        wordmark: color,
+      };
+    case 'classic':
+    default:
+      return {
+        pageBg: `linear-gradient(180deg, rgba(${rgb},0.04) 0%, #f8fafc 100%)`,
+        pageColor: '#0f172a',
+        cardBg: '#ffffff', cardBorder: '1px solid #e2e8f0',
+        cardShadow: '0 1px 3px rgba(15,23,42,0.05), 0 12px 32px rgba(15,23,42,0.07)',
+        wordmark: color,
+      };
+  }
+}
 
 // ---------- Device-token plumbing (Sprint 2.5 silent re-auth) ----------
 // Tokens survive MAC randomization where MAC-cookies + portal MAC lookup
@@ -828,6 +871,7 @@ export default function HotspotPortal() {
 
   // CSS variables drive the theme — only the brand colour changes per tenant.
   // Light, minimal palette: white card on a soft tinted background.
+  const look = templateLook(brand.template ?? 'classic', brand.color, brandRgb);
   const styles: Record<string, CSSProperties> = {
     page: {
       minHeight: '100vh',
@@ -836,24 +880,24 @@ export default function HotspotPortal() {
       alignItems: 'center',
       justifyContent: 'center',
       padding: 16,
-      background: `linear-gradient(180deg, rgba(${brandRgb},0.04) 0%, #f8fafc 100%)`,
-      color: '#0f172a',
+      background: look.pageBg,
+      color: look.pageColor,
       fontFamily: "'Inter', system-ui, -apple-system, 'Plus Jakarta Sans', sans-serif",
     },
     card: {
       maxWidth: 440,
       width: '100%',
-      background: '#ffffff',
-      border: '1px solid #e2e8f0',
+      background: look.cardBg,
+      border: look.cardBorder,
       borderRadius: 18,
       padding: 'clamp(18px, 5vw, 28px)', // tighter on phones, roomy on desktop
-      boxShadow: '0 1px 3px rgba(15,23,42,0.05), 0 12px 32px rgba(15,23,42,0.07)',
+      boxShadow: look.cardShadow,
     },
     wordmark: {
       fontSize: 28,
       fontWeight: 800,
       letterSpacing: '-0.02em',
-      color: brand.color,
+      color: look.wordmark,
       margin: 0,
     },
     tagline: {
