@@ -581,7 +581,7 @@ export interface ConfigureServicesInput {
 export async function configureServices(
   routerId: string,
   input: ConfigureServicesInput
-): Promise<{ stdout: string; stderr: string; success: boolean }> {
+): Promise<{ stdout: string; stderr: string; success: boolean; summary: string[] }> {
   if (!input.services.length) throw badRequest('no services selected');
   if (!input.ports.length) throw badRequest('ports required');
   if (input.services.includes('hotspot') && !input.hotspotNetwork) {
@@ -600,6 +600,22 @@ export async function configureServices(
     router.brand_slug ?? router.id
   );
 
+  // Human-readable record of exactly what this push configures — shown in the
+  // wizard so operators see the steps, not just the raw RouterOS /import output.
+  const summary: string[] = [
+    `Bridge "jtm-edge-bridge" with port(s): ${input.ports.join(', ')}`,
+  ];
+  if (input.services.includes('pppoe')) {
+    summary.push('PPPoE server for subscriber dial-up');
+  }
+  if (input.services.includes('hotspot')) {
+    summary.push(`Hotspot captive portal on ${input.hotspotNetwork} (DHCP + redirect)`);
+    summary.push('Walled-garden whitelist (captive portal + M-Pesa endpoints)');
+    summary.push('Captive-portal login templates uploaded');
+  }
+  summary.push('RADIUS client → JTM VPS (auth + accounting over the tunnel)');
+  summary.push('Edge firewall + NAT rules');
+
   // Deliver via scp + /import (not inline SSH) — RouterOS mangles multi-line
   // scripts piped inline over SSH ("expected end of command, line 1").
   const result = await wgManager.importScript(router.wg_tunnel_ip, script, { sshPort });
@@ -607,6 +623,7 @@ export async function configureServices(
     stdout: result.stdout,
     stderr: result.stderr,
     success: result.returncode === 0,
+    summary,
   };
 }
 

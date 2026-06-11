@@ -36,7 +36,7 @@ interface WizardState {
   services: Set<'pppoe' | 'hotspot'>;
   ports: Set<string>;
   hotspotNetwork: string;
-  result: { stdout: string; stderr: string; success: boolean } | null;
+  result: { stdout: string; stderr: string; success: boolean; summary?: string[] } | null;
 }
 
 interface ProvisionResult {
@@ -123,7 +123,7 @@ export default function Routers() {
     setWizard({ ...wizard, step: 'applying' });
     try {
       const services = Array.from(wizard.services);
-      const r = await api<{ stdout: string; stderr: string; success: boolean }>(
+      const r = await api<{ stdout: string; stderr: string; success: boolean; summary?: string[] }>(
         `/routers/${wizard.id}/configure`,
         {
           method: 'POST',
@@ -178,7 +178,7 @@ export default function Routers() {
         mikrotikScript: string; router: RouterRow;
       }>(`/routers/${id}/reprovision`, { method: 'POST' });
       if (r.autoApplied) {
-        setToast({ ok: true, msg: `Reprovisioned ${name} â€” pushed via SSH, MikroTik self-applied` });
+        setToast({ ok: true, msg: `Reprovisioned ${name} — pushed via SSH, MikroTik self-applied` });
       } else {
         // Fall back: show the one-liner for manual paste via the success card.
         setResult({
@@ -199,7 +199,7 @@ export default function Routers() {
   const copy = async (text: string, preEl: HTMLElement | null) => {
     const result = await copyToClipboard(text, preEl);
     if (result === 'copied') setToast({ ok: true, msg: 'Copied to clipboard' });
-    else if (result === 'selected') setToast({ ok: true, msg: 'Text selected â€” press Ctrl+C to copy' });
+    else if (result === 'selected') setToast({ ok: true, msg: 'Text selected — press Ctrl+C to copy' });
     else setToast({ ok: false, msg: 'Could not copy. Click the box and use Ctrl+A then Ctrl+C.' });
   };
 
@@ -233,7 +233,7 @@ export default function Routers() {
           </div>
           <div style={{ flex: '0 0 auto' }}>
             <button disabled={!form.name || provisioning} onClick={provision}>
-              {provisioning ? 'Provisioningâ€¦' : 'Provision'}
+              {provisioning ? 'Provisioning…' : 'Provision'}
             </button>
           </div>
         </div>
@@ -242,15 +242,15 @@ export default function Routers() {
       {result && (
         <div className="card" style={{ borderColor: 'var(--ok)' }}>
           <h3 style={{ marginTop: 0 }}>
-            âœ“ Router provisioned â€” tunnel IP <code>{result.router.wg_tunnel_ip}</code>
+            ✓ Router provisioned — tunnel IP <code>{result.router.wg_tunnel_ip}</code>
           </h3>
           {result.vpsAutoAdded ? (
             <p className="sub" style={{ marginTop: 4 }}>
-              âœ“ Peer added to VPS automatically. Paste ONE line on the MikroTik below.
+              ✓ Peer added to VPS automatically. Paste ONE line on the MikroTik below.
             </p>
           ) : (
             <p className="sub" style={{ marginTop: 4 }}>
-              âš  wg-manager not configured on API â€” falling back to manual VPS paste.
+              ⚠  wg-manager not configured on API — falling back to manual VPS paste.
             </p>
           )}
 
@@ -305,8 +305,8 @@ export default function Routers() {
           {list.map((r) => (
             <tr key={r.id}>
               <td>{r.name}</td>
-              <td>{r.site ?? 'â€”'}</td>
-              <td><code>{r.wg_tunnel_ip ?? 'â€”'}</code></td>
+              <td>{r.site ?? '—'}</td>
+              <td><code>{r.wg_tunnel_ip ?? '—'}</code></td>
               <td><VpnPill status={r.vpn_status} /></td>
               <td title={r.last_handshake_at ?? ''}>{formatLastSeen(r.last_handshake_at)}</td>
               <td>
@@ -391,20 +391,20 @@ function ConfigureWizard(props: {
         <h2 style={{ marginTop: 0 }}>Configure {w.name}</h2>
 
         {w.step === 'detect' && (
-          <p className="sub">Detecting model + interfaces via the tunnelâ€¦</p>
+          <p className="sub">Detecting model + interfaces via the tunnel…</p>
         )}
 
         {w.step === 'select' && w.detected && (
           <>
             <p className="sub" style={{ marginBottom: 16 }}>
-              <strong>{w.detected.board}</strong> Â· RouterOS {w.detected.version} Â·
-              hostname <code>{w.detected.hostname}</code> Â·
-              WAN: <code>{w.detected.defaultGateway || 'â€”'}</code>
+              <strong>{w.detected.board}</strong> · RouterOS {w.detected.version} ·
+              hostname <code>{w.detected.hostname}</code> ·
+              WAN: <code>{w.detected.defaultGateway || '—'}</code>
             </p>
 
             <h3 style={{ fontSize: 14, marginBottom: 8 }}>Services</h3>
             <p className="sub" style={{ marginBottom: 8, fontSize: 12 }}>
-              Pick one or both. They share the same ports â€” PPPoE handles
+              Pick one or both. They share the same ports — PPPoE handles
               subscriber dial-up; Hotspot intercepts walk-up browsers.
             </p>
             <div className="row" style={{ marginBottom: 16 }}>
@@ -449,7 +449,7 @@ function ConfigureWizard(props: {
                   <span style={{ fontFamily: 'ui-monospace', fontSize: 12 }}>
                     {p.name}{' '}
                     <span style={{ color: 'var(--muted)' }}>
-                      {p.type}{p.running ? ' Â· up' : ' Â· down'}{p.inBridge ? ` Â· in ${p.inBridge}` : ''}
+                      {p.type}{p.running ? ' · up' : ' · down'}{p.inBridge ? ` · in ${p.inBridge}` : ''}
                     </span>
                   </span>
                 </label>
@@ -475,18 +475,41 @@ function ConfigureWizard(props: {
         )}
 
         {w.step === 'applying' && (
-          <p className="sub">Pushing config via tunnel SSHâ€¦</p>
+          <p className="sub">Pushing config via tunnel SSH…</p>
         )}
 
         {w.step === 'done' && w.result && (
           <>
             <div className={`toast ${w.result.success ? 'ok' : 'err'}`}>
-              {w.result.success ? 'âœ“ Applied successfully' : 'âœ— Apply failed'}
+              {w.result.success ? '✓ Applied successfully' : '✗ Apply failed'}
             </div>
-            <pre style={{
-              background: 'var(--bg2,#0e1118)', padding: 10, borderRadius: 6,
-              fontSize: 11, marginTop: 12, maxHeight: 300, overflow: 'auto',
-            }}>{w.result.stdout || w.result.stderr || '(no output)'}</pre>
+
+            {w.result.summary && w.result.summary.length > 0 && (
+              <>
+                <h3 style={{ fontSize: 14, margin: '16px 0 8px' }}>What was configured</h3>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {w.result.summary.map((s, i) => (
+                    <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 13 }}>
+                      <span style={{ color: w.result!.success ? 'var(--green)' : 'var(--muted)', flexShrink: 0 }}>
+                        {w.result!.success ? '✓' : '•'}
+                      </span>
+                      <span style={{ color: 'var(--text-2)' }}>{s}</span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+
+            <details style={{ marginTop: 16 }}>
+              <summary style={{ cursor: 'pointer', fontSize: 12, color: 'var(--muted)' }}>
+                RouterOS output (raw)
+              </summary>
+              <pre style={{
+                background: '#0e1118', color: '#cbd5e1', padding: 10, borderRadius: 6,
+                fontSize: 11, marginTop: 8, maxHeight: 260, overflow: 'auto', whiteSpace: 'pre-wrap',
+              }}>{w.result.stdout || w.result.stderr || '(no output)'}</pre>
+            </details>
+
             <div style={{ textAlign: 'right', marginTop: 16 }}>
               <button onClick={onClose}>Close</button>
             </div>
@@ -508,7 +531,7 @@ function VpnPill({ status }: { status: string }) {
 }
 
 function formatLastSeen(iso: string | null): string {
-  if (!iso) return 'â€”';
+  if (!iso) return '—';
   const sec = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
   if (sec < 60) return `${sec}s ago`;
   if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
