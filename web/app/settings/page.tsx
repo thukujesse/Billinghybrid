@@ -34,6 +34,32 @@ interface HotspotBranding {
   logoUrl: string | null;
 }
 
+interface HotspotPlanLite {
+  name: string;
+  price_cents: number;
+  validity_days: number;
+  validity_minutes: number | null;
+  speed_down_kbps: number | null;
+}
+
+function hexToRgb(hex: string): string {
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex || '');
+  if (!m) return '37,99,235';
+  return `${parseInt(m[1], 16)},${parseInt(m[2], 16)},${parseInt(m[3], 16)}`;
+}
+function durLabel(mins: number | null, days: number): string {
+  const m = mins ?? days * 1440;
+  if (m % 43200 === 0) return `${m / 43200} month${m / 43200 > 1 ? 's' : ''}`;
+  if (m % 10080 === 0) return `${m / 10080} week${m / 10080 > 1 ? 's' : ''}`;
+  if (m % 1440 === 0) return `${m / 1440} day${m / 1440 > 1 ? 's' : ''}`;
+  if (m % 60 === 0) return `${m / 60} hour${m / 60 > 1 ? 's' : ''}`;
+  return `${m} min`;
+}
+function speedLabel(kbps: number | null): string {
+  if (!kbps) return '';
+  return kbps >= 1000 ? `${(kbps / 1000).toFixed(0)} Mbps` : `${kbps} Kbps`;
+}
+
 const SANDBOX_PASSKEY =
   'bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919';
 
@@ -66,6 +92,8 @@ export default function SettingsPage() {
   });
   const [brandSaving, setBrandSaving] = useState(false);
   const logoInputRef = useRef<HTMLInputElement>(null);
+  // The ISP's real hotspot packages, shown in the live portal preview.
+  const [previewPlans, setPreviewPlans] = useState<HotspotPlanLite[]>([]);
 
   const load = () =>
     api<MpesaPublic>('/settings/mpesa')
@@ -221,7 +249,10 @@ export default function SettingsPage() {
     }
   };
 
-  useEffect(() => { load(); loadBrand(); loadSms(); loadIntasend(); }, []);
+  useEffect(() => {
+    load(); loadBrand(); loadSms(); loadIntasend();
+    api<HotspotPlanLite[]>('/hotspot/plans').then(setPreviewPlans).catch(() => {/* preview falls back to samples */});
+  }, []);
 
   const saveBrand = async () => {
     setBrandSaving(true);
@@ -644,7 +675,8 @@ export default function SettingsPage() {
         Logo, ISP name, and tagline render at the top of the customer-facing card.
       </p>
 
-      <div className="card">
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+      <div className="card" style={{ flex: '1 1 340px', minWidth: 0 }}>
         <label>Logo</label>
         <div style={{ display: 'flex', gap: 16, alignItems: 'center', marginBottom: 12 }}>
           {brandForm.logoUrl ? (
@@ -711,12 +743,80 @@ export default function SettingsPage() {
           {brandSaving ? 'Saving…' : 'Save hotspot template'}
         </button>
       </div>
+        <PortalPreview brand={brandForm} plans={previewPlans} />
+      </div>
 
       {brand && (
         <p className="sub" style={{ marginTop: 12 }}>
-          Preview: <a href="/hotspot" target="_blank" rel="noreferrer">/hotspot</a> uses these settings.
+          The live captive portal at <a href="/hotspot" target="_blank" rel="noreferrer">/hotspot</a> uses these settings.
         </p>
       )}
+    </div>
+  );
+}
+
+/** Live phone-mockup of the captive portal — reflects the branding form as the
+ *  operator edits it, using the ISP's real packages (or samples if none yet). */
+function PortalPreview({ brand, plans }: { brand: HotspotBranding; plans: HotspotPlanLite[] }) {
+  const color = brand.color || '#2563eb';
+  const rgb = hexToRgb(color);
+  const sample = plans.length
+    ? plans.slice(0, 3).map((p) => ({
+        name: p.name,
+        price: Math.round(p.price_cents / 100),
+        meta: [durLabel(p.validity_minutes, p.validity_days), speedLabel(p.speed_down_kbps)].filter(Boolean).join(' · '),
+      }))
+    : [
+        { name: '1 Hour', price: 20, meta: '1 hour · 5 Mbps' },
+        { name: 'Daily', price: 50, meta: '1 day · 5 Mbps' },
+        { name: 'Weekly', price: 300, meta: '7 days · 10 Mbps' },
+      ];
+  return (
+    <div style={{ flex: '0 0 300px' }}>
+      <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 8, fontWeight: 600 }}>Live preview</div>
+      <div style={{ width: 300, borderRadius: 30, background: '#0f172a', padding: 10, boxShadow: '0 12px 32px rgba(15,23,42,0.25)' }}>
+        <div style={{
+          borderRadius: 22, overflow: 'hidden',
+          background: `linear-gradient(180deg, rgba(${rgb},0.06) 0%, #f6f8fb 100%)`,
+          padding: 14,
+        }}>
+          <div style={{ background: '#fff', border: '1px solid #e8edf3', borderRadius: 16, padding: 16, boxShadow: '0 8px 24px rgba(15,23,42,0.06)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+              {brand.logoUrl && <img src={brand.logoUrl} alt="" style={{ height: 38, width: 38, objectFit: 'contain', flexShrink: 0 }} />}
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontWeight: 800, fontSize: 19, color, lineHeight: 1.1, letterSpacing: '-0.02em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {brand.name || 'Your ISP'}
+                </div>
+                <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>{brand.tagline || 'Connect to Wi-Fi'}</div>
+              </div>
+            </div>
+            <div style={{ fontSize: 9.5, fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>Choose a package</div>
+            <div style={{ display: 'grid', gap: 7 }}>
+              {sample.map((p, i) => (
+                <div key={i} style={{
+                  display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8,
+                  border: i === 0 ? `2px solid ${color}` : '1px solid #e2e8f0',
+                  background: i === 0 ? `rgba(${rgb},0.06)` : '#fff',
+                  borderRadius: 10, padding: i === 0 ? '7px 9px' : '8px 10px',
+                }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontWeight: 700, fontSize: 13, color: i === 0 ? color : '#0f172a' }}>{p.name}</div>
+                    {p.meta && <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 2 }}>{p.meta}</div>}
+                  </div>
+                  <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                    <div style={{ fontSize: 9, color: '#94a3b8', fontWeight: 700 }}>KES</div>
+                    <div style={{ fontWeight: 800, fontSize: 16, color: i === 0 ? color : '#0f172a', lineHeight: 1 }}>{p.price}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div style={{ background: color, color: '#fff', textAlign: 'center', borderRadius: 10, padding: 11, fontWeight: 700, fontSize: 13, marginTop: 12, boxShadow: `0 4px 14px rgba(${rgb},0.30)` }}>
+              Pay &amp; Connect
+            </div>
+            <div style={{ textAlign: 'center', marginTop: 10, fontSize: 10, color: '#15803d', fontWeight: 600 }}>🔒 Secure payment via M-Pesa</div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
