@@ -53,6 +53,9 @@ export default function Routers() {
   const [provisioning, setProvisioning] = useState(false);
   const [result, setResult] = useState<ProvisionResult | null>(null);
   const [toast, setToast] = useState<{ ok: boolean; msg: string } | null>(null);
+  // Tracks which just-provisioned router we've already auto-opened Configure for,
+  // so we don't re-open it after the operator closes the wizard.
+  const autoOpened = useRef<string | null>(null);
 
   const load = () =>
     api<RouterRow[]>('/routers')
@@ -117,6 +120,37 @@ export default function Routers() {
       setWizard(null);
     }
   };
+
+  // Seamless onboarding: after provisioning, watch the new router's tunnel. The
+  // moment it connects (operator pasted the script + WG handshook), jump straight
+  // into the Configure wizard — no going back to the list to click "Configure".
+  useEffect(() => {
+    if (!result) return;
+    const id = result.router.id;
+    let stop = false;
+    const tick = async () => {
+      try {
+        const rows = await api<RouterRow[]>('/routers');
+        if (stop) return;
+        const r = rows.find((x) => x.id === id);
+        if (!r) return;
+        setResult((prev) =>
+          prev && prev.router.id === id
+            ? { ...prev, router: { ...prev.router, vpn_status: r.vpn_status, last_handshake_at: r.last_handshake_at } }
+            : prev
+        );
+        if (r.vpn_status === 'connected' && autoOpened.current !== id && !wizard) {
+          autoOpened.current = id;
+          stop = true;
+          openConfigure(id, r.name);
+        }
+      } catch { /* transient — keep polling */ }
+    };
+    tick();
+    const t = setInterval(tick, 4000);
+    return () => { stop = true; clearInterval(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [result?.router.id]);
 
   const applyConfig = async () => {
     if (!wizard) return;
@@ -207,8 +241,9 @@ export default function Routers() {
     <div className="container">
       <h1>Router Registry</h1>
       <p className="sub">
-        Zero-touch MikroTik provisioning. Enter a name + site, then paste the
-        generated script onto the router and the wg command on the VPS.
+        Zero-touch MikroTik provisioning. Enter a name and paste the generated
+        script onto the router — the tunnel comes up and configuration opens
+        automatically. No second step.
       </p>
       {toast && <div className={`toast ${toast.ok ? 'ok' : 'err'}`}>{toast.msg}</div>}
 
@@ -287,6 +322,28 @@ export default function Routers() {
           ) : (
             <ScriptBlock text={result.mikrotikScript} onCopy={copy} />
           )}
+
+          <div style={{
+            marginTop: 18, paddingTop: 16, borderTop: '1px solid var(--border)',
+            display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+          }}>
+            <VpnPill status={result.router.vpn_status} />
+            {result.router.vpn_status === 'connected' ? (
+              <>
+                <span style={{ color: 'var(--green)', fontWeight: 600, fontSize: 13 }}>
+                  Connected — opening configuration…
+                </span>
+                <button style={{ marginLeft: 'auto', fontSize: 12 }}
+                  onClick={() => openConfigure(result.router.id, result.router.name)}>
+                  Configure now
+                </button>
+              </>
+            ) : (
+              <span className="sub" style={{ margin: 0 }}>
+                Paste the script on the MikroTik — the moment the tunnel connects, configuration opens automatically.
+              </span>
+            )}
+          </div>
         </div>
       )}
 
@@ -350,7 +407,12 @@ export default function Routers() {
       {wizard && (
         <ConfigureWizard
           wizard={wizard}
-          onClose={() => setWizard(null)}
+          onClose={() => {
+            // Closing the wizard for the freshly-provisioned router clears its
+            // provision panel so the page settles back to the router list.
+            if (result && wizard?.id === result.router.id) setResult(null);
+            setWizard(null);
+          }}
           onToggleService={toggleService}
           onTogglePort={togglePort}
           onCidrChange={(v) => setWizard((w) => w && { ...w, hotspotNetwork: v })}
