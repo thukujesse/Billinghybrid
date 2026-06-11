@@ -301,6 +301,45 @@ function AdBanner({ ads }: { ads: AdPublic[] }) {
   );
 }
 
+/** Post-payment sponsor interstitial: "Payment successful → activating →
+ *  [short clip] → connect". Never traps the customer — auto-connects after the
+ *  video ends, on skip, or after an 8s safety timeout. */
+function PostPayAd({ ad, onDone }: { ad: AdPublic; onDone: () => void }) {
+  useEffect(() => {
+    api(`/hotspot/ads/${ad.id}/impression`, { method: 'POST' }).catch(() => {});
+    const safety = setTimeout(onDone, 8000); // never block on a stalled video
+    return () => clearTimeout(safety);
+  }, [ad.id, onDone]);
+  const onAdClick = () => {
+    api(`/hotspot/ads/${ad.id}/click`, { method: 'POST' }).catch(() => {});
+    if (ad.link_url) window.open(ad.link_url, '_blank', 'noopener');
+  };
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 1000, background: '#0b1220',
+      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+      padding: 20, color: '#fff', textAlign: 'center',
+    }}>
+      <div style={{ fontSize: 19, fontWeight: 800, marginBottom: 2 }}>Payment successful ✓</div>
+      <div style={{ fontSize: 13, opacity: 0.75, marginBottom: 18 }}>Activating your internet…</div>
+      <div onClick={ad.link_url ? onAdClick : undefined}
+        style={{ width: '100%', maxWidth: 360, borderRadius: 14, overflow: 'hidden', position: 'relative', cursor: ad.link_url ? 'pointer' : 'default', background: '#000' }}>
+        {ad.media_type === 'video' ? (
+          <video src={ad.media_url} autoPlay muted playsInline onEnded={onDone} style={{ width: '100%', display: 'block' }} />
+        ) : (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={ad.media_url} alt={ad.title} style={{ width: '100%', display: 'block' }} />
+        )}
+        <span style={{ position: 'absolute', top: 6, right: 6, fontSize: 9, color: '#fff', background: 'rgba(0,0,0,0.5)', padding: '1px 6px', borderRadius: 4 }}>Ad</span>
+      </div>
+      <button onClick={onDone} style={{
+        marginTop: 18, background: 'transparent', color: '#fff',
+        border: '1px solid rgba(255,255,255,0.4)', borderRadius: 8, padding: '8px 18px', fontSize: 13, cursor: 'pointer',
+      }}>Skip &amp; connect →</button>
+    </div>
+  );
+}
+
 function formatSpeed(kbps: number | null): string | null {
   if (!kbps) return null;
   if (kbps >= 1000) {
@@ -404,6 +443,8 @@ export default function HotspotPortal() {
   const [plansError, setPlansError] = useState<string | null>(null);
   const [planCat, setPlanCat] = useState<'All' | PlanCat>('All');
   const [ads, setAds] = useState<AdPublic[]>([]);
+  const [postAds, setPostAds] = useState<AdPublic[]>([]);
+  const [showPostAd, setShowPostAd] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [grant, setGrant] = useState<GrantResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -451,6 +492,8 @@ export default function HotspotPortal() {
   const phoneNormalized = normalizePhone(phone);
   const phoneValid = phoneNormalized !== null;
   const selectedPlan = plans.find((p) => p.id === planId) ?? null;
+  // Prefer a video for the post-payment slot, else the first post-payment ad.
+  const postAd = postAds.find((a) => a.media_type === 'video') ?? postAds[0] ?? null;
   // Group packages by duration; only show the tab bar when >1 category exists.
   const presentCats = PLAN_CATS.filter((c) => plans.some((p) => planCategory(p) === c));
   const showCatTabs = presentCats.length > 1;
@@ -699,6 +742,10 @@ export default function HotspotPortal() {
     api<AdPublic[]>('/hotspot/ads?placement=portal_banner')
       .then(setAds)
       .catch(() => {/* no ads — portal is unaffected */});
+    // Optional short sponsor clip shown after a successful payment.
+    api<AdPublic[]>('/hotspot/ads?placement=post_payment')
+      .then(setPostAds)
+      .catch(() => {/* none — connect immediately */});
   };
 
   // Quick Connect: phone-based session lookup. Customer paid before from
@@ -818,7 +865,10 @@ export default function HotspotPortal() {
           setSubmitting(false);
           // Inline-minted token piggybacks on the success poll response.
           if ((s as any).token) localStorage.setItem(TOKEN_KEY, (s as any).token);
-          setTimeout(() => formRef.current?.submit(), 400);
+          // If the ISP configured a post-payment sponsor clip, show it first;
+          // its overlay connects on end/skip. Otherwise connect immediately.
+          if (postAds.length > 0) setShowPostAd(true);
+          else setTimeout(() => formRef.current?.submit(), 400);
           return;
         }
         if (s.status === 'failed' || s.status === 'expired') {
@@ -995,6 +1045,12 @@ export default function HotspotPortal() {
         .hs-portal button:active:not(:disabled) { transform: translateY(1px); }
         .hs-portal button:disabled { opacity: .55; cursor: not-allowed; }
       `}</style>
+      {showPostAd && postAd && (
+        <PostPayAd
+          ad={postAd}
+          onDone={() => { setShowPostAd(false); setTimeout(() => formRef.current?.submit(), 150); }}
+        />
+      )}
       <div style={styles.card}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 4 }}>
           {brand.logoUrl && (
