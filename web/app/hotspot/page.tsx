@@ -15,6 +15,8 @@ interface HotspotPlan {
   name: string;
   price_cents: number;
   validity_days: number;
+  validity_minutes: number | null;
+  data_cap_mb: number | null;
   speed_down_kbps: number | null;
   speed_up_kbps: number | null;
 }
@@ -175,12 +177,21 @@ function formatVoucher(raw: string): string {
   return groups.filter(Boolean).join('-');
 }
 
-function formatValidity(days: number): string {
-  if (days >= 30) return `${Math.round(days / 30)} month${days >= 60 ? 's' : ''}`;
-  if (days >= 7) return `${Math.round(days / 7)} week${days >= 14 ? 's' : ''}`;
-  if (days >= 1) return `${days} day${days > 1 ? 's' : ''}`;
-  const hours = Math.round(days * 24);
-  return `${hours} hour${hours !== 1 ? 's' : ''}`;
+/** Friendly duration from the canonical minutes (falls back to days for legacy). */
+function formatDuration(minutes: number | null, days: number): string {
+  const m = minutes ?? days * 1440;
+  if (m % 43200 === 0) { const v = m / 43200; return `${v} month${v > 1 ? 's' : ''}`; }
+  if (m % 10080 === 0) { const v = m / 10080; return `${v} week${v > 1 ? 's' : ''}`; }
+  if (m % 1440 === 0) { const v = m / 1440; return `${v} day${v > 1 ? 's' : ''}`; }
+  if (m % 60 === 0) { const v = m / 60; return `${v} hour${v > 1 ? 's' : ''}`; }
+  return `${m} min`;
+}
+
+/** Friendly data cap (5120 MB → "5 GB", null → "Unlimited"). */
+function formatData(mb: number | null): string {
+  if (!mb) return 'Unlimited';
+  if (mb >= 1024) { const gb = mb / 1024; return `${gb % 1 === 0 ? gb.toFixed(0) : gb.toFixed(1)} GB`; }
+  return `${mb} MB`;
 }
 
 function formatSpeed(kbps: number | null): string | null {
@@ -725,16 +736,18 @@ export default function HotspotPortal() {
   // gave way to the Quick Connect / Voucher collapsible bars.
   const planCardStyle = (active: boolean): CSSProperties => ({
     background: active ? `rgba(${brandRgb},0.06)` : '#ffffff',
-    border: `1px solid ${active ? brand.color : '#e2e8f0'}`,
-    borderRadius: 10,
-    padding: 14,
+    border: active ? `2px solid ${brand.color}` : '1px solid #e2e8f0',
+    borderRadius: 12,
+    padding: active ? '13px 15px' : '14px 16px', // -1px to offset the thicker border
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
-    gap: 10,
+    gap: 12,
     cursor: 'pointer',
     textAlign: 'left',
     fontFamily: 'inherit',
+    boxShadow: active ? `0 6px 16px rgba(${brandRgb},0.16)` : '0 1px 2px rgba(15,23,42,0.05)',
+    transition: 'border-color .15s ease, box-shadow .15s ease, background .15s ease',
   });
 
   // CSS variables drive the theme — only the brand colour changes per tenant.
@@ -756,9 +769,9 @@ export default function HotspotPortal() {
       width: '100%',
       background: '#ffffff',
       border: '1px solid #e2e8f0',
-      borderRadius: 16,
-      padding: 28,
-      boxShadow: '0 1px 3px rgba(15,23,42,0.04), 0 8px 24px rgba(15,23,42,0.04)',
+      borderRadius: 18,
+      padding: 'clamp(18px, 5vw, 28px)', // tighter on phones, roomy on desktop
+      boxShadow: '0 1px 3px rgba(15,23,42,0.05), 0 12px 32px rgba(15,23,42,0.07)',
     },
     wordmark: {
       fontSize: 28,
@@ -810,12 +823,13 @@ export default function HotspotPortal() {
       background: brand.color,
       color: '#ffffff',
       border: 'none',
-      borderRadius: 8,
-      padding: 13,
-      fontSize: 14,
-      fontWeight: 600,
+      borderRadius: 10,
+      padding: 14,
+      fontSize: 15,
+      fontWeight: 700,
       cursor: 'pointer',
       marginTop: 16,
+      boxShadow: `0 4px 14px rgba(${brandRgb},0.30)`,
     },
     btnGhost: {
       width: '100%',
@@ -851,7 +865,16 @@ export default function HotspotPortal() {
   };
 
   return (
-    <div style={styles.page}>
+    <div className="hs-portal" style={{ ...styles.page, ['--brand' as any]: brand.color }}>
+      <style>{`
+        .hs-portal input:focus, .hs-portal select:focus, .hs-portal textarea:focus {
+          border-color: var(--brand) !important;
+          box-shadow: 0 0 0 3px rgba(${brandRgb}, 0.16) !important;
+        }
+        .hs-portal button { transition: transform .07s ease, filter .15s ease, box-shadow .15s ease; }
+        .hs-portal button:active:not(:disabled) { transform: translateY(1px); }
+        .hs-portal button:disabled { opacity: .55; cursor: not-allowed; }
+      `}</style>
       <div style={styles.card}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 4 }}>
           {brand.logoUrl && (
@@ -1101,23 +1124,31 @@ export default function HotspotPortal() {
                     {plans.map((p) => {
                       const active = p.id === planId;
                       const down = formatSpeed(p.speed_down_kbps);
-                      const up   = formatSpeed(p.speed_up_kbps);
+                      const chips = [formatDuration(p.validity_minutes, p.validity_days)];
+                      if (down) chips.push(down);
+                      chips.push(formatData(p.data_cap_mb));
                       return (
                         <button key={p.id} onClick={() => { setPlanId(p.id); setExpanded(null); }} style={planCardStyle(active)}>
                           <div style={{ flex: 1, minWidth: 0, textAlign: 'left' }}>
-                            <div style={{ fontWeight: 700, fontSize: 18, color: active ? brand.color : '#0f172a', lineHeight: 1.2 }}>
+                            <div style={{ fontWeight: 700, fontSize: 17, color: active ? brand.color : '#0f172a', lineHeight: 1.2 }}>
                               {p.name}
                             </div>
-                            <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4, fontWeight: 300 }}>
-                              {down && <>↓ {down}</>}
-                              {down && up && <span style={{ margin: '0 6px' }}>·</span>}
-                              {up && <>↑ {up}</>}
-                              {!down && !up && formatValidity(p.validity_days)}
-                              {(down || up) && <span style={{ marginLeft: 6 }}>· {formatValidity(p.validity_days)}</span>}
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+                              {chips.map((c, i) => (
+                                <span key={i} style={{
+                                  fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap',
+                                  color: active ? brand.color : '#475569',
+                                  background: active ? `rgba(${brandRgb},0.12)` : '#f1f5f9',
+                                  borderRadius: 999, padding: '3px 9px',
+                                }}>{c}</span>
+                              ))}
                             </div>
                           </div>
-                          <div style={{ fontWeight: 700, fontSize: 18, color: active ? brand.color : '#0f172a', textAlign: 'right' }}>
-                            KES {(p.price_cents / 100).toFixed(0)}
+                          <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                            <div style={{ fontSize: 10, color: '#94a3b8', fontWeight: 700, letterSpacing: '0.05em' }}>KES</div>
+                            <div style={{ fontWeight: 800, fontSize: 23, color: active ? brand.color : '#0f172a', lineHeight: 1 }}>
+                              {(p.price_cents / 100).toFixed(0)}
+                            </div>
                           </div>
                         </button>
                       );
@@ -1163,8 +1194,17 @@ export default function HotspotPortal() {
         )}
 
         <div style={styles.footer}>
-          Powered by HUB Networks
-          {mtikParams?.mac && <> · <code style={styles.code}>{mtikParams.mac}</code></>}
+          <div style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6, marginBottom: 10,
+            color: '#15803d', fontWeight: 600, fontSize: 12,
+            background: 'rgba(22,163,74,0.08)', borderRadius: 999, padding: '4px 12px',
+          }}>
+            <span aria-hidden>🔒</span> Secure payment via M-Pesa
+          </div>
+          <div>
+            Powered by {brand.name}
+            {mtikParams?.mac && <> · <code style={styles.code}>{mtikParams.mac}</code></>}
+          </div>
         </div>
       </div>
     </div>

@@ -1198,9 +1198,11 @@ api.post('/hotspot/pay/:checkoutRequestId/confirm-test', ah(async (req, res) => 
 async function listHotspotPlansInline() {
   const r = await (await import('../db/pool.js')).query<{
     id: string; name: string; price_cents: number; validity_days: number;
+    validity_minutes: number | null; data_cap_mb: number | null;
     speed_down_kbps: number | null; speed_up_kbps: number | null;
   }>(
-    `SELECT id, name, price_cents, validity_days, speed_down_kbps, speed_up_kbps
+    `SELECT id, name, price_cents, validity_days, validity_minutes, data_cap_mb,
+            speed_down_kbps, speed_up_kbps
        FROM plans WHERE type='hotspot' AND active=TRUE
        ORDER BY price_cents ASC`
   );
