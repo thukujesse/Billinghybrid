@@ -4,7 +4,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { getToken, setToken, api } from '@/lib/api';
 
 // Pages that never require an operator login.
-const PUBLIC = ['/login', '/hotspot', '/portal', '/renew', '/technician'];
+const PUBLIC = ['/login', '/register', '/hotspot', '/portal', '/renew', '/technician'];
 
 /**
  * Client-side gate. On a protected route with no/invalid token it bounces to

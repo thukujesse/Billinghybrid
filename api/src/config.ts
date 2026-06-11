@@ -26,6 +26,21 @@ export const config = {
     // 'log' (default, safe) or 'mikrotik' (RouterOS command planner)
     driver: process.env.NETWORK_DRIVER ?? 'log',
   },
+  // Control plane (M2): tenant registry + self-serve ISP provisioning.
+  control: {
+    // Base domain new ISP subdomains are minted under: <slug>.<baseDomain>.
+    baseDomain: process.env.TENANT_BASE_DOMAIN ?? 'hubnetwifi.co.ke',
+    // Allow public self-serve "Register your ISP" signup (provisions an
+    // isolated per-tenant database). Off => only an existing admin can onboard.
+    selfServe: (process.env.TENANT_SELFSERVE ?? 'true') === 'true',
+    // DSN with CREATEDB privilege, used to provision new tenant databases on
+    // the same Postgres instance. Defaults to DATABASE_URL — the app role must
+    // then have CREATEDB (ALTER ROLE <role> CREATEDB).
+    adminDatabaseUrl:
+      process.env.CONTROL_ADMIN_DATABASE_URL ??
+      process.env.DATABASE_URL ??
+      'postgres://jtm:jtm@127.0.0.1:5432/jtm',
+  },
   auth: {
     // When false, the API runs open (demo mode) and requireAuth injects a
     // synthetic admin. Set AUTH_ENABLED=true to enforce JWT + RBAC.

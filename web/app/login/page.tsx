@@ -102,6 +102,9 @@ export default function Login() {
           {busy ? 'Signing in…' : 'Sign in'}
         </button>
       </div>
+      <p className="sub" style={{ marginTop: 14, textAlign: 'center' }}>
+        New here? <a href="/register">Register your ISP →</a>
+      </p>
     </div>
   );
 }
