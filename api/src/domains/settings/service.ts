@@ -245,11 +245,13 @@ export async function setMpesaConfig(
   updatedBy?: string
 ): Promise<void> {
   const entries: Array<[string, string, boolean]> = [];
+  // Trim pasted credentials — a stray leading/trailing space in the shortcode or
+  // keys silently breaks Daraja ("Invalid BusinessShortCode" / auth failures).
   if (input.env !== undefined) entries.push(['mpesa.env', input.env, false]);
-  if (input.shortcode !== undefined) entries.push(['mpesa.shortcode', input.shortcode, false]);
-  if (input.consumerKey !== undefined) entries.push(['mpesa.consumer_key', input.consumerKey, true]);
-  if (input.consumerSecret !== undefined) entries.push(['mpesa.consumer_secret', input.consumerSecret, true]);
-  if (input.passkey !== undefined) entries.push(['mpesa.passkey', input.passkey, true]);
+  if (input.shortcode !== undefined) entries.push(['mpesa.shortcode', input.shortcode.trim(), false]);
+  if (input.consumerKey !== undefined) entries.push(['mpesa.consumer_key', input.consumerKey.trim(), true]);
+  if (input.consumerSecret !== undefined) entries.push(['mpesa.consumer_secret', input.consumerSecret.trim(), true]);
+  if (input.passkey !== undefined) entries.push(['mpesa.passkey', input.passkey.trim(), true]);
   if (input.collectionMethod !== undefined) entries.push(['mpesa.collection_method', input.collectionMethod, false]);
 
   for (const [key, value, isSecret] of entries) {
