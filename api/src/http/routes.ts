@@ -53,6 +53,7 @@ import { registerNetworkRoutes } from './routes/network.js';
 import { registerWalletRoutes } from './routes/wallet.js';
 import { registerReportsRoutes } from './routes/reports.js';
 import { registerTwinRoutes } from './routes/twin.js';
+import { registerLeadsRoutes } from './routes/leads.js';
 
 export const api = Router();
 
@@ -62,6 +63,7 @@ export const api = Router();
 // zod validation, so two features editing this file at once stop colliding.
 registerNetworkRoutes(api);
 registerTwinRoutes(api);
+registerLeadsRoutes(api);
 registerWalletRoutes(api);
 registerReportsRoutes(api);
 

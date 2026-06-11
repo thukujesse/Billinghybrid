@@ -15,14 +15,14 @@ type Placement = { mode: 'site' } | { mode: 'device' } | { mode: 'customer'; id:
 type Pending = { lat: number; lng: number; kind: 'site' | 'device' } | null;
 
 const LEGEND: Array<[string, string]> = [
-  ['#16a34a', 'Online'], ['#d97706', 'Offline'], ['#dc2626', 'Suspended'],
+  ['#16a34a', 'Online'], ['#d97706', 'Offline'], ['#dc2626', 'Suspended'], ['#facc15', 'Lead'],
   ['#2563eb', 'Site'], ['#7c3aed', 'OLT/Fibre'], ['#0891b2', 'Tower/AP'], ['#0d9488', 'FAT'],
 ];
 
 export default function TwinPage() {
-  const [data, setData] = useState<(MapData & { counts: { sites: number; devices: number; customers: number; online: number } }) | null>(null);
+  const [data, setData] = useState<(MapData & { counts: { sites: number; devices: number; customers: number; online: number; leads: number } }) | null>(null);
   const [unlocated, setUnlocated] = useState<Unlocated[]>([]);
-  const [layers, setLayers] = useState<Layers>({ sites: true, devices: true, customers: true, links: true });
+  const [layers, setLayers] = useState<Layers>({ sites: true, devices: true, customers: true, links: true, leads: true });
   const [placing, setPlacing] = useState<Placement>(null);
   const [pending, setPending] = useState<Pending>(null);
   const [form, setForm] = useState({ name: '', type: 'pop', device_kind: 'olt', vendor: '' });
@@ -104,11 +104,13 @@ export default function TwinPage() {
         {c && (
           <span style={{ fontSize: 13, color: 'var(--text-2)', marginRight: 8 }}>
             <strong>{c.customers}</strong> customers (<strong style={{ color: '#16a34a' }}>{c.online}</strong> online) ·{' '}
-            <strong>{c.sites}</strong> sites · <strong>{c.devices}</strong> devices
+            <strong>{c.sites}</strong> sites · <strong>{c.devices}</strong> devices ·{' '}
+            <strong style={{ color: '#ca8a04' }}>{c.leads}</strong> leads
           </span>
         )}
         <div style={{ display: 'flex', gap: 4, marginLeft: 'auto' }}>
           {layerBtn('customers', 'Customers')}
+          {layerBtn('leads', 'Leads')}
           {layerBtn('devices', 'Devices')}
           {layerBtn('sites', 'Sites')}
           {layerBtn('links', 'Links')}

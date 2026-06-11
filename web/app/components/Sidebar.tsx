@@ -15,6 +15,7 @@ const GROUPS: Group[] = [
   {
     key: 'users', label: 'Users', ico: '👥', items: [
       { href: '/customers', label: 'Customers' },
+      { href: '/leads', label: 'Leads' },
       { href: '/users/hotspot', label: 'Hotspot users' },
       { href: '/plans', label: 'Plans' },
       { href: '/vouchers', label: 'Vouchers' },

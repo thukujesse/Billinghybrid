@@ -8,8 +8,9 @@ export interface MapData {
   devices: Array<{ id: string; name: string; device_kind: string; device_role: string; vendor: string | null; status: string; latitude: number; longitude: number; capacity: number | null; used_ports: number }>;
   customers: Array<{ id: string; full_name: string; account_number: string; phone: string | null; latitude: number; longitude: number; state: string; service_count: number; service_type: string | null }>;
   links: Array<{ id: string; kind: string; status: string; from_lat: number; from_lng: number; to_lat: number; to_lng: number }>;
+  leads: Array<{ id: string; name: string; phone: string | null; stage: string; service_interest: string | null; latitude: number; longitude: number }>;
 }
-export interface Layers { sites: boolean; devices: boolean; customers: boolean; links: boolean }
+export interface Layers { sites: boolean; devices: boolean; customers: boolean; links: boolean; leads: boolean }
 
 const CUSTOMER_COLOR: Record<string, string> = {
   online: '#16a34a', offline: '#d97706', suspended: '#dc2626', closed: '#9ca3af',
@@ -42,6 +43,7 @@ export default function TwinMap({
     ...data.customers.map((c) => [c.latitude, c.longitude] as [number, number]),
     ...data.sites.map((s) => [s.latitude, s.longitude] as [number, number]),
     ...data.devices.map((d) => [d.latitude, d.longitude] as [number, number]),
+    ...data.leads.map((l) => [l.latitude, l.longitude] as [number, number]),
   ];
   const center: [number, number] = pts.length
     ? [pts.reduce((a, p) => a + p[0], 0) / pts.length, pts.reduce((a, p) => a + p[1], 0) / pts.length]
@@ -87,6 +89,17 @@ export default function TwinMap({
             role: {d.device_role} · {d.status}
             {d.capacity != null && <><br />ports: {d.used_ports}/{d.capacity}</>}
             {onDelete && <><br /><button onClick={() => onDelete('device', d.id)}>Delete</button></>}
+          </Popup>
+        </CircleMarker>
+      ))}
+
+      {layers.leads && data.leads.map((l) => (
+        <CircleMarker key={l.id} center={[l.latitude, l.longitude]}
+          radius={5} pathOptions={{ color: '#ca8a04', fillColor: '#facc15', fillOpacity: 0.6, weight: 1, dashArray: '2 2' }}>
+          <Popup>
+            <strong>{l.name}</strong> <em>(lead)</em><br />
+            {l.phone || '—'}{l.service_interest ? ` · ${l.service_interest}` : ''}<br />
+            stage: {l.stage}
           </Popup>
         </CircleMarker>
       ))}

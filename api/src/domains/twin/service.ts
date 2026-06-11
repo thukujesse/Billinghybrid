@@ -8,6 +8,7 @@
  */
 import { query } from '../../db/pool.js';
 import { badRequest } from '../../lib/errors.js';
+import { listLeadsForMap } from '../leads/service.js';
 
 export type CustomerState = 'online' | 'offline' | 'suspended' | 'closed';
 
@@ -33,9 +34,13 @@ export interface TwinLink {
   from_lat: number; from_lng: number; to_lat: number; to_lng: number;
   path_json: unknown;
 }
+export interface TwinLead {
+  id: string; name: string; phone: string | null; stage: string;
+  service_interest: string | null; latitude: number; longitude: number;
+}
 export interface TwinMap {
-  sites: TwinSite[]; devices: TwinDevice[]; customers: TwinCustomer[]; links: TwinLink[];
-  counts: { sites: number; devices: number; customers: number; online: number };
+  sites: TwinSite[]; devices: TwinDevice[]; customers: TwinCustomer[]; links: TwinLink[]; leads: TwinLead[];
+  counts: { sites: number; devices: number; customers: number; online: number; leads: number };
 }
 
 /** Everything geolocated, for the live map. Customers coloured by status +
@@ -91,13 +96,16 @@ export async function getMap(): Promise<TwinMap> {
     };
   });
 
+  const leads = (await listLeadsForMap()) as TwinLead[];
+
   return {
-    sites, devices, customers, links,
+    sites, devices, customers, links, leads,
     counts: {
       sites: sites.length,
       devices: devices.length,
       customers: customers.length,
       online: customers.filter((c) => c.online).length,
+      leads: leads.length,
     },
   };
 }
