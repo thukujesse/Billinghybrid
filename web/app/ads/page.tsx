@@ -27,6 +27,7 @@ export default function AdsPage() {
   const [routers, setRouters] = useState<RouterLite[]>([]);
   const [form, setForm] = useState(EMPTY);
   const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [toast, setToast] = useState<{ ok: boolean; msg: string } | null>(null);
 
@@ -44,6 +45,25 @@ export default function AdsPage() {
     const reader = new FileReader();
     reader.onload = () => setForm((f) => ({ ...f, media_url: String(reader.result) }));
     reader.readAsDataURL(file);
+  };
+
+  // Videos are too big for a DB data URL — upload the file to storage and keep
+  // the returned served URL on the ad.
+  const onVideo = async (file: File | null) => {
+    if (!file) return;
+    if (file.size > 9_000_000) { setToast({ ok: false, msg: 'Video too large — keep sponsor clips under ~9 MB (3–5s is ideal).' }); return; }
+    setUploading(true);
+    try {
+      const dataUrl: string = await new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(String(r.result));
+        r.onerror = reject;
+        r.readAsDataURL(file);
+      });
+      const { url } = await api<{ url: string }>('/admin/ads/upload', { method: 'POST', body: JSON.stringify({ dataUrl }) });
+      setForm((f) => ({ ...f, media_url: url }));
+      setToast({ ok: true, msg: 'Video uploaded' });
+    } catch (e: any) { setToast({ ok: false, msg: e.message }); } finally { setUploading(false); }
   };
 
   const create = async () => {
@@ -103,10 +123,18 @@ export default function AdsPage() {
         </div>
         <div className="row" style={{ marginTop: 8 }}>
           <div style={{ flex: 2 }}>
-            <label>{form.media_type === 'image' ? 'Image (under ~1 MB)' : 'Video URL'}</label>
-            {form.media_type === 'image'
-              ? <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={(e) => onImage(e.target.files?.[0] ?? null)} style={{ width: 'auto' }} />
-              : <input value={form.media_url} onChange={(e) => setForm({ ...form, media_url: e.target.value })} placeholder="https://…/sponsor.mp4" />}
+            <label>{form.media_type === 'image' ? 'Image (under ~1 MB)' : 'Video (upload ≤ ~9 MB, or paste a URL)'}</label>
+            {form.media_type === 'image' ? (
+              <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={(e) => onImage(e.target.files?.[0] ?? null)} style={{ width: 'auto' }} />
+            ) : (
+              <>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <input type="file" accept="video/mp4,video/webm,video/quicktime" onChange={(e) => onVideo(e.target.files?.[0] ?? null)} style={{ width: 'auto' }} disabled={uploading} />
+                  {uploading && <span style={{ fontSize: 11, color: 'var(--muted)' }}>Uploading…</span>}
+                </div>
+                <input value={form.media_url} onChange={(e) => setForm({ ...form, media_url: e.target.value })} placeholder="…or paste a hosted video URL" style={{ marginTop: 6 }} />
+              </>
+            )}
           </div>
           <div style={{ flex: 2 }}><label>Click link (optional)</label><input value={form.link_url} onChange={(e) => setForm({ ...form, link_url: e.target.value })} placeholder="https://…" /></div>
         </div>
