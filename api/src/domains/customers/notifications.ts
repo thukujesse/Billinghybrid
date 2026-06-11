@@ -16,6 +16,7 @@
 import { query } from '../../db/pool.js';
 import { config } from '../../config.js';
 import { notify } from '../notifications/service.js';
+import { render as renderTpl } from '../messageTemplates/service.js';
 
 const BRAND = () => config.brandName;
 const PORTAL_URL = () => `https://${config.portal.host}/portal`;
@@ -180,10 +181,11 @@ export async function sendOnboarding(customerId: string, service: {
   if (!service.username || !service.password) return;
   const cust = await getCustomerForSms(customerId);
   if (!cust?.phone) return;
-  const body =
-    `${BRAND()}: Welcome ${cust.full_name.split(' ')[0]}! ` +
-    `Your internet login — user: ${service.username} pass: ${service.password}. ` +
-    `Manage your plan: ${PORTAL_URL()}`;
+  const body = await renderTpl('welcome', 'pppoe', {
+    brand: BRAND(), first_name: cust.full_name.split(' ')[0],
+    username: service.username, password: service.password, portal_url: PORTAL_URL(),
+  });
+  if (!body) return;
   await fireSms({
     customerId, kind: 'onboarding',
     dedupKey: service.id, phone: cust.phone, body,
@@ -203,9 +205,10 @@ export async function sendWalletToppedUp(input: {
   if (!cust?.phone) return;
   const balanceKes = Math.round(input.balanceCents / 100);
   const receiptStr = input.receipt ? ` Receipt: ${input.receipt}.` : '';
-  const body =
-    `${BRAND()}: Wallet topped up KES ${input.amountKes}.${receiptStr} ` +
-    `New balance: KES ${balanceKes}.`;
+  const body = await renderTpl('wallet_topup', 'pppoe', {
+    brand: BRAND(), amount: input.amountKes, balance: balanceKes, receipt: receiptStr,
+  });
+  if (!body) return;
   await fireSms({
     customerId: input.customerId, kind: 'wallet.topup',
     dedupKey: input.purchaseId, phone: cust.phone, body,
@@ -229,9 +232,10 @@ export async function sendAutoRenewed(input: {
   const balanceKes = Math.round(input.balanceCents / 100);
   // dedup on serviceId + exp date — auto-renew at most one SMS per renewal cycle.
   const dedupKey = `${input.serviceId}:${input.newExpiry.slice(0, 10)}`;
-  const body =
-    `${BRAND()}: ${input.serviceName} auto-renewed (KES ${input.amountKes}). ` +
-    `Active until ${exp}. Wallet: KES ${balanceKes}.`;
+  const body = await renderTpl('renewed', 'pppoe', {
+    brand: BRAND(), service: input.serviceName, amount: input.amountKes, expiry: exp, balance: balanceKes,
+  });
+  if (!body) return;
   await fireSms({
     customerId: input.customerId, kind: 'wallet.auto_renewed',
     dedupKey, phone: cust.phone, body,
@@ -255,10 +259,11 @@ export async function sendLowBalance(input: {
   const today = new Date().toISOString().slice(0, 10);
   const dedupKey = `${input.serviceId}:${today}`;
   const shortfall = input.priceKes - balanceKes;
-  const body =
-    `${BRAND()}: Auto-renew for ${input.serviceName} needs KES ${input.priceKes} ` +
-    `in ${input.daysUntilExpiry}d. Wallet: KES ${balanceKes} (short ${shortfall}). ` +
-    `Top up: ${PORTAL_URL()}`;
+  const body = await renderTpl('low_balance', 'pppoe', {
+    brand: BRAND(), service: input.serviceName, price: input.priceKes,
+    days: input.daysUntilExpiry, balance: balanceKes, shortfall, portal_url: PORTAL_URL(),
+  });
+  if (!body) return;
   await fireSms({
     customerId: input.customerId, kind: 'wallet.low_balance',
     dedupKey, phone: cust.phone, body,
@@ -279,7 +284,10 @@ export async function sendPlanChanged(input: {
   const today = new Date().toISOString().slice(0, 10);
   const dedupKey = `${input.serviceId}:${input.oldPlanId ?? 'none'}->${input.newPlanId}:${today}`;
   const rate = input.newRateLimit ? ` (${input.newRateLimit})` : '';
-  const body = `${BRAND()}: Plan changed to ${input.newPlanName}${rate}. Manage: ${PORTAL_URL()}`;
+  const body = await renderTpl('plan_changed', 'pppoe', {
+    brand: BRAND(), plan: input.newPlanName, rate, portal_url: PORTAL_URL(),
+  });
+  if (!body) return;
   await fireSms({
     customerId: input.customerId, kind: 'service.plan_changed',
     dedupKey, phone: cust.phone, body,
@@ -303,8 +311,12 @@ export async function sendStatusChange(input: {
   const today = new Date().toISOString().slice(0, 10);
   const dedupKey = `${input.serviceId}:${input.newStatus}:${today}`;
   const body = input.newStatus === 'suspended'
-    ? `${BRAND()}: ${input.serviceName} has been suspended. Contact support if unexpected.`
-    : `${BRAND()}: ${input.serviceName} is active again — enjoy. Manage: ${PORTAL_URL()}${input.username ? ` · user: ${input.username}` : ''}`;
+    ? await renderTpl('suspended', 'pppoe', { brand: BRAND(), service: input.serviceName })
+    : await renderTpl('restored', 'pppoe', {
+        brand: BRAND(), service: input.serviceName, portal_url: PORTAL_URL(),
+        username: input.username ? ` · user: ${input.username}` : '',
+      });
+  if (!body) return;
   await fireSms({
     customerId: input.customerId, kind: 'service.status_change',
     dedupKey, phone: cust.phone, body,
@@ -323,9 +335,11 @@ export async function resendOnboarding(customerId: string, serviceId: string): P
   );
   const svc = r.rows[0];
   if (!svc?.username || !svc?.password) throw new Error('service has no PPPoE credentials');
-  const body =
-    `${BRAND()}: Your internet login — user: ${svc.username} pass: ${svc.password}. ` +
-    `Manage your plan: ${PORTAL_URL()}`;
+  // Operator-initiated resend always sends even if the auto-welcome is disabled.
+  const body = (await renderTpl('welcome', 'pppoe', {
+    brand: BRAND(), first_name: cust.full_name.split(' ')[0],
+    username: svc.username, password: svc.password, portal_url: PORTAL_URL(),
+  })) ?? `${BRAND()}: Your internet login — user: ${svc.username} pass: ${svc.password}. Manage your plan: ${PORTAL_URL()}`;
   // dedup key includes timestamp so this fires fresh every time.
   const dedupKey = `${serviceId}:resend:${Date.now()}`;
   await fireSms({

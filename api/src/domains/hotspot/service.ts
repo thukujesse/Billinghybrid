@@ -4,6 +4,8 @@ import { badRequest, conflict, notFound } from '../../lib/errors.js';
 import { config } from '../../config.js';
 import { stkPush, normalizeMsisdn, parseCallback } from '../payments/daraja.js';
 import { isMpesaSimulated } from '../settings/service.js';
+import { render as renderTpl } from '../messageTemplates/service.js';
+import { notify } from '../notifications/service.js';
 
 export interface HotspotGrant {
   /** Username to pass to MikroTik hotspot login (typically = voucher code). */
@@ -401,6 +403,7 @@ export async function completePurchase(input: {
     mac_address: string | null;
     validity_days: number;
     validity_minutes: number | null;
+    plan_name: string;
     speed_down_kbps: number | null; speed_up_kbps: number | null;
     status: string;
     service_id: string | null;
@@ -408,7 +411,7 @@ export async function completePurchase(input: {
   }>(
     `SELECT hp.id, hp.plan_id, hp.phone, hp.amount_kes, hp.status,
             hp.mac_address, hp.service_id, hp.wallet_topup_customer_id,
-            p.validity_days, p.validity_minutes, p.speed_down_kbps, p.speed_up_kbps
+            p.name AS plan_name, p.validity_days, p.validity_minutes, p.speed_down_kbps, p.speed_up_kbps
        FROM hotspot_purchases hp
        JOIN plans p ON p.id = hp.plan_id
       WHERE hp.checkout_request_id = $1`,
@@ -556,6 +559,21 @@ export async function completePurchase(input: {
         [row.id, username, validitySeconds, rateLimit, input.receipt ?? null]
       );
     });
+  }
+
+  // Optional hotspot confirmation SMS to the buyer's phone (OFF by default —
+  // a per-purchase SMS has a cost). Best-effort: never breaks the grant.
+  if (row.phone) {
+    try {
+      const expiry = new Date(Date.now() + validitySeconds * 1000)
+        .toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+      const sms = await renderTpl('hotspot_active', 'hotspot', {
+        brand: config.brandName, package: row.plan_name, expiry, amount: row.amount_kes,
+      });
+      if (sms) await notify('sms', row.phone, sms);
+    } catch (e) {
+      console.error('[hotspot-active-sms]', (e as Error).message);
+    }
   }
 }
 
