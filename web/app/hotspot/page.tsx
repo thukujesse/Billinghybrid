@@ -194,6 +194,17 @@ function formatData(mb: number | null): string {
   return `${mb} MB`;
 }
 
+/** Bucket a package by duration so the portal can group them. */
+type PlanCat = 'Hourly' | 'Daily' | 'Weekly' | 'Monthly';
+const PLAN_CATS: PlanCat[] = ['Hourly', 'Daily', 'Weekly', 'Monthly'];
+function planCategory(p: HotspotPlan): PlanCat {
+  const m = p.validity_minutes ?? p.validity_days * 1440;
+  if (m < 1440) return 'Hourly';   // under a day (minutes / hours)
+  if (m < 10080) return 'Daily';   // 1–6 days
+  if (m < 43200) return 'Weekly';  // 7–29 days
+  return 'Monthly';                // 30+ days
+}
+
 function formatSpeed(kbps: number | null): string | null {
   if (!kbps) return null;
   if (kbps >= 1000) {
@@ -295,6 +306,7 @@ export default function HotspotPortal() {
   const [plans, setPlans] = useState<HotspotPlan[]>([]);
   const [plansLoading, setPlansLoading] = useState(true);
   const [plansError, setPlansError] = useState<string | null>(null);
+  const [planCat, setPlanCat] = useState<'All' | PlanCat>('All');
   const [submitting, setSubmitting] = useState(false);
   const [grant, setGrant] = useState<GrantResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -342,6 +354,12 @@ export default function HotspotPortal() {
   const phoneNormalized = normalizePhone(phone);
   const phoneValid = phoneNormalized !== null;
   const selectedPlan = plans.find((p) => p.id === planId) ?? null;
+  // Group packages by duration; only show the tab bar when >1 category exists.
+  const presentCats = PLAN_CATS.filter((c) => plans.some((p) => planCategory(p) === c));
+  const showCatTabs = presentCats.length > 1;
+  const visiblePlans = showCatTabs && planCat !== 'All'
+    ? plans.filter((p) => planCategory(p) === planCat)
+    : plans;
   const brandRgb = hexToRgb(brand.color);
 
   useEffect(() => {
@@ -1120,8 +1138,25 @@ export default function HotspotPortal() {
                 ) : plans.length === 0 ? (
                   <p style={styles.sub}>No hotspot plans configured yet. Ask staff to add packages from the dashboard.</p>
                 ) : (
+                  <>
+                    {showCatTabs && (
+                      <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
+                        {(['All', ...presentCats] as const).map((c) => {
+                          const on = planCat === c;
+                          return (
+                            <button key={c} onClick={() => setPlanCat(c)} style={{
+                              fontFamily: 'inherit', cursor: 'pointer',
+                              fontSize: 12, fontWeight: 600, padding: '6px 12px', borderRadius: 999,
+                              border: `1px solid ${on ? brand.color : '#e2e8f0'}`,
+                              background: on ? `rgba(${brandRgb},0.10)` : '#ffffff',
+                              color: on ? brand.color : '#475569',
+                            }}>{c}</button>
+                          );
+                        })}
+                      </div>
+                    )}
                   <div style={{ display: 'grid', gap: 10 }}>
-                    {plans.map((p) => {
+                    {visiblePlans.map((p) => {
                       const active = p.id === planId;
                       const down = formatSpeed(p.speed_down_kbps);
                       const chips = [formatDuration(p.validity_minutes, p.validity_days)];
@@ -1154,6 +1189,7 @@ export default function HotspotPortal() {
                       );
                     })}
                   </div>
+                  </>
                 )}
 
                 {/* Once a plan is selected, prompt for M-Pesa phone + Pay. */}
