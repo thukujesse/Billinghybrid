@@ -29,6 +29,7 @@ const GROUPS: Group[] = [
   {
     key: 'comms', label: 'Communication', ico: '💬', items: [
       { href: '/alerts', label: 'Alerts' },
+      { href: '/ads', label: 'Ads' },
       { href: '/settings#sms', label: 'SMS / Notifications' },
     ],
   },

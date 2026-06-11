@@ -21,6 +21,14 @@ interface HotspotPlan {
   speed_up_kbps: number | null;
 }
 
+interface AdPublic {
+  id: string;
+  title: string;
+  media_type: 'image' | 'video';
+  media_url: string;
+  link_url: string | null;
+}
+
 interface PurchaseInit {
   checkoutRequestId: string;
   amountKes: number;
@@ -205,6 +213,51 @@ function planCategory(p: HotspotPlan): PlanCat {
   return 'Monthly';                // 30+ days
 }
 
+/** Rotating sponsor banner. Cycles every 6s, records an impression per view and
+ *  a click on tap. Renders nothing when there are no active ads. */
+function AdBanner({ ads }: { ads: AdPublic[] }) {
+  const [idx, setIdx] = useState(0);
+  useEffect(() => { setIdx(0); }, [ads.length]);
+  useEffect(() => {
+    if (ads.length <= 1) return;
+    const t = setInterval(() => setIdx((i) => (i + 1) % ads.length), 6000);
+    return () => clearInterval(t);
+  }, [ads.length]);
+  useEffect(() => {
+    const ad = ads[idx];
+    if (ad) api(`/hotspot/ads/${ad.id}/impression`, { method: 'POST' }).catch(() => {});
+  }, [idx, ads]);
+  if (!ads.length) return null;
+  const ad = ads[idx];
+  const onClick = () => {
+    api(`/hotspot/ads/${ad.id}/click`, { method: 'POST' }).catch(() => {});
+    if (ad.link_url) window.open(ad.link_url, '_blank', 'noopener');
+  };
+  return (
+    <div style={{ marginBottom: 4, marginTop: 4 }}>
+      <div
+        onClick={ad.link_url ? onClick : undefined}
+        style={{ cursor: ad.link_url ? 'pointer' : 'default', borderRadius: 12, overflow: 'hidden', border: '1px solid #e8edf3', position: 'relative', background: '#f1f5f9' }}
+      >
+        {ad.media_type === 'video' ? (
+          <video src={ad.media_url} autoPlay muted loop playsInline style={{ width: '100%', display: 'block', maxHeight: 150, objectFit: 'cover' }} />
+        ) : (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={ad.media_url} alt={ad.title} style={{ width: '100%', display: 'block', maxHeight: 150, objectFit: 'cover' }} />
+        )}
+        <span style={{ position: 'absolute', top: 6, right: 6, fontSize: 9, color: '#fff', background: 'rgba(0,0,0,0.45)', padding: '1px 6px', borderRadius: 4, letterSpacing: 0.4 }}>Ad</span>
+      </div>
+      {ads.length > 1 && (
+        <div style={{ display: 'flex', justifyContent: 'center', gap: 5, marginTop: 6 }}>
+          {ads.map((_, i) => (
+            <span key={i} style={{ width: 6, height: 6, borderRadius: '50%', background: i === idx ? '#475569' : '#cbd5e1' }} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function formatSpeed(kbps: number | null): string | null {
   if (!kbps) return null;
   if (kbps >= 1000) {
@@ -307,6 +360,7 @@ export default function HotspotPortal() {
   const [plansLoading, setPlansLoading] = useState(true);
   const [plansError, setPlansError] = useState<string | null>(null);
   const [planCat, setPlanCat] = useState<'All' | PlanCat>('All');
+  const [ads, setAds] = useState<AdPublic[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [grant, setGrant] = useState<GrantResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -598,6 +652,10 @@ export default function HotspotPortal() {
     api<{ collectionMethod: 'stk' | 'c2b' | 'intasend' }>('/hotspot/pay-config')
       .then((c) => setPayMethod(c.collectionMethod))
       .catch(() => {/* default to STK */});
+    // Rotating sponsor banners (revenue + ISP promos). Never blocks the portal.
+    api<AdPublic[]>('/hotspot/ads?placement=portal_banner')
+      .then(setAds)
+      .catch(() => {/* no ads — portal is unaffected */});
   };
 
   // Quick Connect: phone-based session lookup. Customer paid before from
@@ -1121,6 +1179,8 @@ export default function HotspotPortal() {
                     {submitting ? 'Activating…' : 'Connect'}
                   </button>
                 </CollapsibleBar>
+
+                <AdBanner ads={ads} />
 
                 {/* Plan cards. Selecting a card reveals the phone field + Pay button. */}
                 <div style={{ marginTop: 20, marginBottom: 8 }}>

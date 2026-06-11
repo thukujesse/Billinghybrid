@@ -54,6 +54,7 @@ import { registerWalletRoutes } from './routes/wallet.js';
 import { registerReportsRoutes } from './routes/reports.js';
 import { registerTwinRoutes } from './routes/twin.js';
 import { registerLeadsRoutes } from './routes/leads.js';
+import { registerAdsRoutes } from './routes/ads.js';
 
 export const api = Router();
 
@@ -64,6 +65,7 @@ export const api = Router();
 registerNetworkRoutes(api);
 registerTwinRoutes(api);
 registerLeadsRoutes(api);
+registerAdsRoutes(api);
 registerWalletRoutes(api);
 registerReportsRoutes(api);
 
