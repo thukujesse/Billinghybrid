@@ -1,15 +1,23 @@
 import { query } from '../../db/pool.js';
 import { config } from '../../config.js';
 
-export type CollectionMethod = 'stk' | 'c2b' | 'intasend';
+// How an ISP collects from hotspot customers:
+//   stk      — Safaricom STK push (own Daraja paybill: key/secret/passkey)
+//   paybill  — own Paybill, no API: customer pays paybill, account = reference
+//   till     — own Till (Buy Goods), no API: customer pays till, account = reference
+//   bank     — bank paybill + account name (e.g. Equity/KCB; verified via IPN)
+//   intasend — IntaSend aggregator (settles to bank, has webhook)
+//   kopokopo — Kopo Kopo aggregator (settles to bank/till, has webhook)
+export type CollectionMethod = 'stk' | 'paybill' | 'till' | 'bank' | 'intasend' | 'kopokopo';
 
 export interface MpesaConfig {
   env: 'sandbox' | 'production';
   consumerKey: string;
   consumerSecret: string;
   passkey: string;
-  shortcode: string;
-  /** How customers pay: 'stk' = push prompt; 'c2b' = pay Paybill, account=phone. */
+  shortcode: string;       // paybill number (stk / paybill / bank)
+  till: string;            // till / Buy-Goods number (till method)
+  accountName: string;     // bank account name (bank method)
   collectionMethod: CollectionMethod;
 }
 
@@ -19,6 +27,8 @@ export interface MpesaConfig {
 export interface MpesaConfigPublic {
   env: 'sandbox' | 'production';
   shortcode: string;
+  till: string;
+  accountName: string;
   consumerKeySet: boolean;
   consumerSecretSet: boolean;
   passkeySet: boolean;
@@ -40,13 +50,18 @@ async function readSettings(prefix: string): Promise<Map<string, string>> {
  */
 export async function getMpesaConfig(): Promise<MpesaConfig> {
   const map = await readSettings('mpesa.');
+  // Legacy 'c2b' rows map to the new 'paybill' method.
+  const rawMethod = map.get('mpesa.collection_method') ?? 'stk';
+  const collectionMethod = (rawMethod === 'c2b' ? 'paybill' : rawMethod) as CollectionMethod;
   return {
     env: ((map.get('mpesa.env') ?? config.mpesa.env) as 'sandbox' | 'production'),
     consumerKey: map.get('mpesa.consumer_key') ?? config.mpesa.consumerKey,
     consumerSecret: map.get('mpesa.consumer_secret') ?? config.mpesa.consumerSecret,
     passkey: map.get('mpesa.passkey') ?? config.mpesa.passkey,
     shortcode: map.get('mpesa.shortcode') ?? config.mpesa.shortcode,
-    collectionMethod: ((map.get('mpesa.collection_method') ?? 'stk') as CollectionMethod),
+    till: map.get('mpesa.till') ?? '',
+    accountName: map.get('mpesa.account_name') ?? '',
+    collectionMethod,
   };
 }
 
@@ -55,6 +70,8 @@ export async function getMpesaConfigPublic(): Promise<MpesaConfigPublic> {
   return {
     env: c.env,
     shortcode: c.shortcode,
+    till: c.till,
+    accountName: c.accountName,
     consumerKeySet: !!c.consumerKey,
     consumerSecretSet: !!c.consumerSecret,
     passkeySet: !!c.passkey,
@@ -134,6 +151,74 @@ export async function setIntasendConfig(
            is_secret = EXCLUDED.is_secret,
            updated_at = now(),
            updated_by = EXCLUDED.updated_by`,
+        [key, value, isSecret, updatedBy ?? 'admin']
+      );
+    }
+  }
+}
+
+// =====================================================================
+// Kopo Kopo aggregator — collect M-Pesa via STK (Receive Payments) without
+// your own Daraja paybill; settles to your K2 till/bank. Same pattern as above.
+// =====================================================================
+
+export interface KopokopoConfig {
+  env: 'sandbox' | 'live';
+  clientId: string;
+  clientSecret: string;
+  tillNumber: string;   // your K2 till (head office / store)
+  apiKey: string;       // webhook signing secret from the K2 dashboard
+}
+
+export interface KopokopoConfigPublic {
+  env: 'sandbox' | 'live';
+  tillNumber: string;
+  clientIdSet: boolean;
+  clientSecretSet: boolean;
+  apiKeySet: boolean;
+  configured: boolean;
+}
+
+export async function getKopokopoConfig(): Promise<KopokopoConfig> {
+  const map = await readSettings('kopokopo.');
+  return {
+    env: ((map.get('kopokopo.env') ?? process.env.KOPOKOPO_ENV ?? 'sandbox') as 'sandbox' | 'live'),
+    clientId: map.get('kopokopo.client_id') ?? process.env.KOPOKOPO_CLIENT_ID ?? '',
+    clientSecret: map.get('kopokopo.client_secret') ?? process.env.KOPOKOPO_CLIENT_SECRET ?? '',
+    tillNumber: map.get('kopokopo.till') ?? process.env.KOPOKOPO_TILL ?? '',
+    apiKey: map.get('kopokopo.api_key') ?? process.env.KOPOKOPO_API_KEY ?? '',
+  };
+}
+
+export async function getKopokopoConfigPublic(): Promise<KopokopoConfigPublic> {
+  const c = await getKopokopoConfig();
+  return {
+    env: c.env,
+    tillNumber: c.tillNumber,
+    clientIdSet: !!c.clientId,
+    clientSecretSet: !!c.clientSecret,
+    apiKeySet: !!c.apiKey,
+    configured: !!c.clientId && !!c.clientSecret,
+  };
+}
+
+export async function setKopokopoConfig(input: Partial<KopokopoConfig>, updatedBy?: string): Promise<void> {
+  const entries: Array<[string, string, boolean]> = [];
+  if (input.env !== undefined) entries.push(['kopokopo.env', input.env, false]);
+  if (input.clientId !== undefined) entries.push(['kopokopo.client_id', input.clientId.trim(), true]);
+  if (input.clientSecret !== undefined) entries.push(['kopokopo.client_secret', input.clientSecret.trim(), true]);
+  if (input.tillNumber !== undefined) entries.push(['kopokopo.till', input.tillNumber.trim(), false]);
+  if (input.apiKey !== undefined) entries.push(['kopokopo.api_key', input.apiKey.trim(), true]);
+
+  for (const [key, value, isSecret] of entries) {
+    if (value === '') {
+      await query(`DELETE FROM settings WHERE key = $1`, [key]);
+    } else {
+      await query(
+        `INSERT INTO settings (key, value, is_secret, updated_by)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (key) DO UPDATE SET
+           value = EXCLUDED.value, is_secret = EXCLUDED.is_secret, updated_at = now(), updated_by = EXCLUDED.updated_by`,
         [key, value, isSecret, updatedBy ?? 'admin']
       );
     }
@@ -249,6 +334,8 @@ export async function setMpesaConfig(
   // keys silently breaks Daraja ("Invalid BusinessShortCode" / auth failures).
   if (input.env !== undefined) entries.push(['mpesa.env', input.env, false]);
   if (input.shortcode !== undefined) entries.push(['mpesa.shortcode', input.shortcode.trim(), false]);
+  if (input.till !== undefined) entries.push(['mpesa.till', input.till.trim(), false]);
+  if (input.accountName !== undefined) entries.push(['mpesa.account_name', input.accountName.trim(), false]);
   if (input.consumerKey !== undefined) entries.push(['mpesa.consumer_key', input.consumerKey.trim(), true]);
   if (input.consumerSecret !== undefined) entries.push(['mpesa.consumer_secret', input.consumerSecret.trim(), true]);
   if (input.passkey !== undefined) entries.push(['mpesa.passkey', input.passkey.trim(), true]);

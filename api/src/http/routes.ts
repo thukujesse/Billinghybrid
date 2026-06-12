@@ -21,6 +21,7 @@ import { parseCallback, stkPush } from '../domains/payments/daraja.js';
 import * as c2b from '../domains/payments/c2b.js';
 import * as jenga from '../domains/payments/jenga.js';
 import * as intasend from '../domains/payments/intasend.js';
+import * as kopokopo from '../domains/payments/kopokopo.js';
 import * as vouchers from '../domains/vouchers/service.js';
 import * as resellers from '../domains/resellers/service.js';
 import * as usage from '../domains/usage/service.js';
@@ -701,10 +702,12 @@ api.put('/settings/mpesa', requireAuth('admin'), ah(async (req, res) => {
   const body = parse(z.object({
     env: z.enum(['sandbox', 'production']).optional(),
     shortcode: z.string().optional(),
+    till: z.string().optional(),
+    accountName: z.string().optional(),
     consumerKey: z.string().optional(),
     consumerSecret: z.string().optional(),
     passkey: z.string().optional(),
-    collectionMethod: z.enum(['stk', 'c2b', 'intasend']).optional(),
+    collectionMethod: z.enum(['stk', 'paybill', 'till', 'bank', 'intasend', 'kopokopo']).optional(),
   }), req.body);
   await settings.setMpesaConfig(body, (req.user as { username?: string } | undefined)?.username);
   res.json(await settings.getMpesaConfigPublic());
@@ -777,7 +780,12 @@ api.post('/hotspot/pay-c2b', ah(async (req, res) => {
 // Public: tells the captive portal which payment flow to run (STK vs C2B paybill).
 api.get('/hotspot/pay-config', ah(async (_req, res) => {
   const m = await settings.getMpesaConfigPublic();
-  res.json({ collectionMethod: m.collectionMethod, paybill: m.shortcode });
+  res.json({
+    collectionMethod: m.collectionMethod,
+    paybill: m.shortcode,
+    till: m.till,
+    accountName: m.accountName,
+  });
 }));
 // Jenga / Equity (JengaHQ) IPN webhook for bank-paybill collections. Maps the
 // Jenga payload into the shared C2B settlement engine (reference match -> grant).
@@ -810,6 +818,42 @@ api.post('/hotspot/pay-intasend', ah(async (req, res) => {
     planId: body.plan_id, phone: body.phone, mac: body.mac,
     userAgent: req.headers['user-agent'],
   }));
+}));
+
+// ---------- Kopo Kopo aggregator ----------
+api.get('/settings/kopokopo', requireAuth('admin', 'staff'), ah(async (_req, res) => {
+  res.json(await settings.getKopokopoConfigPublic());
+}));
+api.put('/settings/kopokopo', requireAuth('admin'), ah(async (req, res) => {
+  const body = parse(z.object({
+    env: z.enum(['sandbox', 'live']).optional(),
+    clientId: z.string().optional(),
+    clientSecret: z.string().optional(),
+    tillNumber: z.string().optional(),
+    apiKey: z.string().optional(),
+  }), req.body);
+  await settings.setKopokopoConfig(body, (req.user as { username?: string } | undefined)?.username);
+  res.json(await settings.getKopokopoConfigPublic());
+}));
+// Kopo Kopo result webhook — on 'Received' map metadata.reference -> grant.
+api.post('/payments/kopokopo/webhook', ah(async (req, res) => {
+  try { await kopokopo.handleKopokopoWebhook(req.body); }
+  catch (e) { console.error('[kopokopo-webhook] handler error:', e); }
+  res.status(200).json({ status: 'ok' }); // always ack so K2 doesn't retry-storm
+}));
+// Portal: create pending + fire a Kopo Kopo STK push. callback_url uses THIS
+// host so the webhook routes back to the right tenant.
+api.post('/hotspot/pay-kopokopo', ah(async (req, res) => {
+  const body = parse(z.object({
+    plan_id: z.string(),
+    phone: z.string().min(7),
+    mac: z.string().optional(),
+  }), req.body);
+  const base = `${req.protocol}://${req.get('host')}`;
+  res.status(201).json(await kopokopo.initKopokopoPurchase({
+    planId: body.plan_id, phone: body.phone, mac: body.mac,
+    userAgent: req.headers['user-agent'],
+  }, base));
 }));
 
 // ---------- SMS provider settings ----------

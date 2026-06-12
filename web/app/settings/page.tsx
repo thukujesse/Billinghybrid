@@ -2,14 +2,26 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '@/lib/api';
 
+type CollectionMethod = 'stk' | 'paybill' | 'till' | 'bank' | 'intasend' | 'kopokopo';
 interface MpesaPublic {
   env: 'sandbox' | 'production';
   shortcode: string;
+  till: string;
+  accountName: string;
   consumerKeySet: boolean;
   consumerSecretSet: boolean;
   passkeySet: boolean;
   simulated: boolean;
-  collectionMethod: 'stk' | 'c2b' | 'intasend';
+  collectionMethod: CollectionMethod;
+}
+
+interface KopokopoPublic {
+  env: 'sandbox' | 'live';
+  tillNumber: string;
+  clientIdSet: boolean;
+  clientSecretSet: boolean;
+  apiKeySet: boolean;
+  configured: boolean;
 }
 
 interface IntasendPublic {
@@ -87,10 +99,12 @@ export default function SettingsPage() {
   const [form, setForm] = useState({
     env: 'sandbox' as 'sandbox' | 'production',
     shortcode: '174379',
+    till: '',
+    accountName: '',
     consumerKey: '',
     consumerSecret: '',
     passkey: '',
-    collectionMethod: 'stk' as 'stk' | 'c2b' | 'intasend',
+    collectionMethod: 'stk' as CollectionMethod,
   });
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<{ ok: boolean; msg: string } | null>(null);
@@ -102,6 +116,11 @@ export default function SettingsPage() {
   const [intasend, setIntasend] = useState<IntasendPublic | null>(null);
   const [intaForm, setIntaForm] = useState({ env: 'sandbox' as 'sandbox' | 'live', publicKey: '', secretKey: '', challenge: '' });
   const [intaSaving, setIntaSaving] = useState(false);
+
+  // Kopo Kopo aggregator config.
+  const [kopo, setKopo] = useState<KopokopoPublic | null>(null);
+  const [kopoForm, setKopoForm] = useState({ env: 'sandbox' as 'sandbox' | 'live', clientId: '', clientSecret: '', tillNumber: '', apiKey: '' });
+  const [kopoSaving, setKopoSaving] = useState(false);
 
   // Hotspot template branding (logo, ISP name, tagline, brand color).
   // Drives the captive portal at billing.hubnetwifi.co.ke/hotspot.
@@ -118,7 +137,7 @@ export default function SettingsPage() {
     api<MpesaPublic>('/settings/mpesa')
       .then((m) => {
         setMpesa(m);
-        setForm((f) => ({ ...f, env: m.env, shortcode: m.shortcode, collectionMethod: m.collectionMethod }));
+        setForm((f) => ({ ...f, env: m.env, shortcode: m.shortcode, till: m.till, accountName: m.accountName, collectionMethod: m.collectionMethod }));
       })
       .catch((e: any) => setToast({ ok: false, msg: e.message }));
 
@@ -126,6 +145,29 @@ export default function SettingsPage() {
     api<IntasendPublic>('/settings/intasend')
       .then((i) => { setIntasend(i); setIntaForm((f) => ({ ...f, env: i.env })); })
       .catch(() => {/* endpoint absent before deploy — ignore */});
+
+  const loadKopo = () =>
+    api<KopokopoPublic>('/settings/kopokopo')
+      .then((k) => { setKopo(k); setKopoForm((f) => ({ ...f, env: k.env, tillNumber: k.tillNumber })); })
+      .catch(() => {/* endpoint absent before deploy — ignore */});
+
+  const saveKopo = async () => {
+    setKopoSaving(true);
+    try {
+      const body: Record<string, unknown> = { env: kopoForm.env, tillNumber: kopoForm.tillNumber };
+      if (kopoForm.clientId) body.clientId = kopoForm.clientId;
+      if (kopoForm.clientSecret) body.clientSecret = kopoForm.clientSecret;
+      if (kopoForm.apiKey) body.apiKey = kopoForm.apiKey;
+      const k = await api<KopokopoPublic>('/settings/kopokopo', { method: 'PUT', body: JSON.stringify(body) });
+      setKopo(k);
+      setKopoForm((f) => ({ ...f, clientId: '', clientSecret: '', apiKey: '' }));
+      setToast({ ok: true, msg: 'Kopo Kopo settings saved' });
+    } catch (e: any) {
+      setToast({ ok: false, msg: e.message });
+    } finally {
+      setKopoSaving(false);
+    }
+  };
 
   const saveIntasend = async () => {
     setIntaSaving(true);
@@ -269,7 +311,7 @@ export default function SettingsPage() {
   };
 
   useEffect(() => {
-    load(); loadBrand(); loadSms(); loadIntasend();
+    load(); loadBrand(); loadSms(); loadIntasend(); loadKopo();
     api<HotspotPlanLite[]>('/hotspot/plans').then(setPreviewPlans).catch(() => {/* preview falls back to samples */});
   }, []);
 
@@ -339,6 +381,8 @@ export default function SettingsPage() {
       const body: Record<string, unknown> = {
         env: form.env,
         shortcode: form.shortcode,
+        till: form.till,
+        accountName: form.accountName,
         collectionMethod: form.collectionMethod,
       };
       // Only send secret fields if non-empty — empty means "leave as-is".
@@ -443,81 +487,119 @@ export default function SettingsPage() {
             </select>
           </div>
           <div>
-            <label>Shortcode (Paybill)</label>
-            <input
-              value={form.shortcode}
-              onChange={(e) => setForm({ ...form, shortcode: e.target.value })}
-              placeholder="174379"
-            />
+            {form.collectionMethod === 'till' ? (
+              <>
+                <label>Till number (Buy Goods)</label>
+                <input value={form.till} onChange={(e) => setForm({ ...form, till: e.target.value })} placeholder="e.g. 5200000" />
+              </>
+            ) : (
+              <>
+                <label>{form.collectionMethod === 'bank' ? 'Bank Paybill' : 'Paybill / Shortcode'}</label>
+                <input value={form.shortcode} onChange={(e) => setForm({ ...form, shortcode: e.target.value })} placeholder="e.g. 174379" />
+              </>
+            )}
           </div>
         </div>
+
+        {form.collectionMethod === 'bank' && (
+          <div className="row">
+            <div style={{ flex: 1 }}>
+              <label>Bank account name</label>
+              <input value={form.accountName} onChange={(e) => setForm({ ...form, accountName: e.target.value })} placeholder="Name on the bank account" />
+            </div>
+          </div>
+        )}
 
         <div className="row">
           <div style={{ flex: 1 }}>
             <label>Collection method</label>
             <select
               value={form.collectionMethod}
-              onChange={(e) => setForm({ ...form, collectionMethod: e.target.value as 'stk' | 'c2b' | 'intasend' })}
+              onChange={(e) => setForm({ ...form, collectionMethod: e.target.value as CollectionMethod })}
             >
-              <option value="stk">STK Push — prompt on customer&apos;s phone (your own Daraja)</option>
-              <option value="c2b">Paybill / Bank — pay our Paybill, account = phone (auto-approved)</option>
-              <option value="intasend">IntaSend aggregator — M-Pesa STK, no own paybill (settles to your bank)</option>
+              <option value="stk">STK Push — prompt on customer&apos;s phone (your own Daraja API)</option>
+              <option value="paybill">Paybill (no API) — customer pays your Paybill, account = reference</option>
+              <option value="till">Till / Buy Goods (no API) — customer pays your Till, account = reference</option>
+              <option value="bank">Bank — your bank Paybill + account name (verified via IPN)</option>
+              <option value="intasend">IntaSend aggregator — M-Pesa STK, settles to your bank</option>
+              <option value="kopokopo">Kopo Kopo aggregator — M-Pesa STK, settles to your bank/till</option>
             </select>
             <p className="sub" style={{ marginTop: 4 }}>
-              {form.collectionMethod === 'c2b'
-                ? 'Customer pays the Paybill with account = their phone; Safaricom\'s callback auto-registers and approves them. No STK and no M-Pesa API of your own — so this also covers operators who only collect into a bank. Register the C2B URLs once (below).'
-                : form.collectionMethod === 'intasend'
-                ? 'Portal triggers an M-Pesa STK via IntaSend (no Safaricom paybill of your own). IntaSend\'s webhook auto-activates the customer and settles funds to your bank. Add your IntaSend keys below.'
-                : 'Portal sends an STK push to the customer\'s phone. Needs your own Passkey + Consumer Key/Secret.'}
+              {{
+                stk: 'Portal sends an STK push to the customer\'s phone. Money lands in your own Paybill. Needs your Daraja Consumer Key/Secret + Passkey.',
+                paybill: 'Money goes directly to YOUR Paybill. The portal shows the customer a reference to enter as the M-Pesa account; HubNet\'s callback verifies the payment and auto-connects them. Point your Paybill\'s C2B callback at the URL below.',
+                till: 'Money goes directly to YOUR Till (Buy Goods). The portal shows a reference to enter as the account; HubNet\'s callback verifies and auto-connects. Point your Till\'s callback at the URL below.',
+                bank: 'Money goes directly to your bank Paybill. Set your bank/Jenga IPN to the URL below; HubNet verifies each payment by reference and auto-connects the customer.',
+                intasend: 'Portal triggers an M-Pesa STK via IntaSend (no Safaricom paybill of your own). IntaSend\'s webhook auto-activates the customer and settles funds to your bank. Add your IntaSend keys below.',
+                kopokopo: 'Portal triggers an M-Pesa STK via Kopo Kopo. K2\'s webhook auto-activates the customer and settles funds to your till/bank. Add your Kopo Kopo keys below.',
+              }[form.collectionMethod]}
             </p>
           </div>
         </div>
 
-        <label>Consumer Key {mpesa?.consumerKeySet && <span style={{ color: 'var(--green)' }}>✓ set</span>}</label>
-        <input
-          type="password"
-          value={form.consumerKey}
-          placeholder={mpesa?.consumerKeySet ? '••• leave empty to keep current' : 'paste from developer.safaricom.co.ke'}
-          onChange={(e) => setForm({ ...form, consumerKey: e.target.value })}
-        />
+        {form.collectionMethod === 'stk' && (
+          <>
+            <label>Consumer Key {mpesa?.consumerKeySet && <span style={{ color: 'var(--green)' }}>✓ set</span>}</label>
+            <input
+              type="password"
+              value={form.consumerKey}
+              placeholder={mpesa?.consumerKeySet ? '••• leave empty to keep current' : 'paste from developer.safaricom.co.ke'}
+              onChange={(e) => setForm({ ...form, consumerKey: e.target.value })}
+            />
 
-        <label>Consumer Secret {mpesa?.consumerSecretSet && <span style={{ color: 'var(--green)' }}>✓ set</span>}</label>
-        <input
-          type="password"
-          value={form.consumerSecret}
-          placeholder={mpesa?.consumerSecretSet ? '••• leave empty to keep current' : 'paste from developer.safaricom.co.ke'}
-          onChange={(e) => setForm({ ...form, consumerSecret: e.target.value })}
-        />
+            <label>Consumer Secret {mpesa?.consumerSecretSet && <span style={{ color: 'var(--green)' }}>✓ set</span>}</label>
+            <input
+              type="password"
+              value={form.consumerSecret}
+              placeholder={mpesa?.consumerSecretSet ? '••• leave empty to keep current' : 'paste from developer.safaricom.co.ke'}
+              onChange={(e) => setForm({ ...form, consumerSecret: e.target.value })}
+            />
 
-        <label>Passkey {mpesa?.passkeySet && <span style={{ color: 'var(--green)' }}>✓ set</span>}</label>
-        <input
-          type="password"
-          value={form.passkey}
-          placeholder={mpesa?.passkeySet ? '••• leave empty to keep current' : 'long hex string'}
-          onChange={(e) => setForm({ ...form, passkey: e.target.value })}
-        />
+            <label>Passkey {mpesa?.passkeySet && <span style={{ color: 'var(--green)' }}>✓ set</span>}</label>
+            <input
+              type="password"
+              value={form.passkey}
+              placeholder={mpesa?.passkeySet ? '••• leave empty to keep current' : 'long hex string'}
+              onChange={(e) => setForm({ ...form, passkey: e.target.value })}
+            />
+          </>
+        )}
 
         <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
           <button onClick={save} disabled={saving}>
             {saving ? 'Saving…' : 'Save'}
           </button>
-          <button className="ghost" onClick={usePresetSandbox} disabled={saving}>
-            Pre-fill sandbox passkey
-          </button>
+          {form.collectionMethod === 'stk' && (
+            <button className="ghost" onClick={usePresetSandbox} disabled={saving}>
+              Pre-fill sandbox passkey
+            </button>
+          )}
         </div>
 
-        {form.collectionMethod === 'c2b' && (
+        {(form.collectionMethod === 'paybill' || form.collectionMethod === 'till' || form.collectionMethod === 'bank') && (
           <div style={{ marginTop: 20, borderTop: '1px solid var(--border, #e2e8f0)', paddingTop: 16 }}>
-            <h3 style={{ marginTop: 0, fontSize: 14 }}>Paybill / Bank setup (no per-tenant API)</h3>
+            <h3 style={{ marginTop: 0, fontSize: 14 }}>Point your {form.collectionMethod === 'till' ? 'Till' : form.collectionMethod === 'bank' ? 'bank' : 'Paybill'} callback here</h3>
             <p className="sub" style={{ marginTop: 0 }}>
-              One-time: register the confirmation/validation URLs with Safaricom so every payment to
-              Paybill <strong>{form.shortcode}</strong> POSTs back here and auto-activates the customer
-              by their phone number. This single Paybill sits behind operators who have no M-Pesa API
-              of their own (e.g. they only collect into a bank). Save Consumer Key/Secret + Shortcode first.
+              Money goes <strong>directly to your {form.collectionMethod === 'till' ? `Till ${form.till || ''}` : `Paybill ${form.shortcode || ''}`}</strong>. For HubNet to verify each
+              payment and auto-connect the customer, register this {form.collectionMethod === 'bank' ? 'bank/Jenga IPN' : 'C2B callback'} URL once:
             </p>
-            <button className="ghost" onClick={registerC2bUrls} disabled={registeringC2b || saving}>
-              {registeringC2b ? 'Registering…' : 'Register C2B URLs'}
-            </button>
+            <code style={{ display: 'block', padding: '8px 10px', background: 'var(--surface,#f4f6f9)', borderRadius: 6, fontSize: 12, wordBreak: 'break-all' }}>
+              {(typeof window !== 'undefined' ? window.location.origin : '')}
+              {form.collectionMethod === 'bank' ? '/api/payments/jenga/ipn' : '/api/payments/c2b/confirmation'}
+            </code>
+            {form.collectionMethod !== 'bank' && (
+              <>
+                <p className="sub" style={{ marginTop: 10 }}>
+                  If your Paybill has Daraja API access, save your Consumer Key/Secret above and register the URLs automatically:
+                </p>
+                <button className="ghost" onClick={registerC2bUrls} disabled={registeringC2b || saving}>
+                  {registeringC2b ? 'Registering…' : 'Auto-register C2B URLs'}
+                </button>
+              </>
+            )}
+            <p className="sub" style={{ marginTop: 10 }}>
+              Customers see a short reference (e.g. <strong>HUB123456</strong>) to enter as the M-Pesa <em>account number</em> when paying — that&apos;s how the payment is matched to them.
+            </p>
           </div>
         )}
 
@@ -553,6 +635,45 @@ export default function SettingsPage() {
               placeholder={intasend?.challengeSet ? '••• leave empty to keep current' : 'a secret you also set in IntaSend'} />
             <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
               <button onClick={saveIntasend} disabled={intaSaving}>{intaSaving ? 'Saving…' : 'Save IntaSend'}</button>
+            </div>
+          </div>
+        )}
+
+        {form.collectionMethod === 'kopokopo' && (
+          <div style={{ marginTop: 20, borderTop: '1px solid var(--border, #e2e8f0)', paddingTop: 16 }}>
+            <h3 style={{ marginTop: 0, fontSize: 14 }}>
+              Kopo Kopo setup {kopo?.configured && <span style={{ color: 'var(--green)' }}>✓ configured</span>}
+            </h3>
+            <p className="sub" style={{ marginTop: 0 }}>
+              Sign up at kopokopo.com → API keys (Client ID + Secret) and your Till number. The portal triggers an
+              M-Pesa STK via Kopo Kopo; their webhook auto-activates the customer and settles funds to your till/bank.
+              The callback is wired automatically to your own subdomain.
+            </p>
+            <div className="row">
+              <div style={{ flex: '0 0 160px' }}>
+                <label>Environment</label>
+                <select value={kopoForm.env} onChange={(e) => setKopoForm({ ...kopoForm, env: e.target.value as 'sandbox' | 'live' })}>
+                  <option value="sandbox">Sandbox (test)</option>
+                  <option value="live">Live</option>
+                </select>
+              </div>
+              <div style={{ flex: 1 }}>
+                <label>Till number</label>
+                <input value={kopoForm.tillNumber} onChange={(e) => setKopoForm({ ...kopoForm, tillNumber: e.target.value })}
+                  placeholder="your K2 till / store" />
+              </div>
+            </div>
+            <label>Client ID {kopo?.clientIdSet && <span style={{ color: 'var(--green)' }}>✓ set</span>}</label>
+            <input type="password" value={kopoForm.clientId} onChange={(e) => setKopoForm({ ...kopoForm, clientId: e.target.value })}
+              placeholder={kopo?.clientIdSet ? '••• leave empty to keep current' : 'from the K2 dashboard'} />
+            <label>Client Secret {kopo?.clientSecretSet && <span style={{ color: 'var(--green)' }}>✓ set</span>}</label>
+            <input type="password" value={kopoForm.clientSecret} onChange={(e) => setKopoForm({ ...kopoForm, clientSecret: e.target.value })}
+              placeholder={kopo?.clientSecretSet ? '••• leave empty to keep current' : 'from the K2 dashboard'} />
+            <label>API key (webhook secret) {kopo?.apiKeySet && <span style={{ color: 'var(--green)' }}>✓ set</span>}</label>
+            <input type="password" value={kopoForm.apiKey} onChange={(e) => setKopoForm({ ...kopoForm, apiKey: e.target.value })}
+              placeholder={kopo?.apiKeySet ? '••• leave empty to keep current' : 'optional — for webhook signature'} />
+            <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+              <button onClick={saveKopo} disabled={kopoSaving}>{kopoSaving ? 'Saving…' : 'Save Kopo Kopo'}</button>
             </div>
           </div>
         )}

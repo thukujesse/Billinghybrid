@@ -450,9 +450,13 @@ export default function HotspotPortal() {
   const [error, setError] = useState<string | null>(null);
   const [purchase, setPurchase] = useState<PurchaseInit | null>(null);
   const [purchaseStatus, setPurchaseStatus] = useState<string>('');
-  // Which payment flow the ISP configured: 'stk' = Daraja push, 'c2b' = pay-bill,
-  // 'intasend' = STK via the IntaSend aggregator.
-  const [payMethod, setPayMethod] = useState<'stk' | 'c2b' | 'intasend'>('stk');
+  // Which payment flow the ISP configured. stk/intasend/kopokopo = STK prompt;
+  // paybill/till/bank = pay-by-reference (instructions card, longer poll).
+  type PayMethod = 'stk' | 'paybill' | 'till' | 'bank' | 'intasend' | 'kopokopo';
+  const [payMethod, setPayMethod] = useState<PayMethod>('stk');
+  const [payDest, setPayDest] = useState<{ paybill: string; till: string; accountName: string }>({ paybill: '', till: '', accountName: '' });
+  // Pay-by-reference methods (customer types a reference as the account).
+  const isInstrPay = payMethod === 'paybill' || payMethod === 'till' || payMethod === 'bank';
   const [pollElapsed, setPollElapsed] = useState(0);
   const [brand, setBrand] = useState<Branding>(DEFAULT_BRANDING);
   // Auto-grant fast path: if the connecting MAC is in active_devices we
@@ -734,9 +738,12 @@ export default function HotspotPortal() {
       })
       .catch((e: any) => setPlansError(e.message))
       .finally(() => setPlansLoading(false));
-    // Learn which payment flow the ISP configured (STK vs C2B paybill).
-    api<{ collectionMethod: 'stk' | 'c2b' | 'intasend' }>('/hotspot/pay-config')
-      .then((c) => setPayMethod(c.collectionMethod))
+    // Learn which payment flow the ISP configured + where the money goes.
+    api<{ collectionMethod: PayMethod; paybill?: string; till?: string; accountName?: string }>('/hotspot/pay-config')
+      .then((c) => {
+        setPayMethod(c.collectionMethod);
+        setPayDest({ paybill: c.paybill ?? '', till: c.till ?? '', accountName: c.accountName ?? '' });
+      })
       .catch(() => {/* default to STK */});
     // Rotating sponsor banners (revenue + ISP promos). Never blocks the portal.
     api<AdPublic[]>('/hotspot/ads?placement=portal_banner')
@@ -818,8 +825,9 @@ export default function HotspotPortal() {
     setPollElapsed(0);
     try {
       const endpoint =
-        payMethod === 'c2b' ? '/hotspot/pay-c2b' :
+        isInstrPay ? '/hotspot/pay-c2b' :
         payMethod === 'intasend' ? '/hotspot/pay-intasend' :
+        payMethod === 'kopokopo' ? '/hotspot/pay-kopokopo' :
         '/hotspot/pay';
       const p = await api<PurchaseInit>(endpoint, {
         method: 'POST',
@@ -828,9 +836,9 @@ export default function HotspotPortal() {
       window.localStorage.setItem(PHONE_KEY, phoneNormalized);
       setPurchase(p);
       setPurchaseStatus(
-        payMethod === 'c2b'
+        isInstrPay
           ? (p.customerMessage ||
-              `Pay Bill ${p.payInstructions?.paybill} → Account ${p.payInstructions?.account} → KES ${p.amountKes}`)
+              `${payMethod === 'till' ? `Buy Goods Till ${payDest.till || p.payInstructions?.paybill}` : `Pay Bill ${payDest.paybill || p.payInstructions?.paybill}`} → Account ${p.payInstructions?.account} → KES ${p.amountKes}`)
           : (p.customerMessage || (p.simulated
               ? 'Simulation mode — confirming…'
               : 'STK push sent. Check your phone for the M-Pesa prompt.')));
@@ -853,7 +861,7 @@ export default function HotspotPortal() {
     const fp = await getFingerprint();
     const start = performance.now();
     // C2B: customer leaves to pay the Paybill manually — give them longer.
-    const deadline = start + (payMethod === 'c2b' ? 240_000 : 90_000);
+    const deadline = start + (isInstrPay ? 240_000 : 90_000);
     const tick = async () => {
       try {
         const s = await api<{ status: string; grant?: GrantResult; failureReason?: string; token?: string }>(
@@ -1192,12 +1200,21 @@ export default function HotspotPortal() {
                   // C2B pay-bill: show the steps the customer types into M-Pesa.
                   <div style={styles.okToast}>
                     <strong>Pay with M-Pesa to connect:</strong>
-                    <div style={{ marginTop: 8, lineHeight: 1.9 }}>
-                      <div>1. Lipa na M-Pesa → <strong>Pay Bill</strong></div>
-                      <div>2. Business no: <strong style={{ fontSize: 18 }}>{purchase.payInstructions.paybill}</strong></div>
-                      <div>3. Account no: <strong style={{ fontSize: 18 }}>{purchase.payInstructions.account}</strong> (this exact reference)</div>
-                      <div>4. Amount: <strong style={{ fontSize: 18 }}>KES {purchase.amountKes}</strong></div>
-                    </div>
+                    {payMethod === 'till' ? (
+                      <div style={{ marginTop: 8, lineHeight: 1.9 }}>
+                        <div>1. Lipa na M-Pesa → <strong>Buy Goods and Services</strong></div>
+                        <div>2. Till no: <strong style={{ fontSize: 18 }}>{payDest.till || purchase.payInstructions.paybill}</strong></div>
+                        <div>3. Account / Ref: <strong style={{ fontSize: 18 }}>{purchase.payInstructions.account}</strong> (this exact reference)</div>
+                        <div>4. Amount: <strong style={{ fontSize: 18 }}>KES {purchase.amountKes}</strong></div>
+                      </div>
+                    ) : (
+                      <div style={{ marginTop: 8, lineHeight: 1.9 }}>
+                        <div>1. Lipa na M-Pesa → <strong>Pay Bill</strong></div>
+                        <div>2. Business no: <strong style={{ fontSize: 18 }}>{payDest.paybill || purchase.payInstructions.paybill}</strong></div>
+                        <div>3. Account no: <strong style={{ fontSize: 18 }}>{purchase.payInstructions.account}</strong> (this exact reference)</div>
+                        <div>4. Amount: <strong style={{ fontSize: 18 }}>KES {purchase.amountKes}</strong></div>
+                      </div>
+                    )}
                     <p style={{ ...styles.sub, marginTop: 8, marginBottom: 0 }}>
                       You'll connect automatically once payment is received — keep this page open.
                     </p>
@@ -1377,8 +1394,8 @@ export default function HotspotPortal() {
                       style={{ ...styles.btnPrimary, opacity: !phoneValid || submitting ? 0.5 : 1 }}
                     >
                       {submitting
-                        ? (payMethod === 'c2b' ? 'Getting pay details…' : 'Sending STK push…')
-                        : (payMethod === 'c2b' ? 'Show Pay Bill details' : 'Pay & Connect')}
+                        ? (isInstrPay ? 'Getting pay details…' : 'Sending STK push…')
+                        : (isInstrPay ? (payMethod === 'till' ? 'Show Till details' : 'Show Pay Bill details') : 'Pay & Connect')}
                     </button>
                   </div>
                 )}
