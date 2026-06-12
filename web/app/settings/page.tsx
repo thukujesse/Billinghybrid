@@ -94,6 +94,14 @@ function speedLabel(kbps: number | null): string {
 const SANDBOX_PASSKEY =
   'bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919';
 
+type SettingsTab = 'payments' | 'sms' | 'hotspot';
+const TAB_IDS: SettingsTab[] = ['payments', 'sms', 'hotspot'];
+const TAB_LABELS: Record<SettingsTab, string> = {
+  payments: 'Payments',
+  sms: 'SMS / Notifications',
+  hotspot: 'Hotspot portal',
+};
+
 export default function SettingsPage() {
   const [mpesa, setMpesa] = useState<MpesaPublic | null>(null);
   const [form, setForm] = useState({
@@ -108,6 +116,7 @@ export default function SettingsPage() {
   });
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [tab, setTab] = useState<SettingsTab>('payments');
   const [mpesaTestPhone, setMpesaTestPhone] = useState('');
   const [mpesaTesting, setMpesaTesting] = useState(false);
   const [registeringC2b, setRegisteringC2b] = useState(false);
@@ -312,6 +321,7 @@ export default function SettingsPage() {
 
   useEffect(() => {
     load(); loadBrand(); loadSms(); loadIntasend(); loadKopo();
+    if (typeof window !== 'undefined' && window.location.hash === '#sms') setTab('sms');
     api<HotspotPlanLite[]>('/hotspot/plans').then(setPreviewPlans).catch(() => {/* preview falls back to samples */});
   }, []);
 
@@ -461,6 +471,23 @@ export default function SettingsPage() {
       <p className="sub">Runtime configuration. Secrets are write-only — once saved, they're not displayed again.</p>
       {toast && <div className={`toast ${toast.ok ? 'ok' : 'err'}`}>{toast.msg}</div>}
 
+      <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid var(--border)', margin: '10px 0 22px', flexWrap: 'wrap' }}>
+        {TAB_IDS.map((id) => (
+          <button
+            key={id}
+            onClick={() => setTab(id)}
+            style={{
+              background: 'none', border: 'none', cursor: 'pointer', fontSize: 14,
+              padding: '9px 16px', marginBottom: -1,
+              borderBottom: tab === id ? '2px solid #2563eb' : '2px solid transparent',
+              color: tab === id ? 'var(--text)' : 'var(--muted)',
+              fontWeight: tab === id ? 700 : 500,
+            }}
+          >{TAB_LABELS[id]}</button>
+        ))}
+      </div>
+
+      {tab === 'payments' && (<>
       <h2>M-Pesa (Daraja)</h2>
       {mpesa && (
         <div
@@ -708,7 +735,10 @@ export default function SettingsPage() {
         The standard sandbox passkey + shortcode 174379 are pre-fillable above.
       </p>
 
-      <h2 id="sms" style={{ marginTop: 32, scrollMarginTop: 16 }}>SMS provider</h2>
+      </>)}
+
+      {tab === 'sms' && (<>
+      <h2 id="sms" style={{ marginTop: 8, scrollMarginTop: 16 }}>SMS provider</h2>
       {sms && (
         <div
           className={`toast ${sms.simulated ? 'err' : 'ok'}`}
@@ -812,7 +842,10 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      <h2 style={{ marginTop: 32 }}>Hotspot Template</h2>
+      </>)}
+
+      {tab === 'hotspot' && (<>
+      <h2 style={{ marginTop: 8 }}>Hotspot Template</h2>
       <p className="sub">
         Branding for the captive portal at <code>billing.hubnetwifi.co.ke/hotspot</code>.
         Logo, ISP name, and tagline render at the top of the customer-facing card.
@@ -915,6 +948,7 @@ export default function SettingsPage() {
           The live captive portal at <a href="/hotspot" target="_blank" rel="noreferrer">/hotspot</a> uses these settings.
         </p>
       )}
+      </>)}
     </div>
   );
 }
