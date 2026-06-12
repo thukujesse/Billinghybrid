@@ -1,8 +1,7 @@
-import { api, money } from '@/lib/api';
+import { money } from '@/lib/api';
+import { serverApi } from '@/lib/serverApi';
 
 export const dynamic = 'force-dynamic';
-
-const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
 interface RevenuePoint {
   month: string;
@@ -74,11 +73,11 @@ export default async function Reports() {
   let error: string | null = null;
   try {
     [revenue, byPlan, outstanding, mrr, churn] = await Promise.all([
-      api<RevenuePoint[]>('/reports/revenue-combined?months=12'),
-      api<PlanRow[]>('/reports/revenue-by-plan?days=30'),
-      api<Outstanding>('/reports/outstanding-renewals'),
-      api<PppoeMrr>('/reports/pppoe-mrr'),
-      api('/reports/churn'),
+      serverApi<RevenuePoint[]>('/reports/revenue-combined?months=12'),
+      serverApi<PlanRow[]>('/reports/revenue-by-plan?days=30'),
+      serverApi<Outstanding>('/reports/outstanding-renewals'),
+      serverApi<PppoeMrr>('/reports/pppoe-mrr'),
+      serverApi('/reports/churn'),
     ]);
   } catch (e: any) {
     error = e.message;
@@ -150,8 +149,8 @@ export default async function Reports() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 32 }}>
         <h2 style={{ margin: 0 }}>Revenue by plan · last 30 days</h2>
         <div style={{ display: 'flex', gap: 6 }}>
-          <a className="btn ghost" href={`${API}/api/reports/customers.csv`} style={{ textDecoration: 'none' }}>Export customers CSV</a>
-          <a className="btn ghost" href={`${API}/api/reports/hotspot-purchases.csv`} style={{ textDecoration: 'none' }}>Export payments CSV</a>
+          <a className="btn ghost" href="/api/reports/customers.csv" style={{ textDecoration: 'none' }}>Export customers CSV</a>
+          <a className="btn ghost" href="/api/reports/hotspot-purchases.csv" style={{ textDecoration: 'none' }}>Export payments CSV</a>
         </div>
       </div>
       <table>

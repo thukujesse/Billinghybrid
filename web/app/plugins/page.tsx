@@ -1,11 +1,11 @@
-import { api } from '@/lib/api';
+import { serverApi } from '@/lib/serverApi';
 
 export const dynamic = 'force-dynamic';
 
 export default async function Plugins() {
   let list: any[] = [];
   let error: string | null = null;
-  try { list = await api('/plugins'); } catch (e: any) { error = e.message; }
+  try { list = await serverApi('/plugins'); } catch (e: any) { error = e.message; }
 
   if (error) return <div className="container"><h1>Plugins</h1><div className="toast err">API error: {error}</div></div>;
 

@@ -1,5 +1,5 @@
-import { cookies } from 'next/headers';
-import { api, money } from '@/lib/api';
+import { money } from '@/lib/api';
+import { serverApi } from '@/lib/serverApi';
 
 export const dynamic = 'force-dynamic';
 
@@ -158,22 +158,30 @@ export default async function Dashboard() {
   let mrr: PppoeMrr | null = null;
   let openAlerts: AlertRow[] = [];
   let error: string | null = null;
-  try {
-    // Headline tile + supporting series in parallel — page is server-rendered
-    // so this is one round-trip from the operator's POV.
-    // SSR can't read localStorage — pull the JWT from the cookie set at login
-    // so protected reads (e.g. /admin/alerts) authenticate when AUTH_ENABLED=true.
-    const token = cookies().get('jtm_token')?.value;
-    const h = token ? { headers: { Authorization: `Bearer ${token}` } } : undefined;
-    [data, revenue, outstanding, mrr, openAlerts] = await Promise.all([
-      api('/dashboard', h),
-      api<RevenuePoint[]>('/reports/revenue-combined?months=12', h),
-      api<Outstanding>('/reports/outstanding-renewals', h),
-      api<PppoeMrr>('/reports/pppoe-mrr', h),
-      api<AlertRow[]>('/admin/alerts?status=open&limit=5', h),
-    ]);
-  } catch (e: any) {
-    error = e.message;
+  // Headline tile + supporting series in parallel — page is server-rendered so
+  // this is one round-trip from the operator's POV. serverApi forwards the login
+  // cookie + tenant host. Each read is independent: a single failure (e.g.
+  // /admin/alerts 401 on an unauthenticated visit, where AuthGuard redirects to
+  // /login anyway) must NOT blank the whole dashboard — degrade per call. Only a
+  // failing /dashboard (the public core read) signals the API is truly down.
+  const settled = await Promise.allSettled([
+    serverApi('/dashboard'),
+    serverApi<RevenuePoint[]>('/reports/revenue-combined?months=12'),
+    serverApi<Outstanding>('/reports/outstanding-renewals'),
+    serverApi<PppoeMrr>('/reports/pppoe-mrr'),
+    serverApi<AlertRow[]>('/admin/alerts?status=open&limit=5'),
+  ]);
+  const pick = <T,>(i: number, d: T): T =>
+    settled[i].status === 'fulfilled' ? (settled[i] as PromiseFulfilledResult<T>).value : d;
+  data = pick<any>(0, null);
+  revenue = pick<RevenuePoint[]>(1, []);
+  outstanding = pick<Outstanding | null>(2, null);
+  mrr = pick<PppoeMrr | null>(3, null);
+  openAlerts = pick<AlertRow[]>(4, []);
+  if (!data) {
+    error = settled[0].status === 'rejected'
+      ? (settled[0].reason?.message ?? 'unknown error')
+      : 'no data';
   }
 
   if (error) {

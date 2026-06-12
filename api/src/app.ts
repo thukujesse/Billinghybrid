@@ -13,6 +13,12 @@ import './domains/events/metrics.js'; // register metric counters on events
 
 export async function createApp() {
   const app = express();
+  // The API binds to loopback behind Caddy; SSR (jtm-web) also calls it on
+  // loopback. Trust X-Forwarded-* ONLY from loopback so req.hostname reflects
+  // the real tenant host (drives Host→tenant routing for server-side renders)
+  // and req.ip is the real client (drives per-IP rate limits) — without
+  // trusting forwarded headers from any external source.
+  app.set('trust proxy', 'loopback');
   app.use(cors());
   app.use(express.json({ limit: '12mb' })); // headroom for base64 KYC uploads
   // MikroTik /tool fetch posts form-encoded data — needed for /routers/identify.

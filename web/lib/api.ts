@@ -5,7 +5,12 @@ const BAKED_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 // needs to allow ONE host (the VPS). Dashboard users on the Render origin
 // keep using the baked jtm-api URL.
 const getBase = () => {
-  if (typeof window === 'undefined') return BAKED_BASE;
+  if (typeof window === 'undefined') {
+    // Server-side render runs ON the VPS, which can't fetch its own public
+    // hostname (no NAT hairpin) — so hit the API locally. serverApi() forwards
+    // the tenant host via X-Forwarded-Host so Host→tenant routing still works.
+    return process.env.INTERNAL_API_URL ?? 'http://127.0.0.1:4000';
+  }
   const host = window.location.hostname;
   // Any platform host (demo/auth/billing/portal + every tenant subdomain) calls
   // its OWN origin. This keeps the Host header intact so the API's Host→tenant
