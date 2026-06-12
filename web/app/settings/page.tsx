@@ -581,11 +581,13 @@ export default function SettingsPage() {
             <h3 style={{ marginTop: 0, fontSize: 14 }}>Point your {form.collectionMethod === 'till' ? 'Till' : form.collectionMethod === 'bank' ? 'bank' : 'Paybill'} callback here</h3>
             <p className="sub" style={{ marginTop: 0 }}>
               Money goes <strong>directly to your {form.collectionMethod === 'till' ? `Till ${form.till || ''}` : `Paybill ${form.shortcode || ''}`}</strong>. For HubNet to verify each
-              payment and auto-connect the customer, register this {form.collectionMethod === 'bank' ? 'bank/Jenga IPN' : 'C2B callback'} URL once:
+              payment and auto-connect the customer, point this {form.collectionMethod === 'bank' ? 'bank/Jenga IPN' : 'C2B callback'} URL at HubNet once — it&apos;s the
+              <strong> same URL for everyone</strong>; we match the payment to you by the {form.collectionMethod === 'till' ? 'Till' : 'Paybill'} number above:
             </p>
             <code style={{ display: 'block', padding: '8px 10px', background: 'var(--surface,#f4f6f9)', borderRadius: 6, fontSize: 12, wordBreak: 'break-all' }}>
-              {(typeof window !== 'undefined' ? window.location.origin : '')}
-              {form.collectionMethod === 'bank' ? '/api/payments/jenga/ipn' : '/api/payments/c2b/confirmation'}
+              {form.collectionMethod === 'bank'
+                ? `${(typeof window !== 'undefined' ? window.location.origin : '')}/api/payments/jenga/ipn`
+                : 'https://pay.hubnetwifi.co.ke/api/payments/shared/confirmation'}
             </code>
             {form.collectionMethod !== 'bank' && (
               <>

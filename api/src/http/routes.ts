@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { ah, parse } from './helpers.js';
-import { currentTenantStatus } from '../db/pool.js';
+import { currentTenantStatus, currentTenantUuid, runWithTenant } from '../db/pool.js';
+import * as tenantPaybill from '../domains/platform/tenantPaybill.js';
 import { requireAuth } from './middleware/auth.js';
 import { rateLimit } from './middleware/rateLimit.js';
 import * as auth from '../domains/auth/service.js';
@@ -709,6 +710,13 @@ api.put('/settings/mpesa', requireAuth('admin'), ah(async (req, res) => {
     passkey: z.string().optional(),
     collectionMethod: z.enum(['stk', 'paybill', 'till', 'bank', 'intasend', 'kopokopo']).optional(),
   }), req.body);
+  // For no-API methods, claim the paybill/till for shared-callback routing FIRST
+  // (rejects a number already owned by another ISP) before persisting settings.
+  const uuid = currentTenantUuid();
+  const num = body.collectionMethod === 'till' ? body.till : body.shortcode;
+  if (uuid && num && (body.collectionMethod === 'paybill' || body.collectionMethod === 'till' || body.collectionMethod === 'bank')) {
+    await tenantPaybill.registerPaybill(num, uuid, body.collectionMethod);
+  }
   await settings.setMpesaConfig(body, (req.user as { username?: string } | undefined)?.username);
   res.json(await settings.getMpesaConfigPublic());
 }));
@@ -762,6 +770,29 @@ api.post('/payments/c2b/confirmation', ah(async (req, res) => {
 }));
 // C2B validation (only invoked if external validation is enabled on the shortcode). Accept all.
 api.post('/payments/c2b/validation', ah(async (_req, res) => {
+  res.json({ ResultCode: 0, ResultDesc: 'Accepted' });
+}));
+// SHARED callback — ONE HubNet URL for all no-API tenants. Money already went to
+// the ISP's own Paybill/Till; here we read the receiving BusinessShortCode,
+// resolve which tenant owns it, and settle the payment in THAT tenant's database
+// (reference match -> grant). Tenant is picked by shortcode, not by Host.
+api.post('/payments/shared/confirmation', ah(async (req, res) => {
+  try {
+    const p = req.body ?? {};
+    const shortcode = String(p.BusinessShortCode ?? p.BusinessShortcode ?? p.shortCode ?? p.ShortCode ?? '').trim();
+    const t = await tenantPaybill.resolvePaybill(shortcode);
+    if (t && t.status === 'active') {
+      const tp = tenantPaybill.poolForResolved(t);
+      await runWithTenant({ tenantId: t.slug, pool: tp, uuid: t.id, status: t.status }, () => c2b.handleC2bConfirmation(p));
+    } else {
+      console.warn(`[shared-c2b] no active tenant for shortcode "${shortcode}"`);
+    }
+  } catch (e) {
+    console.error('[shared-c2b] error', e);
+  }
+  res.json({ ResultCode: 0, ResultDesc: 'Accepted' }); // always ack — no retry-storm
+}));
+api.post('/payments/shared/validation', ah(async (_req, res) => {
   res.json({ ResultCode: 0, ResultDesc: 'Accepted' });
 }));
 // Create a pending C2B purchase (no STK) + return Pay-Bill instructions; the
