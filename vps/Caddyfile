@@ -35,6 +35,11 @@ demo.hubnetwifi.co.ke {
     }
 }
 auth.hubnetwifi.co.ke {
+    # On-demand TLS (same proven path as tenant subdomains) — auth.* is mapped
+    # to the default tenant in tenant_domain so the cert-check gate OKs it.
+    tls {
+        on_demand
+    }
     @api path /api/* /health /ready /metrics
     handle @api {
         reverse_proxy 127.0.0.1:4000
