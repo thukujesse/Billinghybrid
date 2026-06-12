@@ -76,6 +76,15 @@ export async function getTenantBySlug(slug: string): Promise<Tenant | null> {
   return r.rows[0] ?? null;
 }
 
+export async function getTenantById(id: string): Promise<Tenant | null> {
+  const r = await pool.query<Tenant>(
+    `SELECT id, slug, name, db_conn_string, status, contact_phone, contact_email, created_at
+       FROM tenant WHERE id = $1`,
+    [id]
+  );
+  return r.rows[0] ?? null;
+}
+
 export async function slugTaken(slug: string): Promise<boolean> {
   const r = await pool.query(`SELECT 1 FROM tenant WHERE slug = $1`, [slug]);
   return (r.rowCount ?? 0) > 0;

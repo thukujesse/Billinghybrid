@@ -40,6 +40,17 @@ export const config = {
       process.env.CONTROL_ADMIN_DATABASE_URL ??
       process.env.DATABASE_URL ??
       'postgres://jtm:jtm@127.0.0.1:5432/jtm',
+    // Which tenant slug is the PLATFORM operator (HubNet) — only this tenant's
+    // admins can reach the /platform console + tenant billing.
+    platformTenant: process.env.PLATFORM_TENANT_SLUG ?? 'default',
+    // How HubNet bills each ISP for using the platform (hybrid model):
+    //  - KES 25/month per active fixed-line subscriber (pppoe/static/ftth)
+    //  - 3% of the tenant's hotspot revenue
+    billing: {
+      fixedPerSubCents: num('PLATFORM_FIXED_PER_SUB_CENTS', 2500),
+      hotspotSharePct: num('PLATFORM_HOTSPOT_SHARE_PCT', 3),
+      currency: process.env.PLATFORM_BILLING_CURRENCY ?? 'KES',
+    },
   },
   auth: {
     // When false, the API runs open (demo mode) and requireAuth injects a

@@ -48,6 +48,11 @@ const GROUPS: Group[] = [
       { href: '/routers', label: 'Routers' },
     ],
   },
+  {
+    key: 'platform', label: 'Platform', ico: '🏢', items: [
+      { href: '/platform', label: 'Tenants & billing' },
+    ],
+  },
 ];
 
 function isActive(pathname: string, href: string): boolean {

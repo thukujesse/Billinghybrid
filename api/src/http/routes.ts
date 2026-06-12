@@ -57,6 +57,7 @@ import { registerLeadsRoutes } from './routes/leads.js';
 import { registerAdsRoutes } from './routes/ads.js';
 import { registerMessageTemplateRoutes } from './routes/messageTemplates.js';
 import { registerTenantRoutes } from './routes/tenants.js';
+import { registerPlatformRoutes } from './routes/platform.js';
 
 export const api = Router();
 
@@ -70,6 +71,7 @@ registerLeadsRoutes(api);
 registerAdsRoutes(api);
 registerMessageTemplateRoutes(api);
 registerTenantRoutes(api);
+registerPlatformRoutes(api);
 registerWalletRoutes(api);
 registerReportsRoutes(api);
 

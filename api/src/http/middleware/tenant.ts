@@ -15,7 +15,10 @@ export async function tenantMiddleware(req: Request, _res: Response, next: NextF
   let ctx = { tenantId: 'default', pool };
   try {
     const t = await resolveTenantByHost(req.hostname);
-    if (t && t.status === 'active') {
+    // A resolved tenant ALWAYS binds its own pool (active or suspended) so its
+    // data can never leak onto the default tenant. Only unknown hosts, or
+    // tenants still provisioning/failed, fall back to the default pool.
+    if (t && (t.status === 'active' || t.status === 'suspended')) {
       ctx = { tenantId: t.slug, pool: poolForTenant(t) };
     }
   } catch {
