@@ -1,3 +1,5 @@
+import { headers } from 'next/headers';
+import { redirect } from 'next/navigation';
 import { money } from '@/lib/api';
 import { serverApi } from '@/lib/serverApi';
 
@@ -152,6 +154,11 @@ function QuickActionTile({
 }
 
 export default async function Dashboard() {
+  // The operator console host lands straight on tenant management, not an ISP
+  // dashboard. (support.<base> is the platform operator's front door.)
+  const host = (headers().get('host') ?? '').toLowerCase();
+  if (host.split('.')[0] === 'support') redirect('/platform');
+
   let data: any = null;
   let revenue: RevenuePoint[] = [];
   let outstanding: Outstanding | null = null;

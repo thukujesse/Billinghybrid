@@ -54,6 +54,28 @@ export default function Platform() {
     finally { setBusy(null); }
   };
 
+  // Open the tenant's own dashboard logged in as their admin (no password).
+  const impersonate = async (id: string) => {
+    setBusy(id);
+    try {
+      const r = await api<{ url: string }>(`/platform/tenants/${id}/impersonate`, { method: 'POST', body: '{}' });
+      window.open(r.url, '_blank', 'noopener');
+    } catch (e: any) { setToast({ ok: false, msg: e.message }); }
+    finally { setBusy(null); }
+  };
+
+  const changeSub = async (id: string, current: string) => {
+    const slug = window.prompt(`New subdomain label for "${current}" (e.g. acme → acme.${BASE}):`, current);
+    if (!slug || slug === current) return;
+    setBusy(id);
+    try {
+      const r = await api<{ host: string }>(`/platform/tenants/${id}/subdomain`, { method: 'POST', body: JSON.stringify({ slug }) });
+      setToast({ ok: true, msg: `Subdomain changed to ${r.host}` });
+      await load();
+    } catch (e: any) { setToast({ ok: false, msg: e.message }); }
+    finally { setBusy(null); }
+  };
+
   if (forbidden) {
     return (
       <div className="container" style={{ maxWidth: 560 }}>
@@ -106,10 +128,14 @@ export default function Platform() {
                   <td style={td}>{money(t.accrual.hotspot_revenue_cents)} <span className="sub">({money(t.accrual.hotspot_charge_cents)})</span></td>
                   <td style={{ ...tdR, fontWeight: 700 }}>{money(t.accrual.total_cents)}</td>
                   <td style={td}>
-                    {t.slug === 'default' ? <span className="sub">—</span> : t.status === 'suspended' ? (
-                      <button className="ghost" disabled={busy === t.id} onClick={() => act(t.id, 'resume', `${t.name} resumed`)}>Resume</button>
-                    ) : (
-                      <button className="ghost" disabled={busy === t.id} onClick={() => act(t.id, 'suspend', `${t.name} suspended`)}>Suspend</button>
+                    {t.slug === 'default' ? <span className="sub">platform</span> : (
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                        <button className="ghost" disabled={busy === t.id} onClick={() => impersonate(t.id)}>Impersonate</button>
+                        <button className="ghost" disabled={busy === t.id} onClick={() => changeSub(t.id, t.slug)}>Subdomain</button>
+                        {t.status === 'suspended'
+                          ? <button className="ghost" disabled={busy === t.id} onClick={() => act(t.id, 'resume', `${t.name} resumed`)}>Resume</button>
+                          : <button className="ghost" disabled={busy === t.id} onClick={() => act(t.id, 'suspend', `${t.name} suspended`)}>Suspend</button>}
+                      </div>
                     )}
                   </td>
                 </tr>

@@ -25,6 +25,21 @@ function issueToken(sub: string, role: Role, extra: Record<string, unknown> = {}
   return signJwt({ sub, role, ...extra }, config.auth.jwtSecret, config.auth.jwtTtlHours * 3600);
 }
 
+/**
+ * Mint a short-lived ADMIN token a platform operator uses to impersonate a
+ * tenant. requireAuth only checks the signature + role (not DB membership), and
+ * tenant routing is by Host — so presenting this on the tenant's subdomain logs
+ * the operator into that tenant as admin. NB: the JWT secret is shared across
+ * tenants by design, which is what makes this (and cross-tenant trust) possible.
+ */
+export function impersonationToken(tenantSlug: string, operator: string): string {
+  return signJwt(
+    { sub: `imp:${operator}`, role: 'admin', username: `operator → ${tenantSlug}`, imp: true, tenant: tenantSlug },
+    config.auth.jwtSecret,
+    30 * 60 // 30 minutes
+  );
+}
+
 // --------------------------- Staff users ----------------------------
 
 export async function createUser(input: {

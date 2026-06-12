@@ -14,6 +14,10 @@ export default function Login() {
   const [toast, setToast] = useState<{ ok: boolean; msg: string } | null>(null);
 
   useEffect(() => {
+    // Platform operator impersonation: a one-time admin token arrives via ?imp=.
+    // Store it and bounce to the dashboard (stripping the param from the URL).
+    const imp = new URLSearchParams(window.location.search).get('imp');
+    if (imp) { setToken(imp); window.location.replace('/'); return; }
     if (getToken()) api('/auth/me').then(setMe).catch(() => setToken(null));
     // Is this a fresh install with no operator accounts? Then offer first-admin setup.
     api<{ needsSetup: boolean }>('/auth/setup-status')

@@ -115,6 +115,37 @@ export async function setTenantStatus(id: string, status: TenantStatus): Promise
   clearTenantCache();
 }
 
+/**
+ * Change a tenant's subdomain: rename the slug and swap its auto
+ * <slug>.<baseDomain> host mapping to the new one (other custom domains are
+ * left intact). The tenant's database is NOT renamed — db_conn_string is opaque
+ * routing state — only the public hostname changes. The new host becomes live +
+ * TLS-served on first visit via on-demand TLS.
+ */
+export async function changeSubdomain(t: Tenant, newSlug: string, baseDomain: string): Promise<{ host: string }> {
+  const oldHost = `${t.slug}.${baseDomain}`;
+  const newHost = `${newSlug}.${baseDomain}`;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`UPDATE tenant SET slug = $1 WHERE id = $2`, [newSlug, t.id]);
+    await client.query(`DELETE FROM tenant_domain WHERE host = $1 AND tenant_id = $2`, [oldHost, t.id]);
+    await client.query(
+      `INSERT INTO tenant_domain (host, tenant_id, is_primary) VALUES ($1, $2, true)
+       ON CONFLICT (host) DO UPDATE SET tenant_id = EXCLUDED.tenant_id, is_primary = true`,
+      [newHost, t.id]
+    );
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+  clearTenantCache();
+  return { host: newHost };
+}
+
 export async function addDomain(host: string, tenantId: string, isPrimary = false): Promise<void> {
   await pool.query(
     `INSERT INTO tenant_domain (host, tenant_id, is_primary)

@@ -14,6 +14,8 @@ import { config } from '../../config.js';
 import { AppError } from '../../lib/errors.js';
 import * as tenants from '../../domains/tenants/service.js';
 import * as billing from '../../domains/platform/billing.js';
+import { impersonationToken } from '../../domains/auth/service.js';
+import { normalizeSlug } from '../../domains/tenants/provision.js';
 
 /** Block anyone whose request didn't resolve to the platform tenant. */
 function platformOnly(_req: Request, _res: Response, next: NextFunction): void {
@@ -79,6 +81,32 @@ export function registerPlatformRoutes(api: Router): void {
   api.post('/platform/tenants/:id/resume', ...gate, ah(async (req, res) => {
     await tenants.setTenantStatus(req.params.id, 'active');
     res.json({ ok: true, status: 'active' });
+  }));
+
+  // Impersonate: mint a short-lived admin token + the URL that logs the
+  // operator into the tenant's own dashboard (token passed via ?imp=).
+  api.post('/platform/tenants/:id/impersonate', ...gate, ah(async (req, res) => {
+    const t = await tenants.getTenantById(req.params.id);
+    if (!t) throw new AppError(404, 'not_found', 'tenant not found');
+    const operator = (req.user as any)?.username ?? 'operator';
+    const token = impersonationToken(t.slug, operator);
+    const host = `${t.slug}.${config.control.baseDomain}`;
+    res.json({ token, host, url: `https://${host}/login?imp=${encodeURIComponent(token)}` });
+  }));
+
+  // Change a tenant's subdomain (rename slug + swap host mapping; new host is
+  // TLS-served on first visit).
+  api.post('/platform/tenants/:id/subdomain', ...gate, ah(async (req, res) => {
+    const body = parse(z.object({ slug: z.string().min(3).max(32) }), req.body);
+    const t = await tenants.getTenantById(req.params.id);
+    if (!t) throw new AppError(404, 'not_found', 'tenant not found');
+    if (t.slug === 'default') throw new AppError(400, 'bad_request', 'cannot rename the platform tenant');
+    const newSlug = normalizeSlug(body.slug);
+    if (newSlug !== t.slug && (await tenants.slugTaken(newSlug))) {
+      throw new AppError(409, 'conflict', `the subdomain "${newSlug}" is already taken`);
+    }
+    const { host } = await tenants.changeSubdomain(t, newSlug, config.control.baseDomain);
+    res.json({ ok: true, slug: newSlug, host });
   }));
 
   // Invoices for one tenant.
