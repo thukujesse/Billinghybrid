@@ -1,12 +1,21 @@
-# Live VPS edge config (38.54.122.235). All three app hosts terminate here;
-# Caddy auto-issues Let's Encrypt certs (HTTP-01 — Cloudflare is DNS-only).
+# Live VPS edge config (38.54.122.235). All app hosts terminate here.
 #
-#   vpn.   — WireGuard manager (8081) + provisioning API (8080)
-#   demo.  — the default tenant: dashboard (:3000) + API (:4000)
-#   auth.  — the SaaS front door: bare domain lands on /register
+#   vpn.            — WireGuard manager (8081) + provisioning API (8080)
+#   demo.           — the default tenant: dashboard (:3000) + API (:4000)
+#   auth.           — the SaaS front door: bare domain lands on /register
+#   *.hubnetwifi    — EVERY self-serve tenant subdomain, TLS issued on-demand
 #
 # Per-host routing keeps the Host header intact so the API's Host→tenant
 # middleware resolves the right tenant database.
+
+{
+    # On-demand TLS: Caddy mints a cert the first time an unknown tenant
+    # subdomain is hit, but ONLY after this endpoint OKs the hostname (returns
+    # 200 for active tenants). Stops random SNI probes from burning LE quota.
+    on_demand_tls {
+        ask http://127.0.0.1:4000/api/tenants/cert-check
+    }
+}
 
 vpn.hubnetwifi.co.ke {
     handle_path /wg/* {
@@ -34,6 +43,22 @@ auth.hubnetwifi.co.ke {
     @home path /
     handle @home {
         redir * /register
+    }
+    handle {
+        reverse_proxy 127.0.0.1:3000
+    }
+}
+
+# Every other *.hubnetwifi.co.ke host = a self-serve tenant. Same app routing
+# as demo; TLS is obtained on-demand (gated by the ask endpoint above). The
+# more-specific blocks above win for vpn/demo/auth.
+*.hubnetwifi.co.ke {
+    tls {
+        on_demand
+    }
+    @api path /api/* /health /ready /metrics
+    handle @api {
+        reverse_proxy 127.0.0.1:4000
     }
     handle {
         reverse_proxy 127.0.0.1:3000

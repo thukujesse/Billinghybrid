@@ -25,6 +25,17 @@ export function registerTenantRoutes(api: Router): void {
     res.json({ selfServe: config.control.selfServe, baseDomain: config.control.baseDomain });
   }));
 
+  // Caddy on-demand-TLS gate. Caddy calls GET ?domain=<sni> before issuing a
+  // cert for an unknown host; we return 200 ONLY for hostnames that map to an
+  // active tenant, so a cert is minted for real signups (and tenant custom
+  // domains) but never for random probes — which protects the LE rate limit.
+  api.get('/tenants/cert-check', ah(async (req, res) => {
+    const domain = typeof req.query.domain === 'string' ? req.query.domain : '';
+    const t = domain ? await tenants.resolveTenantByHost(domain) : null;
+    if (t && t.status === 'active') return res.status(200).send('ok');
+    return res.status(404).send('unknown host');
+  }));
+
   // Is a desired subdomain free? (Cheap pre-check for the signup form.)
   api.get('/tenants/slug-available', slugCheckLimit, ah(async (req, res) => {
     const raw = typeof req.query.slug === 'string' ? req.query.slug : '';
