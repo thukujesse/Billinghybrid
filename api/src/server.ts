@@ -6,6 +6,7 @@ import { startPaymentWorker } from './domains/paymentEvents/worker.js';
 import { startExpireWorker, expireWorkerEnabled, expireWorkerIntervalMs } from './domains/customers/expireWorker.js';
 import { startAlertWorker, alertWorkerEnabled, alertWorkerIntervalMs } from './domains/alerts/worker.js';
 import { startMetricsWorker, metricsWorkerEnabled, metricsWorkerIntervalMs } from './domains/network/worker.js';
+import { startBillingWorker, billingWorkerEnabled, billingWorkerIntervalMs } from './domains/platform/worker.js';
 
 const app = await createApp();
 
@@ -42,6 +43,13 @@ const stopAlertWorker = alertWorkerEnabled
 // + session counts into router_metrics for the /network history charts.
 const stopMetricsWorker = metricsWorkerEnabled
   ? startMetricsWorker(metricsWorkerIntervalMs)
+  : async () => {};
+
+// Platform billing close — every 12h, snapshot each tenant's charge for the
+// just-ended month into tenant_invoice (idempotent). Runs on the platform
+// instance; harmless elsewhere since it only writes the control DB.
+const stopBillingWorker = billingWorkerEnabled
+  ? startBillingWorker(billingWorkerIntervalMs)
   : async () => {};
 
 const server = app.listen(config.port, () => {
@@ -87,6 +95,11 @@ async function shutdown(signal: string) {
       await stopMetricsWorker(); // let an in-flight metrics sample finish
     } catch (e) {
       console.error('[shutdown] metrics worker stop failed:', e);
+    }
+    try {
+      await stopBillingWorker(); // let an in-flight billing close finish
+    } catch (e) {
+      console.error('[shutdown] billing worker stop failed:', e);
     }
     try {
       await pool.end();

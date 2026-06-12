@@ -112,6 +112,11 @@ export interface Invoice {
   issued_at: string; paid_at: string | null;
 }
 
+export async function hasInvoice(tenantId: string, period: string): Promise<boolean> {
+  const r = await pool.query(`SELECT 1 FROM tenant_invoice WHERE tenant_id = $1 AND period = $2`, [tenantId, period]);
+  return (r.rowCount ?? 0) > 0;
+}
+
 export async function listInvoices(tenantId: string): Promise<Invoice[]> {
   const r = await pool.query<Invoice>(
     `SELECT id, tenant_id, period, fixed_active, fixed_charge_cents,

@@ -21,6 +21,7 @@ export const pool = new pg.Pool({ connectionString: config.databaseUrl });
 export interface TenantCtx {
   tenantId: string;
   pool: pg.Pool;
+  status?: string; // tenant lifecycle status (active/suspended/...) for enforcement
 }
 const tenantStore = new AsyncLocalStorage<TenantCtx>();
 
@@ -46,6 +47,11 @@ export function getPool(): pg.Pool {
 /** The current tenant id, or 'default' outside a request. */
 export function currentTenantId(): string {
   return tenantStore.getStore()?.tenantId ?? 'default';
+}
+
+/** The current tenant's lifecycle status (default 'active' outside a request). */
+export function currentTenantStatus(): string {
+  return tenantStore.getStore()?.status ?? 'active';
 }
 
 /** Bind a tenant context for the duration of `fn`'s async chain. */

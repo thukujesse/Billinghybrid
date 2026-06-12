@@ -25,6 +25,17 @@ export function registerTenantRoutes(api: Router): void {
     res.json({ selfServe: config.control.selfServe, baseDomain: config.control.baseDomain });
   }));
 
+  // Lifecycle status for the CURRENT host's tenant — drives the web's suspended
+  // landing page. Public + always allowed (even when suspended).
+  api.get('/tenants/status', ah(async (req, res) => {
+    const t = await tenants.resolveTenantByHost(req.hostname);
+    res.json({
+      slug: t?.slug ?? null,
+      name: t?.name ?? null,
+      status: t?.status ?? 'active', // unknown host → treat as active (don't block)
+    });
+  }));
+
   // Caddy on-demand-TLS gate. Caddy calls GET ?domain=<sni> before issuing a
   // cert for an unknown host; we return 200 ONLY for hostnames that map to an
   // active tenant, so a cert is minted for real signups (and tenant custom

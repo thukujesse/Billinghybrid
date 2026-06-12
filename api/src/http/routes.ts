@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { ah, parse } from './helpers.js';
+import { currentTenantStatus } from '../db/pool.js';
 import { requireAuth } from './middleware/auth.js';
 import { rateLimit } from './middleware/rateLimit.js';
 import * as auth from '../domains/auth/service.js';
@@ -60,6 +61,27 @@ import { registerTenantRoutes } from './routes/tenants.js';
 import { registerPlatformRoutes } from './routes/platform.js';
 
 export const api = Router();
+
+// --- Suspension enforcement -------------------------------------------------
+// When HubNet suspends a tenant (unpaid platform invoice), block the operator's
+// dashboard/data API but DELIBERATELY keep customer-facing + money-in paths open
+// so the ISP's end-users aren't punished and the ISP keeps earning to pay us.
+// Allowed while suspended: auth, tenant status/signup, health, and the
+// customer-facing captive-portal + payment-callback surfaces.
+const SUSPEND_ALLOW: RegExp[] = [
+  /^\/auth(\/|$)/, /^\/tenants(\/|$)/, /^\/health/, /^\/ready/, /^\/metrics/,
+  /^\/hotspot(\/|$)/, /^\/renew(\/|$)/, /^\/portal(\/|$)/, /^\/payments(\/|$)/,
+];
+api.use((req, res, next) => {
+  if (currentTenantStatus() === 'suspended' && !SUSPEND_ALLOW.some((re) => re.test(req.path))) {
+    res.status(402).json({
+      error: 'tenant_suspended',
+      message: 'This ISP account is suspended pending payment to the platform operator.',
+    });
+    return;
+  }
+  next();
+});
 
 // Feature-bucketed sub-routers. Adding a new feature here keeps routes.ts
 // from growing further — drop a routes/<feature>.ts file with a register()
