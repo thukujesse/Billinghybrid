@@ -22,6 +22,7 @@ export interface TenantCtx {
   tenantId: string;
   pool: pg.Pool;
   status?: string; // tenant lifecycle status (active/suspended/...) for enforcement
+  uuid?: string;   // the tenant's control-DB id (for cross-DB billing: SMS, invoices)
 }
 const tenantStore = new AsyncLocalStorage<TenantCtx>();
 
@@ -52,6 +53,11 @@ export function currentTenantId(): string {
 /** The current tenant's lifecycle status (default 'active' outside a request). */
 export function currentTenantStatus(): string {
   return tenantStore.getStore()?.status ?? 'active';
+}
+
+/** The current tenant's control-DB id, or null outside a resolved tenant. */
+export function currentTenantUuid(): string | null {
+  return tenantStore.getStore()?.uuid ?? null;
 }
 
 /** Bind a tenant context for the duration of `fn`'s async chain. */

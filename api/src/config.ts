@@ -51,6 +51,15 @@ export const config = {
       hotspotSharePct: num('PLATFORM_HOTSPOT_SHARE_PCT', 3),
       currency: process.env.PLATFORM_BILLING_CURRENCY ?? 'KES',
     },
+    // Shared-sender SMS: tenants WITHOUT their own sender ID send via HubNet's
+    // default sender and are charged from a prepaid balance — KES 0.40 per 160
+    // characters (each extra 160 chars = another segment = another 0.40).
+    sms: {
+      costCentsPerSegment: num('PLATFORM_SMS_COST_CENTS', 40),
+      segmentChars: num('PLATFORM_SMS_SEGMENT_CHARS', 160),
+      // Welcome credit seeded on tenant provisioning so SMS works out of the box.
+      freeStarterCents: num('PLATFORM_SMS_FREE_CENTS', 1000),
+    },
   },
   auth: {
     // When false, the API runs open (demo mode) and requireAuth injects a

@@ -14,6 +14,7 @@ import { config } from '../../config.js';
 import { AppError } from '../../lib/errors.js';
 import * as tenants from '../../domains/tenants/service.js';
 import * as billing from '../../domains/platform/billing.js';
+import * as smsBilling from '../../domains/platform/smsBilling.js';
 import { impersonationToken } from '../../domains/auth/service.js';
 import { normalizeSlug } from '../../domains/tenants/provision.js';
 
@@ -37,7 +38,10 @@ export function registerPlatformRoutes(api: Router): void {
   api.get('/platform/tenants', ...gate, ah(async (_req, res) => {
     const all = await tenants.listTenants();
     const rows = await Promise.all(all.map(async (t) => {
-      const accrual = await billing.accrue(t);
+      const [accrual, sms_balance_cents] = await Promise.all([
+        billing.accrue(t),
+        smsBilling.getBalance(t.id),
+      ]);
       return {
         id: t.id, slug: t.slug, name: t.name, status: t.status,
         isolated: !!t.db_conn_string,
@@ -45,6 +49,7 @@ export function registerPlatformRoutes(api: Router): void {
         contact_email: t.contact_email ?? null,
         created_at: t.created_at,
         accrual,
+        sms_balance_cents,
       };
     }));
     res.json(rows);
@@ -121,6 +126,28 @@ export function registerPlatformRoutes(api: Router): void {
     if (!t) throw new AppError(404, 'not_found', 'tenant not found');
     await billing.generateInvoice(t, body.period ?? currentPeriod());
     res.status(201).json({ ok: true });
+  }));
+
+  // SMS prepaid balance + recent ledger for one tenant.
+  api.get('/platform/tenants/:id/sms', ...gate, ah(async (req, res) => {
+    const [balance_cents, ledger] = await Promise.all([
+      smsBilling.getBalance(req.params.id),
+      smsBilling.recentLedger(req.params.id, 20),
+    ]);
+    res.json({
+      balance_cents, ledger, currency: config.control.billing.currency,
+      cost_per_segment_cents: config.control.sms.costCentsPerSegment,
+      segment_chars: config.control.sms.segmentChars,
+    });
+  }));
+
+  // Top up a tenant's SMS balance (amount in KES).
+  api.post('/platform/tenants/:id/sms/topup', ...gate, ah(async (req, res) => {
+    const body = parse(z.object({ kes: z.number().positive().max(1_000_000) }), req.body);
+    const t = await tenants.getTenantById(req.params.id);
+    if (!t) throw new AppError(404, 'not_found', 'tenant not found');
+    const balance = await smsBilling.credit(t.id, Math.round(body.kes * 100), 'topup');
+    res.json({ ok: true, balance_cents: balance });
   }));
 
   // Mark an invoice paid / void.

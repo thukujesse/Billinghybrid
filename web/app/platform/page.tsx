@@ -10,7 +10,7 @@ interface Accrual {
 interface TenantRow {
   id: string; slug: string; name: string; status: string;
   isolated: boolean; contact_phone: string | null; contact_email: string | null;
-  created_at: string; accrual: Accrual;
+  created_at: string; accrual: Accrual; sms_balance_cents: number;
 }
 interface Summary {
   tenants: number; active: number; suspended: number; period: string;
@@ -64,6 +64,20 @@ export default function Platform() {
     finally { setBusy(null); }
   };
 
+  const topUpSms = async (id: string, name: string) => {
+    const kes = window.prompt(`Top up SMS balance for "${name}" — amount in KES:`, '100');
+    if (!kes) return;
+    const amount = Number(kes);
+    if (!Number.isFinite(amount) || amount <= 0) { setToast({ ok: false, msg: 'Enter a valid amount' }); return; }
+    setBusy(id);
+    try {
+      await api(`/platform/tenants/${id}/sms/topup`, { method: 'POST', body: JSON.stringify({ kes: amount }) });
+      setToast({ ok: true, msg: `Topped up ${name} with KES ${amount}` });
+      await load();
+    } catch (e: any) { setToast({ ok: false, msg: e.message }); }
+    finally { setBusy(null); }
+  };
+
   const changeSub = async (id: string, current: string) => {
     const slug = window.prompt(`New subdomain label for "${current}" (e.g. acme → acme.${BASE}):`, current);
     if (!slug || slug === current) return;
@@ -110,6 +124,7 @@ export default function Platform() {
                 <th style={th}>Fixed subs</th>
                 <th style={th}>Hotspot rev</th>
                 <th style={thR}>Charge (mo)</th>
+                <th style={thR}>SMS bal</th>
                 <th style={th}>Actions</th>
               </tr>
             </thead>
@@ -127,10 +142,18 @@ export default function Platform() {
                   <td style={td}>{t.accrual.fixed_active} <span className="sub">({money(t.accrual.fixed_charge_cents)})</span></td>
                   <td style={td}>{money(t.accrual.hotspot_revenue_cents)} <span className="sub">({money(t.accrual.hotspot_charge_cents)})</span></td>
                   <td style={{ ...tdR, fontWeight: 700 }}>{money(t.accrual.total_cents)}</td>
+                  <td style={tdR}>
+                    {t.slug === 'default' ? <span className="sub">—</span> : (
+                      <span style={{ color: t.sms_balance_cents < 40 ? 'var(--err,#dc2626)' : 'var(--text)' }}>
+                        {money(t.sms_balance_cents)}
+                      </span>
+                    )}
+                  </td>
                   <td style={td}>
                     {t.slug === 'default' ? <span className="sub">platform</span> : (
                       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                         <button className="ghost" disabled={busy === t.id} onClick={() => impersonate(t.id)}>Impersonate</button>
+                        <button className="ghost" disabled={busy === t.id} onClick={() => topUpSms(t.id, t.name)}>Top-up SMS</button>
                         <button className="ghost" disabled={busy === t.id} onClick={() => changeSub(t.id, t.slug)}>Subdomain</button>
                         {t.status === 'suspended'
                           ? <button className="ghost" disabled={busy === t.id} onClick={() => act(t.id, 'resume', `${t.name} resumed`)}>Resume</button>
@@ -140,7 +163,7 @@ export default function Platform() {
                   </td>
                 </tr>
               ))}
-              {!rows.length && <tr><td style={td} colSpan={6}><span className="sub">No tenants yet.</span></td></tr>}
+              {!rows.length && <tr><td style={td} colSpan={7}><span className="sub">No tenants yet.</span></td></tr>}
             </tbody>
           </table>
         </div>

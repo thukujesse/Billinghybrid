@@ -11,11 +11,47 @@ import { config } from '../../config.js';
 import { sendSms } from './africastalking.js';
 import { sendBytwaveSms } from './bytwave.js';
 import { getSmsConfig } from '../settings/service.js';
+import { currentTenantId, currentTenantUuid, query } from '../../db/pool.js';
+import * as smsBilling from '../platform/smsBilling.js';
 import { sendWhatsApp, sendWhatsAppTemplate } from './whatsapp.js';
 import { sendTelegram } from './telegram.js';
 import { sendEmail } from './email.js';
 
 type Channel = 'sms' | 'whatsapp' | 'telegram' | 'email';
+
+/**
+ * Decide whether THIS tenant's SMS is metered, and charge it up front.
+ *
+ *   - platform tenant / no resolved tenant  → never metered (HubNet's own SMS).
+ *   - tenant WITH its own sender ID          → not metered (they send as their
+ *                                              own brand / arrangement).
+ *   - tenant WITHOUT a sender ID             → uses HubNet's shared sender and is
+ *                                              charged 0.40 KES per 160-char
+ *                                              segment from its prepaid balance.
+ *
+ * Returns { send } — false means the send must be skipped (insufficient balance).
+ * If `charged > 0`, the caller must refund() on dispatch failure.
+ */
+async function meterSms(message: string): Promise<{ send: boolean; tenantId: string | null; charged: number }> {
+  const slug = currentTenantId();
+  const uuid = currentTenantUuid();
+  if (slug === 'default' || !uuid) return { send: true, tenantId: null, charged: 0 };
+
+  // Has this tenant configured its own sender ID? Then it isn't on our meter.
+  const own = await query<{ n: number }>(
+    `SELECT COUNT(*)::int AS n FROM settings
+      WHERE key IN ('sms.bytwave.sender_id', 'sms.at.sender_id') AND COALESCE(value, '') <> ''`
+  );
+  if ((own.rows[0]?.n ?? 0) > 0) return { send: true, tenantId: null, charged: 0 };
+
+  const cost = smsBilling.costFor(message);
+  const r = await smsBilling.charge(uuid, cost, `${smsBilling.segmentsFor(message)} seg`);
+  if (!r.ok) {
+    console.warn(`[sms-billing] BLOCKED for tenant ${slug}: balance ${r.balance}c < ${cost}c`);
+    return { send: false, tenantId: uuid, charged: 0 };
+  }
+  return { send: true, tenantId: uuid, charged: cost };
+}
 
 /**
  * For the email channel, a message may carry its subject as the first line
@@ -69,13 +105,23 @@ export async function notify(
       ? smsCfg.bytwave.apiKey
       : smsCfg.africastalking.apiKey;
     if (apiKey) {
+      // Per-tenant metering: charge the shared-sender cost up front (skip the
+      // send if the tenant is out of credit), refund if dispatch then fails.
+      const meter = await meterSms(message);
+      if (!meter.send) return;
       try {
         const r = smsCfg.provider === 'bytwave'
           ? await sendBytwaveSms(to, message)
           : await sendSms(to, message);
         console.log(`[notify:sms->${smsCfg.provider}] ${to}: ${r.ok ? r.detail : 'FAILED ' + r.detail}`);
+        if (!r.ok && meter.charged > 0 && meter.tenantId) {
+          await smsBilling.refund(meter.tenantId, meter.charged, 'send failed');
+        }
       } catch (err) {
         console.error(`[notify:sms->${smsCfg.provider}] failed for ${to}:`, err);
+        if (meter.charged > 0 && meter.tenantId) {
+          await smsBilling.refund(meter.tenantId, meter.charged, 'send error').catch(() => {});
+        }
       }
       return;
     }

@@ -12,15 +12,15 @@ import { resolveTenantByHost, poolForTenant } from '../../domains/tenants/servic
  * back to the default pool so existing single-tenant traffic never breaks.
  */
 export async function tenantMiddleware(req: Request, _res: Response, next: NextFunction): Promise<void> {
-  let ctx: { tenantId: string; pool: typeof pool; status?: string } = { tenantId: 'default', pool };
+  let ctx: { tenantId: string; pool: typeof pool; status?: string; uuid?: string } = { tenantId: 'default', pool };
   try {
     const t = await resolveTenantByHost(req.hostname);
     // A resolved tenant ALWAYS binds its own pool (active or suspended) so its
     // data can never leak onto the default tenant. Only unknown hosts, or
     // tenants still provisioning/failed, fall back to the default pool. The
-    // status rides along so the suspension guard can block a suspended tenant.
+    // status + uuid ride along for the suspension guard and cross-DB SMS billing.
     if (t && (t.status === 'active' || t.status === 'suspended')) {
-      ctx = { tenantId: t.slug, pool: poolForTenant(t), status: t.status };
+      ctx = { tenantId: t.slug, pool: poolForTenant(t), status: t.status, uuid: t.id };
     }
   } catch {
     // Registry unreachable (e.g. control DB blip) — degrade to the default

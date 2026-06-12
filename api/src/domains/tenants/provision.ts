@@ -104,6 +104,13 @@ export async function provisionTenant(input: ProvisionInput): Promise<ProvisionR
     await addDomain(host, tenant.id, true);
     await setTenantStatus(tenant.id, 'active');
 
+    // Welcome SMS credit so OTP / notifications work out of the box on the
+    // shared sender before the operator tops them up.
+    if (config.control.sms.freeStarterCents > 0) {
+      const { credit } = await import('../platform/smsBilling.js');
+      await credit(tenant.id, config.control.sms.freeStarterCents, 'welcome').catch(() => {});
+    }
+
     return { tenant: { ...tenant, status: 'active' }, host, loginUrl: `https://${host}/login` };
   } catch (err) {
     await setTenantStatus(tenant.id, 'failed').catch(() => {});
