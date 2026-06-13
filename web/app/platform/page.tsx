@@ -54,6 +54,17 @@ export default function Platform() {
     finally { setBusy(null); }
   };
 
+  // STK-push the ISP to collect their platform fee for the current month.
+  const collect = async (id: string, name: string) => {
+    if (!window.confirm(`Send an M-Pesa STK push to ${name} to collect this month's platform fee?`)) return;
+    setBusy(id);
+    try {
+      const r = await api<{ amountKes: number; phone: string }>(`/platform/tenants/${id}/collect`, { method: 'POST', body: '{}' });
+      setToast({ ok: true, msg: `STK sent to ${r.phone} for KES ${r.amountKes}` });
+    } catch (e: any) { setToast({ ok: false, msg: e.message }); }
+    finally { setBusy(null); }
+  };
+
   // Open the tenant's own dashboard logged in as their admin (no password).
   const impersonate = async (id: string) => {
     setBusy(id);
@@ -153,6 +164,7 @@ export default function Platform() {
                     {t.slug === 'default' ? <span className="sub">platform</span> : (
                       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                         <button className="ghost" disabled={busy === t.id} onClick={() => impersonate(t.id)}>Impersonate</button>
+                        <button className="ghost" disabled={busy === t.id} onClick={() => collect(t.id, t.name)}>Collect fee</button>
                         <button className="ghost" disabled={busy === t.id} onClick={() => topUpSms(t.id, t.name)}>Top-up SMS</button>
                         <button className="ghost" disabled={busy === t.id} onClick={() => changeSub(t.id, t.slug)}>Subdomain</button>
                         {t.status === 'suspended'

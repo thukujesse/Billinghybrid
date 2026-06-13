@@ -15,6 +15,7 @@ import { AppError } from '../../lib/errors.js';
 import * as tenants from '../../domains/tenants/service.js';
 import * as billing from '../../domains/platform/billing.js';
 import * as smsBilling from '../../domains/platform/smsBilling.js';
+import * as collection from '../../domains/platform/collection.js';
 import { impersonationToken } from '../../domains/auth/service.js';
 import { normalizeSlug } from '../../domains/tenants/provision.js';
 
@@ -148,6 +149,21 @@ export function registerPlatformRoutes(api: Router): void {
     if (!t) throw new AppError(404, 'not_found', 'tenant not found');
     const balance = await smsBilling.credit(t.id, Math.round(body.kes * 100), 'topup');
     res.json({ ok: true, balance_cents: balance });
+  }));
+
+  // Collect a tenant's platform fee — STK-push their contact phone for the
+  // period's invoice (via the platform M-Pesa). Callback marks it paid + resumes.
+  api.post('/platform/tenants/:id/collect', ...gate, ah(async (req, res) => {
+    const body = parse(z.object({ period: z.string().regex(/^\d{4}-\d{2}$/).optional() }), req.body ?? {});
+    res.json(await collection.collect(req.params.id, body.period ?? currentPeriod()));
+  }));
+
+  // Daraja STK callback for platform collections — PUBLIC (Safaricom posts it),
+  // matched by checkout_request_id in the control DB. Always ack.
+  api.post('/platform/mpesa/callback', ah(async (req, res) => {
+    try { await collection.handlePlatformCallback(req.body); }
+    catch (e) { console.error('[platform-collect] callback error', e); }
+    res.json({ ResultCode: 0, ResultDesc: 'Accepted' });
   }));
 
   // Mark an invoice paid / void.
