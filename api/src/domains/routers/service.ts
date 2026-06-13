@@ -64,6 +64,73 @@ export async function getRouter(id: string): Promise<Router> {
   return r.rows[0];
 }
 
+// --------------------- Per-router detail (device page) ---------------------
+
+/** The RADIUS server the router dials over the tunnel = the WG server (.1). */
+function radiusServerIp(): string {
+  const base = config.wireguard.network.split('/')[0]; // e.g. 10.66.0.0
+  return base.replace(/\.\d+$/, '.1');
+}
+
+/** Full system info incl. secrets (admin only) — drives the device System
+ *  Information + RADIUS Configuration cards. */
+export async function getRouterSystem(id: string): Promise<{
+  system: Record<string, unknown>;
+  radius: Record<string, unknown>;
+}> {
+  const r = await query<any>(
+    `SELECT id, name, host, api_port, ssh_port, username, password, radius_secret,
+            serial_number, status, wg_tunnel_ip, wg_public_key, last_handshake_at, created_at,
+            CASE WHEN last_handshake_at IS NULL THEN 'pending'
+                 WHEN last_handshake_at > now() - interval '3 minutes' THEN 'connected'
+                 ELSE 'disconnected' END AS vpn_status
+       FROM routers WHERE id = $1`,
+    [id]
+  );
+  const row = r.rows[0];
+  if (!row) throw notFound('router');
+  return {
+    system: {
+      name: row.name, host: row.host, management_ip: row.wg_tunnel_ip,
+      username: row.username, password: row.password,
+      api_port: row.api_port, ssh_port: row.ssh_port,
+      serial_number: row.serial_number, status: row.status,
+      vpn_status: row.vpn_status, last_handshake_at: row.last_handshake_at,
+      wg_public_key: row.wg_public_key, created_at: row.created_at,
+    },
+    radius: {
+      server: radiusServerIp(), nas_ip: row.wg_tunnel_ip,
+      secret: row.radius_secret, auth_port: 1812, acct_port: 1813,
+    },
+  };
+}
+
+/** Online + recent RADIUS sessions on this router's NAS (by tunnel IP). */
+export async function getRouterUsers(id: string): Promise<{ online: any[]; recent: any[] }> {
+  const router = await getRouter(id);
+  if (!router.wg_tunnel_ip) return { online: [], recent: [] };
+  const cols = `username, callingstationid AS mac, framedipaddress AS ip,
+                acctstarttime, acctsessiontime, acctinputoctets, acctoutputoctets`;
+  const [online, recent] = await Promise.all([
+    query<any>(`SELECT ${cols} FROM radacct WHERE nasipaddress=$1 AND acctstoptime IS NULL ORDER BY acctstarttime DESC LIMIT 200`, [router.wg_tunnel_ip]),
+    query<any>(`SELECT ${cols}, acctstoptime FROM radacct WHERE nasipaddress=$1 AND acctstoptime IS NOT NULL ORDER BY acctstoptime DESC LIMIT 50`, [router.wg_tunnel_ip]),
+  ]);
+  return { online: online.rows, recent: recent.rows };
+}
+
+/** Bandwidth + session-count history for the Reports tab. */
+export async function getRouterMetrics(id: string, hours = 24): Promise<any[]> {
+  const r = await query<any>(
+    `SELECT sampled_at, total_bytes_in, total_bytes_out, active_sessions,
+            pppoe_sessions, hotspot_sessions, wg_up
+       FROM router_metrics
+      WHERE router_id=$1 AND sampled_at > now() - ($2 || ' hours')::interval
+      ORDER BY sampled_at`,
+    [id, hours]
+  );
+  return r.rows;
+}
+
 /**
  * Poll wg-manager and update last_handshake_at for any peer that has a fresher
  * handshake than what's in the DB. Quiet on errors — heartbeat must not crash

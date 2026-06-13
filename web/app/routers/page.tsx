@@ -361,7 +361,7 @@ export default function Routers() {
         <tbody>
           {list.map((r) => (
             <tr key={r.id}>
-              <td>{r.name}</td>
+              <td><a href={`/routers/${r.id}`} style={{ fontWeight: 600 }}>{r.name}</a></td>
               <td>{r.site ?? '—'}</td>
               <td><code>{r.wg_tunnel_ip ?? '—'}</code></td>
               <td><VpnPill status={r.vpn_status} /></td>

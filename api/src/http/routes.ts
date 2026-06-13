@@ -527,6 +527,14 @@ api.post('/kyc/:id/review', requireAuth('admin', 'staff'), ah(async (req, res) =
 
 // ----------------------------- Routers ------------------------------
 api.get('/routers', ah(async (_req, res) => res.json(await routers.listRouters())));
+// Per-router device detail (System Information + RADIUS exposes secrets → admin).
+api.get('/routers/:id', requireAuth('admin', 'staff'), ah(async (req, res) => res.json(await routers.getRouter(req.params.id))));
+api.get('/routers/:id/system', requireAuth('admin'), ah(async (req, res) => res.json(await routers.getRouterSystem(req.params.id))));
+api.get('/routers/:id/users', requireAuth('admin', 'staff'), ah(async (req, res) => res.json(await routers.getRouterUsers(req.params.id))));
+api.get('/routers/:id/metrics', requireAuth('admin', 'staff'), ah(async (req, res) => {
+  const hours = Math.min(168, Math.max(1, Number(req.query.hours) || 24));
+  res.json(await routers.getRouterMetrics(req.params.id, hours));
+}));
 api.post('/routers', requireAuth('admin', 'staff'), ah(async (req, res) => {
   const body = parse(z.object({
     name: z.string().min(1),
