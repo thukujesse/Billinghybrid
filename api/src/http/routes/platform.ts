@@ -16,6 +16,7 @@ import * as tenants from '../../domains/tenants/service.js';
 import * as billing from '../../domains/platform/billing.js';
 import * as smsBilling from '../../domains/platform/smsBilling.js';
 import * as collection from '../../domains/platform/collection.js';
+import { findDunningTargets } from '../../domains/platform/dunningWorker.js';
 import { impersonationToken } from '../../domains/auth/service.js';
 import { normalizeSlug } from '../../domains/tenants/provision.js';
 
@@ -156,6 +157,19 @@ export function registerPlatformRoutes(api: Router): void {
   api.post('/platform/tenants/:id/collect', ...gate, ah(async (req, res) => {
     const body = parse(z.object({ period: z.string().regex(/^\d{4}-\d{2}$/).optional() }), req.body ?? {});
     res.json(await collection.collect(req.params.id, body.period ?? currentPeriod()));
+  }));
+
+  // Preview who dunning would collect-from / suspend right now (side-effect-free).
+  // Lets the operator see the overdue list before turning auto-dunning on.
+  api.get('/platform/dunning/preview', ...gate, ah(async (_req, res) => {
+    const targets = await findDunningTargets();
+    res.json({
+      enabled: config.control.dunning.enabled,
+      grace_days: config.control.dunning.graceDays,
+      max_attempts: config.control.dunning.maxAttempts,
+      to_collect: targets.toCollect,
+      to_suspend: targets.toSuspend,
+    });
   }));
 
   // Daraja STK callback for platform collections — PUBLIC (Safaricom posts it),

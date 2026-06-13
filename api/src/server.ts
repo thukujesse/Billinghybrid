@@ -7,6 +7,7 @@ import { startExpireWorker, expireWorkerEnabled, expireWorkerIntervalMs } from '
 import { startAlertWorker, alertWorkerEnabled, alertWorkerIntervalMs } from './domains/alerts/worker.js';
 import { startMetricsWorker, metricsWorkerEnabled, metricsWorkerIntervalMs } from './domains/network/worker.js';
 import { startBillingWorker, billingWorkerEnabled, billingWorkerIntervalMs } from './domains/platform/worker.js';
+import { startPlatformDunning, dunningEnabled, dunningIntervalMs } from './domains/platform/dunningWorker.js';
 
 const app = await createApp();
 
@@ -50,6 +51,12 @@ const stopMetricsWorker = metricsWorkerEnabled
 // instance; harmless elsewhere since it only writes the control DB.
 const stopBillingWorker = billingWorkerEnabled
   ? startBillingWorker(billingWorkerIntervalMs)
+  : async () => {};
+
+// Platform dunning — auto-collect overdue platform invoices + auto-suspend after
+// max attempts. OFF by default (PLATFORM_DUNNING=true to enable); moves real money.
+const stopDunningWorker = dunningEnabled
+  ? startPlatformDunning(dunningIntervalMs)
   : async () => {};
 
 const server = app.listen(config.port, () => {
@@ -100,6 +107,11 @@ async function shutdown(signal: string) {
       await stopBillingWorker(); // let an in-flight billing close finish
     } catch (e) {
       console.error('[shutdown] billing worker stop failed:', e);
+    }
+    try {
+      await stopDunningWorker(); // let an in-flight dunning run finish
+    } catch (e) {
+      console.error('[shutdown] dunning worker stop failed:', e);
     }
     try {
       await pool.end();

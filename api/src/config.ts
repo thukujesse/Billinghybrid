@@ -71,6 +71,16 @@ export const config = {
       // Welcome credit seeded on tenant provisioning so SMS works out of the box.
       freeStarterCents: num('PLATFORM_SMS_FREE_CENTS', 1000),
     },
+    // Hands-off collection of overdue platform invoices. DEFAULT OFF — it
+    // STK-pushes real ISPs, so the operator opts in (PLATFORM_DUNNING=true)
+    // once they're ready. Past grace days: STK once per run up to maxAttempts,
+    // then auto-suspend the tenant.
+    dunning: {
+      enabled: (process.env.PLATFORM_DUNNING ?? 'false') === 'true',
+      intervalHours: num('PLATFORM_DUNNING_INTERVAL_HOURS', 24),
+      graceDays: num('PLATFORM_DUNNING_GRACE_DAYS', 5),
+      maxAttempts: num('PLATFORM_DUNNING_MAX_ATTEMPTS', 3),
+    },
   },
   auth: {
     // When false, the API runs open (demo mode) and requireAuth injects a
