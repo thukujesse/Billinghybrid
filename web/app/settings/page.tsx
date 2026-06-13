@@ -131,6 +131,9 @@ export default function SettingsPage() {
   const [kopoForm, setKopoForm] = useState({ env: 'sandbox' as 'sandbox' | 'live', clientId: '', clientSecret: '', tillNumber: '', apiKey: '' });
   const [kopoSaving, setKopoSaving] = useState(false);
 
+  // The single shared HubNet callback/IPN URLs (incl. token) to register at the bank/Safaricom.
+  const [sharedUrls, setSharedUrls] = useState<{ confirmationUrl?: string; jengaUrl?: string }>({});
+
   // Hotspot template branding (logo, ISP name, tagline, brand color).
   // Drives the captive portal at billing.hubnetwifi.co.ke/hotspot.
   const [brand, setBrand] = useState<HotspotBranding | null>(null);
@@ -321,6 +324,7 @@ export default function SettingsPage() {
 
   useEffect(() => {
     load(); loadBrand(); loadSms(); loadIntasend(); loadKopo();
+    api<{ confirmationUrl?: string; jengaUrl?: string }>('/payments/shared-callback-info').then(setSharedUrls).catch(() => {/* before deploy */});
     if (typeof window !== 'undefined' && window.location.hash === '#sms') setTab('sms');
     api<HotspotPlanLite[]>('/hotspot/plans').then(setPreviewPlans).catch(() => {/* preview falls back to samples */});
   }, []);
@@ -613,8 +617,8 @@ export default function SettingsPage() {
             </p>
             <code style={{ display: 'block', padding: '8px 10px', background: 'var(--surface,#f4f6f9)', borderRadius: 6, fontSize: 12, wordBreak: 'break-all' }}>
               {form.collectionMethod === 'bank'
-                ? `${(typeof window !== 'undefined' ? window.location.origin : '')}/api/payments/jenga/ipn`
-                : 'https://pay.hubnetwifi.co.ke/api/payments/shared/confirmation'}
+                ? (sharedUrls.jengaUrl ?? 'https://pay.hubnetwifi.co.ke/api/payments/shared/jenga/ipn')
+                : (sharedUrls.confirmationUrl ?? 'https://pay.hubnetwifi.co.ke/api/payments/shared/confirmation')}
             </code>
             {form.collectionMethod !== 'bank' && (
               <>

@@ -772,12 +772,34 @@ api.post('/payments/c2b/confirmation', ah(async (req, res) => {
 api.post('/payments/c2b/validation', ah(async (_req, res) => {
   res.json({ ResultCode: 0, ResultDesc: 'Accepted' });
 }));
+// Defence-in-depth on the shared endpoints: optional shared-secret token (set on
+// the registered URL) + optional Safaricom source-IP allowlist. Returns true if
+// the caller is trusted (or no checks configured). The reference-match + dedup +
+// amount guards in the settlement engine are the always-on backstop.
+function sharedCallbackTrusted(req: import('express').Request): boolean {
+  const tok = config.control.sharedCallbackToken;
+  if (tok && req.query.token !== tok) {
+    console.warn('[shared] rejected: bad/missing token');
+    return false;
+  }
+  const allow = config.control.safaricomIps;
+  if (allow.length) {
+    const ip = (req.ip ?? '').replace('::ffff:', '');
+    if (!allow.some((a) => ip === a || ip.startsWith(a))) {
+      console.warn(`[shared] rejected: source IP ${ip} not in allowlist`);
+      return false;
+    }
+  }
+  return true;
+}
+
 // SHARED callback — ONE HubNet URL for all no-API tenants. Money already went to
 // the ISP's own Paybill/Till; here we read the receiving BusinessShortCode,
 // resolve which tenant owns it, and settle the payment in THAT tenant's database
 // (reference match -> grant). Tenant is picked by shortcode, not by Host.
 api.post('/payments/shared/confirmation', ah(async (req, res) => {
   try {
+    if (!sharedCallbackTrusted(req)) { res.json({ ResultCode: 0, ResultDesc: 'Accepted' }); return; }
     const p = req.body ?? {};
     const shortcode = String(p.BusinessShortCode ?? p.BusinessShortcode ?? p.shortCode ?? p.ShortCode ?? '').trim();
     const t = await tenantPaybill.resolvePaybill(shortcode);
@@ -794,6 +816,37 @@ api.post('/payments/shared/confirmation', ah(async (req, res) => {
 }));
 api.post('/payments/shared/validation', ah(async (_req, res) => {
   res.json({ ResultCode: 0, ResultDesc: 'Accepted' });
+}));
+// SHARED bank/Jenga IPN — ONE HubNet URL for all bank-paybill ISPs. Resolve the
+// tenant by the merchant account/paybill that received the money, then settle in
+// that tenant's DB. (Per-host /payments/jenga/ipn still works for single-tenant.)
+api.post('/payments/shared/jenga/ipn', ah(async (req, res) => {
+  try {
+    if (!sharedCallbackTrusted(req)) { res.json({ status: 'success' }); return; }
+    const p = req.body ?? {};
+    const merchant = jenga.resolveJengaMerchant(p);
+    const t = await tenantPaybill.resolvePaybill(merchant);
+    if (t && t.status === 'active') {
+      const tp = tenantPaybill.poolForResolved(t);
+      await runWithTenant({ tenantId: t.slug, pool: tp, uuid: t.id, status: t.status }, () => jenga.handleJengaIpn(p));
+    } else {
+      console.warn(`[shared-jenga] no active tenant for merchant "${merchant}" — raw: ${JSON.stringify(p)}`);
+    }
+  } catch (e) {
+    console.error('[shared-jenga] error', e);
+  }
+  res.json({ status: 'success' }); // always 200 — no retry-storm
+}));
+// Authed: the shared callback/IPN URLs (with token) for an ISP to register at
+// their bank/Safaricom. Same for every tenant — routing is by paybill number.
+api.get('/payments/shared-callback-info', requireAuth('admin', 'staff'), ah(async (_req, res) => {
+  const q = config.control.sharedCallbackToken ? `?token=${encodeURIComponent(config.control.sharedCallbackToken)}` : '';
+  const base = `https://${config.control.sharedPayHost}/api/payments/shared`;
+  res.json({
+    confirmationUrl: `${base}/confirmation${q}`,
+    validationUrl: `${base}/validation${q}`,
+    jengaUrl: `${base}/jenga/ipn${q}`,
+  });
 }));
 // Create a pending C2B purchase (no STK) + return Pay-Bill instructions; the
 // portal shows these and polls /hotspot/pay/:id until the confirmation settles it.

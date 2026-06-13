@@ -43,6 +43,17 @@ export const config = {
     // Which tenant slug is the PLATFORM operator (HubNet) — only this tenant's
     // admins can reach the /platform console + tenant billing.
     platformTenant: process.env.PLATFORM_TENANT_SLUG ?? 'default',
+    // The single shared callback host every no-API ISP points their paybill at;
+    // HubNet resolves the tenant from the receiving shortcode in the payload.
+    sharedPayHost: process.env.SHARED_PAY_HOST ?? 'pay.hubnetwifi.co.ke',
+    // Optional shared-secret appended to the registered callback URL (?token=)
+    // and checked on inbound posts — defence-in-depth on the shared endpoint.
+    sharedCallbackToken: process.env.SHARED_CALLBACK_TOKEN ?? '',
+    // Optional Safaricom source-IP allowlist (comma-separated). When set, the
+    // shared callback ignores posts from any other IP. Empty = accept all
+    // (sandbox/testing). Prod C2B IPs are the 196.201.21x.x range.
+    safaricomIps: (process.env.SAFARICOM_IPS ?? '')
+      .split(',').map((s) => s.trim()).filter(Boolean),
     // How HubNet bills each ISP for using the platform (hybrid model):
     //  - KES 25/month per active fixed-line subscriber (pppoe/static/ftth)
     //  - 3% of the tenant's hotspot revenue

@@ -134,14 +134,18 @@ export async function registerC2bUrls(): Promise<unknown> {
   });
   if (!tokRes.ok) throw new Error(`Daraja auth failed (${tokRes.status})`);
   const tok = (await tokRes.json() as { access_token: string }).access_token;
+  // Register the SHARED HubNet callback (routed by shortcode), not a per-host
+  // one — so every ISP points at the same URL and we match by their paybill.
+  const q = config.control.sharedCallbackToken ? `?token=${encodeURIComponent(config.control.sharedCallbackToken)}` : '';
+  const sharedBase = `https://${config.control.sharedPayHost}/api/payments/shared`;
   const res = await fetch(`${base}/mpesa/c2b/v1/registerurl`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       ShortCode: mp.shortcode,
       ResponseType: 'Completed', // auto-complete if our validation URL is ever unreachable
-      ConfirmationURL: `${config.publicApiUrl}/api/payments/c2b/confirmation`,
-      ValidationURL: `${config.publicApiUrl}/api/payments/c2b/validation`,
+      ConfirmationURL: `${sharedBase}/confirmation${q}`,
+      ValidationURL: `${sharedBase}/validation${q}`,
     }),
   });
   return await res.json();

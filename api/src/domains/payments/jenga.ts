@@ -20,6 +20,22 @@ function pick(...vals: Array<unknown>): string {
   return '';
 }
 
+/**
+ * The MERCHANT account/paybill that RECEIVED the money — the routing key for the
+ * shared-callback model (distinct from billNumber, which is the per-transaction
+ * HUB reference). Jenga field names vary, so try the common destination fields.
+ * The first real Equity callback locks the exact one (raw payload is logged).
+ */
+export function resolveJengaMerchant(payload: any): string {
+  const t = payload?.transaction ?? payload?.Transaction ?? {};
+  const m = payload?.merchant ?? payload?.Merchant ?? {};
+  return pick(
+    t.tillNumber, t.till, t.paybill, t.payBill, t.destinationAccount, t.destination,
+    t.merchantCode, t.shortCode, m.tillNumber, m.accountNumber, m.code,
+    payload?.tillNumber, payload?.paybill, payload?.merchantCode
+  );
+}
+
 export async function handleJengaIpn(payload: any): Promise<{ matched: boolean; note: string }> {
   // Always log raw — this is how we lock the exact field mapping on the first
   // real Jenga callback. Safe: it's an inbound bank notification, not a secret.
