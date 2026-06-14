@@ -159,6 +159,20 @@ export function registerPlatformRoutes(api: Router): void {
     res.json(await collection.collect(req.params.id, body.period ?? currentPeriod()));
   }));
 
+  // Operator billing console: all invoices, collection history, money stats.
+  api.get('/platform/invoices', ...gate, ah(async (req, res) => {
+    const status = typeof req.query.status === 'string' ? req.query.status : undefined;
+    const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 100));
+    res.json(await billing.listAllInvoices(status, limit));
+  }));
+  api.get('/platform/collections', ...gate, ah(async (req, res) => {
+    const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 100));
+    res.json(await collection.listCollections(limit));
+  }));
+  api.get('/platform/billing-stats', ...gate, ah(async (_req, res) => {
+    res.json({ ...(await billing.billingStats()), currency: config.control.billing.currency });
+  }));
+
   // Preview who dunning would collect-from / suspend right now (side-effect-free).
   // Lets the operator see the overdue list before turning auto-dunning on.
   api.get('/platform/dunning/preview', ...gate, ah(async (_req, res) => {

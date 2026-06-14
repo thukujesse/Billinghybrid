@@ -128,6 +128,42 @@ export async function listInvoices(tenantId: string): Promise<Invoice[]> {
   return r.rows;
 }
 
+export interface InvoiceRow extends Invoice { slug: string; tenant_name: string }
+
+/** All invoices across every tenant (operator billing view), newest first. */
+export async function listAllInvoices(status: string | undefined, limit: number): Promise<InvoiceRow[]> {
+  const where = status ? `WHERE i.status = $2` : '';
+  const params: unknown[] = status ? [limit, status] : [limit];
+  const r = await pool.query<InvoiceRow>(
+    `SELECT i.id, i.tenant_id, i.period, i.fixed_active, i.fixed_charge_cents,
+            i.hotspot_revenue_cents, i.hotspot_charge_cents, i.total_cents, i.currency,
+            i.status, i.issued_at, i.paid_at, t.slug, t.name AS tenant_name
+       FROM tenant_invoice i JOIN tenant t ON t.id = i.tenant_id
+       ${where}
+      ORDER BY i.issued_at DESC LIMIT $1`,
+    params
+  );
+  return r.rows;
+}
+
+/** Platform-wide invoice money: invoiced / collected / outstanding (all periods). */
+export async function billingStats(): Promise<{
+  invoiced_cents: number; collected_cents: number; outstanding_cents: number; open_invoices: number;
+}> {
+  const r = await pool.query<{ invoiced: number; collected: number; outstanding: number; open: number }>(
+    `SELECT COALESCE(SUM(total_cents), 0)::bigint AS invoiced,
+            COALESCE(SUM(total_cents) FILTER (WHERE status='paid'), 0)::bigint AS collected,
+            COALESCE(SUM(total_cents) FILTER (WHERE status='issued'), 0)::bigint AS outstanding,
+            COUNT(*) FILTER (WHERE status='issued')::int AS open
+       FROM tenant_invoice`
+  );
+  const x = r.rows[0];
+  return {
+    invoiced_cents: Number(x.invoiced), collected_cents: Number(x.collected),
+    outstanding_cents: Number(x.outstanding), open_invoices: x.open,
+  };
+}
+
 export async function setInvoiceStatus(id: string, status: 'issued' | 'paid' | 'void'): Promise<void> {
   await pool.query(
     `UPDATE tenant_invoice SET status = $2, paid_at = CASE WHEN $2 = 'paid' THEN now() ELSE paid_at END WHERE id = $1`,

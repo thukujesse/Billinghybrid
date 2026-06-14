@@ -112,7 +112,10 @@ export default function Platform() {
 
   return (
     <div className="container">
-      <h1>Platform · Tenants &amp; billing</h1>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+        <h1 style={{ margin: 0 }}>Platform · Tenants</h1>
+        <a href="/platform/billing" style={{ marginLeft: 'auto', fontSize: 13, fontWeight: 600 }}>Billing &amp; Collections →</a>
+      </div>
       <p className="sub">Every ISP on the platform, with this month's accrued charge ({summary?.period}). Rates: KES {(summary?.rates.fixed_per_sub_cents ?? 0) / 100}/active fixed-line sub + {summary?.rates.hotspot_share_pct}% of hotspot revenue.</p>
       {toast && <div className={`toast ${toast.ok ? 'ok' : 'err'}`}>{toast.msg}</div>}
 

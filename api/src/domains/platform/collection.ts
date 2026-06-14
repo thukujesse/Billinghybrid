@@ -44,6 +44,24 @@ export async function collect(tenantId: string, period: string): Promise<Collect
   return { checkoutRequestId: r.checkoutRequestId, amountKes, phone: t.contact_phone };
 }
 
+export interface CollectionRow {
+  id: string; period: string | null; amount_cents: number; status: string;
+  mpesa_receipt: string | null; phone: string; created_at: string;
+  slug: string; tenant_name: string;
+}
+
+/** Recent platform collections across all tenants (operator history view). */
+export async function listCollections(limit: number): Promise<CollectionRow[]> {
+  const r = await pool.query<CollectionRow>(
+    `SELECT pc.id, pc.period, pc.amount_cents, pc.status, pc.mpesa_receipt, pc.phone, pc.created_at,
+            t.slug, t.name AS tenant_name
+       FROM platform_collection pc JOIN tenant t ON t.id = pc.tenant_id
+      ORDER BY pc.created_at DESC LIMIT $1`,
+    [limit]
+  );
+  return r.rows;
+}
+
 /** Daraja STK callback for a platform collection — mark paid + auto-resume. */
 export async function handlePlatformCallback(body: any): Promise<void> {
   const cb = parseCallback(body);

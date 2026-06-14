@@ -50,7 +50,8 @@ const GROUPS: Group[] = [
   },
   {
     key: 'platform', label: 'Platform', ico: '🏢', items: [
-      { href: '/platform', label: 'Tenants & billing' },
+      { href: '/platform', label: 'Tenants' },
+      { href: '/platform/billing', label: 'Billing & collections' },
     ],
   },
 ];
