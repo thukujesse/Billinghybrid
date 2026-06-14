@@ -469,22 +469,34 @@ function renderRouterOsScript(p: {
 /ip service set api address=${p.tunnelNetwork}
 /ip service set api-ssl address=${p.tunnelNetwork}
 
-# ===== Resilience: WG watchdog =====
-# If wg-jtm hasn't handshaken in >90s, restart it. Runs every minute. Without
-# this, a transient tunnel drop becomes a permanent outage requiring on-site.
+# ===== Resilience: WG watchdog (tiered self-heal) =====
+# Heals wg-jtm on a STALE handshake (worked then went silent >2m30s) as well as
+# "never" — a transient tunnel drop is the common real outage, and without stale
+# detection it becomes a permanent one needing an on-site visit. Runs every
+# minute. Tier 1: cycle the interface. Tier 2: if still dead, ping the server to
+# nudge NAT/conntrack back open + escalate the log for the dashboard alert.
 :if ([:len [/system script find name=jtm-wg-watchdog]] > 0) do={
   /system script remove [find name=jtm-wg-watchdog]
 }
 /system script add name=jtm-wg-watchdog policy=read,write,policy,test source={
   :local peers [/interface/wireguard/peers find interface=wg-jtm]
-  :if ([:len \$peers] = 0) do={ :return "no-peer" }
+  :if ([:len \$peers] = 0) do={ :log error "jtm-watchdog: no wg-jtm peer"; :return "no-peer" }
   :local lh [/interface/wireguard/peers get [:pick \$peers 0] last-handshake]
-  :if (\$lh = "" || \$lh = "never") do={
-    :log warning "jtm-watchdog: wg-jtm never handshaken, cycling interface"
+  :local dead false
+  :if ([:typeof \$lh] = "nothing" || \$lh = "" || \$lh = "never") do={ :set dead true }
+  :if ([:typeof \$lh] = "time" && \$lh > 2m30s) do={ :set dead true }
+  :if (\$dead) do={
+    :log warning ("jtm-watchdog: wg-jtm stale/down (lh=" . \$lh . "), cycling")
     /interface/wireguard disable wg-jtm
     :delay 2s
     /interface/wireguard enable wg-jtm
-    :return "restarted"
+    :delay 6s
+    :local lh2 [/interface/wireguard/peers get [:pick \$peers 0] last-handshake]
+    :if ([:typeof \$lh2] != "time" || \$lh2 > 1m) do={
+      :do { /ping ${p.radiusServerIp} count=3 interval=1s } on-error={}
+      :log error "jtm-watchdog: wg-jtm still down after cycle"
+    }
+    :return "healed"
   }
 }
 :if ([:len [/system scheduler find name=jtm-wg-watchdog]] > 0) do={
@@ -508,6 +520,11 @@ function renderRouterOsScript(p: {
   }
   :if ([:len [/radius find comment=jtm-radius]] = 0) do={
     :log error "jtm-reconcile: RADIUS client missing — manual fix required"
+  }
+  # Re-arm the watchdog scheduler if it was removed (the script body survives).
+  :if ([:len [/system scheduler find name=jtm-wg-watchdog]] = 0 && [:len [/system script find name=jtm-wg-watchdog]] > 0) do={
+    /system scheduler add name=jtm-wg-watchdog interval=1m on-event="/system script run jtm-wg-watchdog"
+    :log warning "jtm-reconcile: re-armed wg-watchdog scheduler"
   }
 }
 :if ([:len [/system scheduler find name=jtm-reconcile]] > 0) do={
