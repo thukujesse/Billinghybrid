@@ -39,6 +39,7 @@ import { listPlugins } from '../plugins/index.js';
 import { handleUpdate } from '../domains/telegram/bot.js';
 import { config } from '../config.js';
 import * as radius from '../domains/radius/service.js';
+import * as coa from '../domains/radius/coa.js';
 import * as customers from '../domains/customers/service.js';
 import * as hotspot from '../domains/hotspot/service.js';
 import * as renew from '../domains/renew/service.js';
@@ -98,6 +99,19 @@ registerTenantRoutes(api);
 registerPlatformRoutes(api);
 registerWalletRoutes(api);
 registerReportsRoutes(api);
+
+// RADIUS CoA: instantly disconnect a live session (force re-auth) by username or
+// MAC — the "kick now" / instant re-rate primitive. Operator/admin only.
+api.post('/admin/radius/kick', requireAuth('admin', 'staff'), ah(async (req, res) => {
+  const body = parse(z.object({
+    username: z.string().optional(),
+    mac: z.string().optional(),
+  }).refine((b) => b.username || b.mac, 'username or mac required'), req.body);
+  const results = body.username
+    ? await coa.kickByUsername(body.username)
+    : await coa.kickByMac(body.mac!);
+  res.json({ sessions: results.length, acked: results.filter((r) => r.ok).length, results });
+}));
 
 // ------------------------------- Auth -------------------------------
 // Staff/admin password login.
