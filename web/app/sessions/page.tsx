@@ -19,11 +19,24 @@ export default function Sessions() {
   const [active, setActive] = useState<Session[]>([]);
   const [recent, setRecent] = useState<Session[]>([]);
   const [toast, setToast] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
 
   const load = () => {
     api<Session[]>('/radius/sessions/active').then(setActive)
       .catch((e) => setToast({ ok: false, msg: e.message }));
     api<Session[]>('/radius/sessions/recent').then(setRecent).catch(() => {});
+  };
+
+  // CoA: instantly disconnect a live session (forces re-auth).
+  const kick = async (s: Session) => {
+    if (!window.confirm(`Disconnect ${s.username}? They'll be dropped and must re-authenticate.`)) return;
+    setBusy(s.id);
+    try {
+      const r = await api<{ sessions: number; acked: number }>('/admin/radius/kick', { method: 'POST', body: JSON.stringify({ username: s.username }) });
+      setToast({ ok: r.acked > 0, msg: r.sessions ? `Disconnect sent — ${r.acked}/${r.sessions} acked` : 'No live session found' });
+      setTimeout(load, 1500);
+    } catch (e: any) { setToast({ ok: false, msg: e.message }); }
+    finally { setBusy(null); }
   };
 
   useEffect(() => {
@@ -68,6 +81,7 @@ export default function Sessions() {
             <th>Up</th>
             <th>Down</th>
             <th>Up</th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
@@ -80,10 +94,11 @@ export default function Sessions() {
               <td>{formatDuration(s.session_time)}</td>
               <td>{formatBytes(Number(s.bytes_in))}</td>
               <td>{formatBytes(Number(s.bytes_out))}</td>
+              <td><button className="ghost" disabled={busy === s.id} onClick={() => kick(s)}>{busy === s.id ? '…' : 'Disconnect'}</button></td>
             </tr>
           ))}
           {active.length === 0 && (
-            <tr><td colSpan={7} style={{ color: 'var(--muted)' }}>No active sessions</td></tr>
+            <tr><td colSpan={8} style={{ color: 'var(--muted)' }}>No active sessions</td></tr>
           )}
         </tbody>
       </table>

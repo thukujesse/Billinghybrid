@@ -6,6 +6,7 @@ import { stkPush, normalizeMsisdn, parseCallback } from '../payments/daraja.js';
 import { isMpesaSimulated } from '../settings/service.js';
 import { render as renderTpl } from '../messageTemplates/service.js';
 import { notify } from '../notifications/service.js';
+import { kickByMac } from '../radius/coa.js';
 
 export interface HotspotGrant {
   /** Username to pass to MikroTik hotspot login (typically = voucher code). */
@@ -522,6 +523,10 @@ export async function completePurchase(input: {
         [row.id, mac, validitySeconds, rateLimit, input.receipt ?? null]
       );
     });
+    // Off-portal instant activation: drop any live session for this MAC so it
+    // re-auths and immediately picks up the fresh grant. No-op if there's no
+    // live session (the on-portal flow logs in via the captive form). F&F.
+    kickByMac(mac).catch((e) => console.error('[coa] post-grant kick:', (e as Error).message));
   } else {
     // Fallback: purchase has no MAC (rare — captive portal didn't pass it,
     // or the customer paid via a non-captive path). Keep the radcheck path

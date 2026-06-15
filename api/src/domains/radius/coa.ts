@@ -59,10 +59,15 @@ async function nasSecret(nasIp: string): Promise<string | null> {
 interface LiveSession { nasipaddress: string; username: string; acctsessionid: string; callingstationid: string | null; framedipaddress: string | null }
 
 async function liveSessions(field: 'username' | 'callingstationid', value: string): Promise<LiveSession[]> {
+  // MAC (callingstationid) case/format varies by NAS, so match case-insensitively;
+  // username is exact.
+  const cond = field === 'callingstationid'
+    ? `replace(upper(callingstationid),'-',':') = replace(upper($1),'-',':')`
+    : `username = $1`;
   const r = await query<LiveSession>(
     `SELECT nasipaddress, username, acctsessionid, callingstationid, framedipaddress
        FROM radacct
-      WHERE ${field} = $1 AND acctstoptime IS NULL`,
+      WHERE ${cond} AND acctstoptime IS NULL`,
     [value]
   );
   return r.rows;
