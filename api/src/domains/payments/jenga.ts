@@ -21,17 +21,23 @@ function pick(...vals: Array<unknown>): string {
 }
 
 /**
- * The MERCHANT account/paybill that RECEIVED the money — the routing key for the
- * shared-callback model (distinct from billNumber, which is the per-transaction
- * HUB reference). Jenga field names vary, so try the common destination fields.
- * The first real Equity callback locks the exact one (raw payload is logged).
+ * The destination BANK ACCOUNT NUMBER that RECEIVED the money — the routing key
+ * for the shared-paybill model (Equity 247247 etc. is shared across ISPs, so the
+ * paybill itself can't identify the tenant; the credit account does). Distinct
+ * from billNumber (the per-transaction HUB reference). Prefer the account-number
+ * fields; fall back to till/paybill only as a last resort. Jenga field names vary
+ * per account/product, so try the common variants — raw payload is always logged,
+ * which locks the exact field on the first real Equity callback.
  */
 export function resolveJengaMerchant(payload: any): string {
   const t = payload?.transaction ?? payload?.Transaction ?? {};
   const m = payload?.merchant ?? payload?.Merchant ?? {};
   return pick(
-    t.tillNumber, t.till, t.paybill, t.payBill, t.destinationAccount, t.destination,
-    t.merchantCode, t.shortCode, m.tillNumber, m.accountNumber, m.code,
+    t.destinationAccount, t.creditAccount, t.toAccount, t.accountNumber, t.account, t.destination,
+    m.accountNumber, m.destinationAccount, m.account,
+    payload?.destinationAccount, payload?.accountNumber, payload?.account,
+    // last-resort fallbacks (a dedicated per-ISP paybill, not a shared one)
+    t.tillNumber, t.till, t.paybill, t.payBill, t.merchantCode, m.tillNumber, m.code,
     payload?.tillNumber, payload?.paybill, payload?.merchantCode
   );
 }

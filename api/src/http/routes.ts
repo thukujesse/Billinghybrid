@@ -727,17 +727,22 @@ api.put('/settings/mpesa', requireAuth('admin'), ah(async (req, res) => {
     shortcode: z.string().optional(),
     till: z.string().optional(),
     accountName: z.string().optional(),
+    accountNo: z.string().optional(),
     consumerKey: z.string().optional(),
     consumerSecret: z.string().optional(),
     passkey: z.string().optional(),
     collectionMethod: z.enum(['stk', 'paybill', 'till', 'bank', 'intasend', 'kopokopo']).optional(),
   }), req.body);
-  // For no-API methods, claim the paybill/till for shared-callback routing FIRST
-  // (rejects a number already owned by another ISP) before persisting settings.
+  // For no-API methods, claim the routing key for shared-callback routing FIRST
+  // (rejects a key already owned by another ISP) before persisting settings.
+  // paybill/till route on the shortcode/till; bank routes on the account NUMBER
+  // because banks share a paybill (e.g. every Equity ISP uses 247247).
   const uuid = currentTenantUuid();
-  const num = body.collectionMethod === 'till' ? body.till : body.shortcode;
-  if (uuid && num && (body.collectionMethod === 'paybill' || body.collectionMethod === 'till' || body.collectionMethod === 'bank')) {
-    await tenantPaybill.registerPaybill(num, uuid, body.collectionMethod);
+  if (uuid && body.collectionMethod === 'bank') {
+    await tenantPaybill.registerPaybill(body.shortcode ?? '', uuid, 'bank', body.accountNo);
+  } else if (uuid && (body.collectionMethod === 'paybill' || body.collectionMethod === 'till')) {
+    const num = body.collectionMethod === 'till' ? body.till : body.shortcode;
+    if (num) await tenantPaybill.registerPaybill(num, uuid, body.collectionMethod);
   }
   await settings.setMpesaConfig(body, (req.user as { username?: string } | undefined)?.username);
   res.json(await settings.getMpesaConfigPublic());
@@ -846,13 +851,15 @@ api.post('/payments/shared/jenga/ipn', ah(async (req, res) => {
   try {
     if (!sharedCallbackTrusted(req)) { res.json({ status: 'success' }); return; }
     const p = req.body ?? {};
+    // Banks share a paybill; the per-ISP routing key is the destination account
+    // number the bank's IPN echoes back.
     const merchant = jenga.resolveJengaMerchant(p);
-    const t = await tenantPaybill.resolvePaybill(merchant);
+    const t = await tenantPaybill.resolveBankAccount(merchant);
     if (t && t.status === 'active') {
       const tp = tenantPaybill.poolForResolved(t);
       await runWithTenant({ tenantId: t.slug, pool: tp, uuid: t.id, status: t.status }, () => jenga.handleJengaIpn(p));
     } else {
-      console.warn(`[shared-jenga] no active tenant for merchant "${merchant}" — raw: ${JSON.stringify(p)}`);
+      console.warn(`[shared-jenga] no active tenant for account "${merchant}" — raw: ${JSON.stringify(p)}`);
     }
   } catch (e) {
     console.error('[shared-jenga] error', e);

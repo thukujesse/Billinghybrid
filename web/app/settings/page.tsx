@@ -8,6 +8,7 @@ interface MpesaPublic {
   shortcode: string;
   till: string;
   accountName: string;
+  accountNo: string;
   consumerKeySet: boolean;
   consumerSecretSet: boolean;
   passkeySet: boolean;
@@ -109,6 +110,7 @@ export default function SettingsPage() {
     shortcode: '174379',
     till: '',
     accountName: '',
+    accountNo: '',
     consumerKey: '',
     consumerSecret: '',
     passkey: '',
@@ -149,7 +151,7 @@ export default function SettingsPage() {
     api<MpesaPublic>('/settings/mpesa')
       .then((m) => {
         setMpesa(m);
-        setForm((f) => ({ ...f, env: m.env, shortcode: m.shortcode, till: m.till, accountName: m.accountName, collectionMethod: m.collectionMethod }));
+        setForm((f) => ({ ...f, env: m.env, shortcode: m.shortcode, till: m.till, accountName: m.accountName, accountNo: m.accountNo ?? '', collectionMethod: m.collectionMethod }));
       })
       .catch((e: any) => setToast({ ok: false, msg: e.message }));
 
@@ -397,6 +399,7 @@ export default function SettingsPage() {
         shortcode: form.shortcode,
         till: form.till,
         accountName: form.accountName,
+        accountNo: form.accountNo,
         collectionMethod: form.collectionMethod,
       };
       // Only send secret fields if non-empty — empty means "leave as-is".
@@ -525,8 +528,11 @@ export default function SettingsPage() {
               </>
             ) : (
               <>
-                <label>{form.collectionMethod === 'bank' ? 'Bank Paybill' : 'Paybill / Shortcode'}</label>
-                <input value={form.shortcode} onChange={(e) => setForm({ ...form, shortcode: e.target.value })} placeholder="e.g. 174379" />
+                <label>{form.collectionMethod === 'bank' ? 'Bank Paybill (shared)' : 'Paybill / Shortcode'}</label>
+                <input value={form.shortcode} onChange={(e) => setForm({ ...form, shortcode: e.target.value })} placeholder={form.collectionMethod === 'bank' ? 'e.g. Equity 247247, KCB 522522' : 'e.g. 174379'} />
+                {form.collectionMethod === 'bank' && (
+                  <p className="sub" style={{ marginTop: 4, fontSize: 12 }}>Your bank&apos;s shared M-Pesa paybill — many ISPs use the same one; your account number below is what identifies you.</p>
+                )}
               </>
             )}
           </div>
@@ -534,6 +540,11 @@ export default function SettingsPage() {
 
         {form.collectionMethod === 'bank' && (
           <div className="row">
+            <div style={{ flex: 1 }}>
+              <label>Bank account number</label>
+              <input value={form.accountNo} onChange={(e) => setForm({ ...form, accountNo: e.target.value })} placeholder="Your bank account no. (customers type this as the M-Pesa account)" />
+              <p className="sub" style={{ marginTop: 4, fontSize: 12 }}>This is your unique routing key — the bank&apos;s IPN uses it to credit the right ISP. Required.</p>
+            </div>
             <div style={{ flex: 1 }}>
               <label>Bank account name</label>
               <input value={form.accountName} onChange={(e) => setForm({ ...form, accountName: e.target.value })} placeholder="Name on the bank account" />
@@ -611,9 +622,9 @@ export default function SettingsPage() {
           <div style={{ marginTop: 20, borderTop: '1px solid var(--border, #e2e8f0)', paddingTop: 16 }}>
             <h3 style={{ marginTop: 0, fontSize: 14 }}>Point your {form.collectionMethod === 'till' ? 'Till' : form.collectionMethod === 'bank' ? 'bank' : 'Paybill'} callback here</h3>
             <p className="sub" style={{ marginTop: 0 }}>
-              Money goes <strong>directly to your {form.collectionMethod === 'till' ? `Till ${form.till || ''}` : `Paybill ${form.shortcode || ''}`}</strong>. For HubNet to verify each
+              Money goes <strong>directly to your {form.collectionMethod === 'till' ? `Till ${form.till || ''}` : form.collectionMethod === 'bank' ? `bank account ${form.accountNo || ''}` : `Paybill ${form.shortcode || ''}`}</strong>. For HubNet to verify each
               payment and auto-connect the customer, point this {form.collectionMethod === 'bank' ? 'bank/Jenga IPN' : 'C2B callback'} URL at HubNet once — it&apos;s the
-              <strong> same URL for everyone</strong>; we match the payment to you by the {form.collectionMethod === 'till' ? 'Till' : 'Paybill'} number above:
+              <strong> same URL for everyone</strong>; we match the payment to you by the {form.collectionMethod === 'till' ? 'Till' : form.collectionMethod === 'bank' ? 'bank account number' : 'Paybill number'} above:
             </p>
             <code style={{ display: 'block', padding: '8px 10px', background: 'var(--surface,#f4f6f9)', borderRadius: 6, fontSize: 12, wordBreak: 'break-all' }}>
               {form.collectionMethod === 'bank'
@@ -631,7 +642,9 @@ export default function SettingsPage() {
               </>
             )}
             <p className="sub" style={{ marginTop: 10 }}>
-              Customers see a short reference (e.g. <strong>HUB123456</strong>) to enter as the M-Pesa <em>account number</em> when paying — that&apos;s how the payment is matched to them.
+              {form.collectionMethod === 'bank'
+                ? <>Customers pay <strong>Paybill {form.shortcode || '247247'}</strong> → account <strong>{form.accountNo || 'your bank account no.'}</strong>. HubNet matches each payment to the customer by their phone&nbsp;+ amount and auto-connects them.</>
+                : <>Customers see a short reference (e.g. <strong>HUB123456</strong>) to enter as the M-Pesa <em>account number</em> when paying — that&apos;s how the payment is matched to them.</>}
             </p>
           </div>
         )}

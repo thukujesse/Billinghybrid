@@ -59,11 +59,18 @@ export async function initC2bPurchase(input: {
      VALUES ($1,$2,$3,$4,$5,'pending',$6)`,
     [checkoutRequestId, plan.id, phone, input.mac ?? null, amountKes, input.userAgent ?? null]
   );
+  // For a shared BANK paybill (e.g. Equity 247247) the customer must type the
+  // ISP's real bank ACCOUNT NUMBER as the M-Pesa account — that's how the bank
+  // routes the money and how the IPN identifies the tenant. We then settle by
+  // payer phone + amount (the HUB reference can't be carried on a bank paybill).
+  // checkoutRequestId stays the internal poll key either way.
+  const isBank = mp.collectionMethod === 'bank';
+  const displayAccount = isBank && mp.accountNo ? mp.accountNo : checkoutRequestId;
   return {
     checkoutRequestId,
     amountKes,
-    payInstructions: { method: 'paybill', paybill: mp.shortcode, account: checkoutRequestId, amountKes },
-    customerMessage: `Lipa na M-Pesa → Pay Bill → ${mp.shortcode} → Account ${checkoutRequestId} → KES ${amountKes}`,
+    payInstructions: { method: 'paybill', paybill: mp.shortcode, account: displayAccount, amountKes },
+    customerMessage: `Lipa na M-Pesa → Pay Bill → ${mp.shortcode} → Account ${displayAccount} → KES ${amountKes}`,
   };
 }
 
