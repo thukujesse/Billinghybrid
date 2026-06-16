@@ -26,6 +26,7 @@ const LOGIN = (slug: string): string => `<!DOCTYPE html>
 <script>
 var p=new URLSearchParams({
   'tenant':'${slug}',
+  'nas':'$(server-address)',
   'link-login-only':'$(link-login-only)',
   'link-orig':'$(link-orig)',
   'link-orig-esc':'$(link-orig-esc)',
@@ -52,6 +53,7 @@ const STATUS = (slug: string): string => `<!DOCTYPE html>
 <script>
 var p=new URLSearchParams({
   'tenant':'${slug}',
+  'nas':'$(server-address)',
   'mode':'status',
   'mac':'$(mac)',
   'ip':'$(ip)',
@@ -78,6 +80,7 @@ const ERROR_PAGE = (slug: string): string => `<!DOCTYPE html>
 <script>
 var p=new URLSearchParams({
   'tenant':'${slug}',
+  'nas':'$(server-address)',
   'mode':'error',
   'link-login-only':'$(link-login-only)',
   'link-orig':'$(link-orig)',

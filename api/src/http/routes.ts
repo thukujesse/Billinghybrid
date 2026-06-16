@@ -20,6 +20,7 @@ import * as billing from '../domains/billing/service.js';
 import * as payments from '../domains/payments/service.js';
 import { parseCallback, stkPush } from '../domains/payments/daraja.js';
 import * as c2b from '../domains/payments/c2b.js';
+import * as collectionAccounts from '../domains/payments/collectionAccounts.js';
 import * as jenga from '../domains/payments/jenga.js';
 import * as intasend from '../domains/payments/intasend.js';
 import * as kopokopo from '../domains/payments/kopokopo.js';
@@ -774,6 +775,44 @@ api.post('/settings/mpesa/test', requireAuth('admin'), ah(async (req, res) => {
 api.post('/settings/mpesa/register-c2b', requireAuth('admin'), ah(async (_req, res) => {
   res.json(await c2b.registerC2bUrls());
 }));
+
+// ---------- Collection accounts (per-router no-API destinations) ----------
+// An ISP's paybill/till/bank destinations; each router can be pinned to one
+// (else the default collects). Creating/updating claims the destination in the
+// shared-callback registry so incoming confirmations route back to this tenant.
+const collectionAccountBody = z.object({
+  label: z.string().min(1).max(80),
+  method: z.enum(['paybill', 'till', 'bank']),
+  paybill: z.string().max(20).optional(),
+  till: z.string().max(20).optional(),
+  account_no: z.string().max(40).optional(),
+  account_name: z.string().max(120).optional(),
+  is_default: z.boolean().optional(),
+});
+api.get('/settings/collection-accounts', requireAuth('admin', 'staff'), ah(async (_req, res) => {
+  res.json(await collectionAccounts.listCollectionAccounts());
+}));
+api.post('/settings/collection-accounts', requireAuth('admin'), ah(async (req, res) => {
+  const body = parse(collectionAccountBody, req.body);
+  res.status(201).json(await collectionAccounts.createCollectionAccount(body));
+}));
+api.put('/settings/collection-accounts/:id', requireAuth('admin'), ah(async (req, res) => {
+  const body = parse(collectionAccountBody, req.body);
+  res.json(await collectionAccounts.updateCollectionAccount(req.params.id, body));
+}));
+api.post('/settings/collection-accounts/:id/default', requireAuth('admin'), ah(async (req, res) => {
+  res.json(await collectionAccounts.setDefaultCollectionAccount(req.params.id));
+}));
+api.delete('/settings/collection-accounts/:id', requireAuth('admin'), ah(async (req, res) => {
+  await collectionAccounts.deleteCollectionAccount(req.params.id);
+  res.status(204).end();
+}));
+// Assign (or clear) the collection account a router collects into.
+api.put('/routers/:id/collection-account', requireAuth('admin', 'staff'), ah(async (req, res) => {
+  const body = parse(z.object({ collection_account_id: z.string().uuid().nullable() }), req.body);
+  await collectionAccounts.setRouterCollectionAccount(req.params.id, body.collection_account_id);
+  res.json({ ok: true });
+}));
 // IntaSend aggregator settings (env + keys + webhook challenge).
 api.get('/settings/intasend', requireAuth('admin', 'staff'), ah(async (_req, res) => {
   res.json(await settings.getIntasendConfigPublic());
@@ -884,20 +923,40 @@ api.post('/hotspot/pay-c2b', ah(async (req, res) => {
     plan_id: z.string().uuid(),
     phone: z.string().min(7),
     mac: z.string().optional(),
+    nas: z.string().optional(),
+    slug: z.string().optional(),
   }), req.body);
   res.status(201).json(await c2b.initC2bPurchase({
     planId: body.plan_id, phone: body.phone, mac: body.mac,
+    nas: body.nas, slug: body.slug,
     userAgent: req.headers['user-agent'],
   }));
 }));
-// Public: tells the captive portal which payment flow to run (STK vs C2B paybill).
-api.get('/hotspot/pay-config', ah(async (_req, res) => {
+// Public: tells the captive portal which payment flow to run (STK vs C2B paybill
+// vs till vs bank). When the customer's router (by NAS address or brand slug)
+// has its own collection account — or the tenant has a default one — that
+// no-API destination wins over the global M-Pesa config.
+api.get('/hotspot/pay-config', ah(async (req, res) => {
   const m = await settings.getMpesaConfigPublic();
+  const nas = typeof req.query.nas === 'string' ? req.query.nas : undefined;
+  const slug = typeof req.query.slug === 'string' ? req.query.slug : undefined;
+  const { account } = await collectionAccounts.resolveForRouter({ nas, slug });
+  if (account) {
+    res.json({
+      collectionMethod: account.method,
+      paybill: account.method === 'till' ? '' : account.paybill,
+      till: account.till,
+      accountName: account.account_name,
+      accountNo: account.account_no,
+    });
+    return;
+  }
   res.json({
     collectionMethod: m.collectionMethod,
     paybill: m.shortcode,
     till: m.till,
     accountName: m.accountName,
+    accountNo: m.accountNo,
   });
 }));
 // Jenga / Equity (JengaHQ) IPN webhook for bank-paybill collections. Maps the

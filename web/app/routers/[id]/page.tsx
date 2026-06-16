@@ -13,7 +13,8 @@ const TABS: Array<{ id: Tab; label: string; icon: string }> = [
   { id: 'backups', label: 'Backups', icon: '🗄' },
 ];
 
-interface RouterLite { id: string; name: string; status: string; vpn_status: string; host: string; site: string | null }
+interface RouterLite { id: string; name: string; status: string; vpn_status: string; host: string; site: string | null; collection_account_id: string | null }
+interface CollAccount { id: string; label: string; method: string; paybill: string; till: string; account_no: string; is_default: boolean }
 interface SystemInfo {
   system: Record<string, any>;
   radius: Record<string, any>;
@@ -73,8 +74,24 @@ export default function RouterDetail() {
   const [users, setUsers] = useState<Sessions | null>(null);
   const [metrics, setMetrics] = useState<any[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [collAccts, setCollAccts] = useState<CollAccount[]>([]);
+  const [savingColl, setSavingColl] = useState(false);
 
   useEffect(() => { if (id) api<RouterLite>(`/routers/${id}`).then(setRouter).catch((e) => setErr(e.message)); }, [id]);
+  useEffect(() => { api<CollAccount[]>('/settings/collection-accounts').then(setCollAccts).catch(() => {/* ignore */}); }, []);
+
+  const assignCollAcct = async (accountId: string | null) => {
+    if (!router) return;
+    setSavingColl(true);
+    try {
+      await api(`/routers/${id}/collection-account`, { method: 'PUT', body: JSON.stringify({ collection_account_id: accountId }) });
+      setRouter({ ...router, collection_account_id: accountId });
+    } catch (e: any) { setErr(e.message); }
+    finally { setSavingColl(false); }
+  };
+  const collDest = (a: CollAccount) =>
+    a.method === 'bank' ? `Bank ${a.paybill}/${a.account_no}` : a.method === 'till' ? `Till ${a.till}` : `Paybill ${a.paybill}`;
+  const defaultColl = collAccts.find((a) => a.is_default);
   useEffect(() => {
     if (!id) return;
     if (tab === 'system' && !sys) api<SystemInfo>(`/routers/${id}/system`).then(setSys).catch((e) => setErr(e.message));
@@ -135,6 +152,28 @@ export default function RouterDetail() {
               <Field label="Auth Port" value={sys?.radius.auth_port} />
               <Field label="Accounting Port" value={sys?.radius.acct_port} />
             </div>
+          </section>
+          <section className="card">
+            <h3 style={{ marginTop: 0, fontSize: 15 }}>Collection account</h3>
+            <p className="sub" style={{ marginTop: 0 }}>
+              Which paybill / till / bank account collects hotspot payments made through <strong>this</strong> router.
+              Manage accounts in <a href="/settings">Settings → Payments</a>.
+            </p>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', maxWidth: 520 }}>
+              <select
+                value={router?.collection_account_id ?? ''}
+                disabled={savingColl}
+                onChange={(e) => assignCollAcct(e.target.value || null)}
+                style={{ flex: 1, minWidth: 240 }}
+              >
+                <option value="">Use tenant default{defaultColl ? ` (${defaultColl.label})` : ''}</option>
+                {collAccts.map((a) => (
+                  <option key={a.id} value={a.id}>{a.label} — {collDest(a)}</option>
+                ))}
+              </select>
+              {savingColl && <span className="sub">Saving…</span>}
+            </div>
+            {!collAccts.length && <p className="sub" style={{ marginTop: 10 }}>No collection accounts defined yet — add them in Settings → Payments.</p>}
           </section>
         </div>
       )}

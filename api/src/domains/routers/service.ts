@@ -23,6 +23,7 @@ export interface Router {
   brand_name: string | null;
   brand_color: string | null;
   brand_tagline: string | null;
+  collection_account_id: string | null;
 }
 
 export interface DetectedRouter {
@@ -46,7 +47,7 @@ export interface DetectedRouter {
 // derived from last_handshake_at freshness so it's always current.
 const SAFE_COLS = `id, name, host, api_port, type, site, status, created_at,
   wg_public_key, wg_tunnel_ip, last_handshake_at, ssh_port,
-  brand_slug, brand_name, brand_color, brand_tagline,
+  brand_slug, brand_name, brand_color, brand_tagline, collection_account_id,
   CASE
     WHEN last_handshake_at IS NULL THEN 'pending'
     WHEN last_handshake_at > now() - interval '3 minutes' THEN 'connected'

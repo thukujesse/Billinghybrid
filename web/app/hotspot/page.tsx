@@ -489,7 +489,7 @@ export default function HotspotPortal() {
     mode: 'login' | 'status' | 'logout' | 'error' | 'rlogin';
     username: string; sessionTimeLeft: string; uptime: string;
     bytesIn: string; bytesOut: string; linkLogout: string;
-    mikrotikError: string; tenant: string;
+    mikrotikError: string; tenant: string; nas: string;
   } | null>(null);
   const formRef = useRef<HTMLFormElement>(null);
 
@@ -524,6 +524,7 @@ export default function HotspotPortal() {
       linkLogout: q.get('link-logout') ?? '',
       mikrotikError: q.get('error') ?? '',
       tenant,
+      nas: q.get('nas') ?? '',
     });
     const saved = window.localStorage.getItem(PHONE_KEY);
     if (saved) setPhone(saved);
@@ -739,7 +740,14 @@ export default function HotspotPortal() {
       .catch((e: any) => setPlansError(e.message))
       .finally(() => setPlansLoading(false));
     // Learn which payment flow the ISP configured + where the money goes.
-    api<{ collectionMethod: PayMethod; paybill?: string; till?: string; accountName?: string }>('/hotspot/pay-config')
+    // Tell the backend which router this is (NAS address, else brand slug) so it
+    // returns the collection account assigned to that router (or the default).
+    const cq = new URLSearchParams(window.location.search);
+    const payCfgQs = new URLSearchParams();
+    if (cq.get('nas')) payCfgQs.set('nas', cq.get('nas')!);
+    if (cq.get('tenant')) payCfgQs.set('slug', cq.get('tenant')!);
+    const payCfgUrl = payCfgQs.toString() ? `/hotspot/pay-config?${payCfgQs}` : '/hotspot/pay-config';
+    api<{ collectionMethod: PayMethod; paybill?: string; till?: string; accountName?: string }>(payCfgUrl)
       .then((c) => {
         setPayMethod(c.collectionMethod);
         setPayDest({ paybill: c.paybill ?? '', till: c.till ?? '', accountName: c.accountName ?? '' });
@@ -831,7 +839,11 @@ export default function HotspotPortal() {
         '/hotspot/pay';
       const p = await api<PurchaseInit>(endpoint, {
         method: 'POST',
-        body: JSON.stringify({ plan_id: planId, phone: phoneNormalized, mac: mtikParams?.mac }),
+        body: JSON.stringify({
+          plan_id: planId, phone: phoneNormalized, mac: mtikParams?.mac,
+          // Route the payment to this router's collection account (NAS, else slug).
+          ...(isInstrPay ? { nas: mtikParams?.nas || undefined, slug: mtikParams?.tenant || undefined } : {}),
+        }),
       });
       window.localStorage.setItem(PHONE_KEY, phoneNormalized);
       setPurchase(p);

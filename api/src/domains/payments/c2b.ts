@@ -4,6 +4,7 @@ import { config } from '../../config.js';
 import { getMpesaConfig } from '../settings/service.js';
 import { normalizeMsisdn } from './daraja.js';
 import { completePurchase } from '../hotspot/service.js';
+import { resolveForRouter } from './collectionAccounts.js';
 import { badRequest, notFound } from '../../lib/errors.js';
 
 /**
@@ -39,7 +40,7 @@ async function generateReference(): Promise<string> {
  *  on that reference — robust for a real bank/aggregator (which returns the
  *  typed account ref, not the payer's phone). */
 export async function initC2bPurchase(input: {
-  planId: string; phone: string; mac?: string; userAgent?: string;
+  planId: string; phone: string; mac?: string; userAgent?: string; nas?: string; slug?: string;
 }): Promise<C2bPurchaseResult> {
   const pr = await query<{ id: string; name: string; price_cents: number }>(
     `SELECT id, name, price_cents FROM plans WHERE id=$1 AND active=TRUE`,
@@ -53,24 +54,40 @@ export async function initC2bPurchase(input: {
   const amountKes = Math.round(plan.price_cents / 100);
   const mp = await getMpesaConfig();
   const checkoutRequestId = await generateReference();
+
+  // Resolve which destination collects this payment: the account assigned to the
+  // customer's router wins, else the tenant default, else the legacy global
+  // M-Pesa config. For a shared BANK paybill (e.g. Equity 247247) the customer
+  // types the ISP's bank ACCOUNT NUMBER as the M-Pesa account (that's how the
+  // bank routes + how the IPN identifies the tenant; we settle by phone+amount).
+  // For paybill/till the account = our HUB reference (matched on BillRefNumber).
+  const { account, routerId } = await resolveForRouter({ nas: input.nas, slug: input.slug });
+  let method: 'paybill' | 'till' | 'bank';
+  let payNumber: string;
+  let displayAccount: string;
+  if (account) {
+    method = account.method;
+    if (method === 'bank') { payNumber = account.paybill; displayAccount = account.account_no || checkoutRequestId; }
+    else if (method === 'till') { payNumber = account.till; displayAccount = checkoutRequestId; }
+    else { payNumber = account.paybill; displayAccount = checkoutRequestId; }
+  } else {
+    method = (mp.collectionMethod === 'till' || mp.collectionMethod === 'bank') ? mp.collectionMethod : 'paybill';
+    payNumber = method === 'till' ? mp.till : mp.shortcode;
+    displayAccount = method === 'bank' && mp.accountNo ? mp.accountNo : checkoutRequestId;
+  }
+
   await query(
     `INSERT INTO hotspot_purchases
-       (checkout_request_id, plan_id, phone, mac_address, amount_kes, status, user_agent)
-     VALUES ($1,$2,$3,$4,$5,'pending',$6)`,
-    [checkoutRequestId, plan.id, phone, input.mac ?? null, amountKes, input.userAgent ?? null]
+       (checkout_request_id, plan_id, phone, mac_address, amount_kes, status, user_agent, router_id)
+     VALUES ($1,$2,$3,$4,$5,'pending',$6,$7)`,
+    [checkoutRequestId, plan.id, phone, input.mac ?? null, amountKes, input.userAgent ?? null, routerId]
   );
-  // For a shared BANK paybill (e.g. Equity 247247) the customer must type the
-  // ISP's real bank ACCOUNT NUMBER as the M-Pesa account — that's how the bank
-  // routes the money and how the IPN identifies the tenant. We then settle by
-  // payer phone + amount (the HUB reference can't be carried on a bank paybill).
-  // checkoutRequestId stays the internal poll key either way.
-  const isBank = mp.collectionMethod === 'bank';
-  const displayAccount = isBank && mp.accountNo ? mp.accountNo : checkoutRequestId;
+  const verb = method === 'till' ? 'Buy Goods' : 'Pay Bill';
   return {
     checkoutRequestId,
     amountKes,
-    payInstructions: { method: 'paybill', paybill: mp.shortcode, account: displayAccount, amountKes },
-    customerMessage: `Lipa na M-Pesa → Pay Bill → ${mp.shortcode} → Account ${displayAccount} → KES ${amountKes}`,
+    payInstructions: { method: 'paybill', paybill: payNumber, account: displayAccount, amountKes },
+    customerMessage: `Lipa na M-Pesa → ${verb} → ${payNumber} → Account ${displayAccount} → KES ${amountKes}`,
   };
 }
 

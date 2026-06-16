@@ -60,11 +60,18 @@ export async function registerPaybill(
   );
 }
 
-/** Remove a tenant's claim on a shortcode (e.g. when they switch it). */
+/** Remove a tenant's claim on a non-bank shortcode (e.g. when they switch it). */
 export async function unregisterPaybill(shortcode: string, tenantId: string): Promise<void> {
   const code = (shortcode ?? '').trim();
   if (!code) return;
-  await pool.query(`DELETE FROM tenant_paybill WHERE shortcode = $1 AND tenant_id = $2`, [code, tenantId]);
+  await pool.query(`DELETE FROM tenant_paybill WHERE shortcode = $1 AND tenant_id = $2 AND kind <> 'bank'`, [code, tenantId]);
+}
+
+/** Remove a tenant's claim on a bank account number (the bank routing key). */
+export async function unregisterBankAccount(accountNo: string, tenantId: string): Promise<void> {
+  const acct = (accountNo ?? '').trim();
+  if (!acct) return;
+  await pool.query(`DELETE FROM tenant_paybill WHERE account_no = $1 AND tenant_id = $2 AND kind = 'bank'`, [acct, tenantId]);
 }
 
 /** Resolve the tenant that owns an own Safaricom `shortcode` (paybill/till), with

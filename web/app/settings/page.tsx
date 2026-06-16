@@ -752,6 +752,8 @@ export default function SettingsPage() {
         The standard sandbox passkey + shortcode 174379 are pre-fillable above.
       </p>
 
+      <CollectionAccountsManager onToast={setToast} />
+
       </>)}
 
       {tab === 'sms' && (<>
@@ -1033,6 +1035,165 @@ function PortalPreview({ brand, plans }: { brand: HotspotBranding; plans: Hotspo
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+type CAMethod = 'paybill' | 'till' | 'bank';
+interface CollectionAccount {
+  id: string; label: string; method: CAMethod;
+  paybill: string; till: string; account_no: string; account_name: string;
+  is_default: boolean;
+}
+const BLANK_CA = { label: '', method: 'bank' as CAMethod, paybill: '', till: '', account_no: '', account_name: '', is_default: false };
+
+/** Manage the ISP's no-API collection destinations (paybill / till / bank) that
+ *  can be assigned per router on the Routers page. The default account collects
+ *  for any router that isn't pinned to a specific one. */
+function CollectionAccountsManager({ onToast }: { onToast: (t: { ok: boolean; msg: string }) => void }) {
+  const [list, setList] = useState<CollectionAccount[]>([]);
+  const [form, setForm] = useState({ ...BLANK_CA });
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const load = () =>
+    api<CollectionAccount[]>('/settings/collection-accounts')
+      .then(setList)
+      .catch(() => {/* endpoint absent before deploy — ignore */});
+  useEffect(() => { load(); }, []);
+
+  const startNew = () => { setEditingId(null); setForm({ ...BLANK_CA }); setOpen(true); };
+  const startEdit = (a: CollectionAccount) => {
+    setEditingId(a.id);
+    setForm({ label: a.label, method: a.method, paybill: a.paybill, till: a.till, account_no: a.account_no, account_name: a.account_name, is_default: a.is_default });
+    setOpen(true);
+  };
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      const body = JSON.stringify(form);
+      if (editingId) await api(`/settings/collection-accounts/${editingId}`, { method: 'PUT', body });
+      else await api('/settings/collection-accounts', { method: 'POST', body });
+      onToast({ ok: true, msg: editingId ? 'Collection account updated' : 'Collection account added' });
+      setOpen(false); setEditingId(null); setForm({ ...BLANK_CA });
+      await load();
+    } catch (e: any) { onToast({ ok: false, msg: e.message }); }
+    finally { setBusy(false); }
+  };
+  const del = async (a: CollectionAccount) => {
+    if (!window.confirm(`Delete collection account "${a.label}"? Routers using it fall back to the default.`)) return;
+    setBusy(true);
+    try { await api(`/settings/collection-accounts/${a.id}`, { method: 'DELETE' }); onToast({ ok: true, msg: 'Deleted' }); await load(); }
+    catch (e: any) { onToast({ ok: false, msg: e.message }); }
+    finally { setBusy(false); }
+  };
+  const makeDefault = async (a: CollectionAccount) => {
+    setBusy(true);
+    try { await api(`/settings/collection-accounts/${a.id}/default`, { method: 'POST' }); onToast({ ok: true, msg: `"${a.label}" is now the default` }); await load(); }
+    catch (e: any) { onToast({ ok: false, msg: e.message }); }
+    finally { setBusy(false); }
+  };
+
+  const dest = (a: CollectionAccount) =>
+    a.method === 'bank' ? `Paybill ${a.paybill} · acct ${a.account_no}`
+    : a.method === 'till' ? `Till ${a.till}`
+    : `Paybill ${a.paybill}`;
+
+  return (
+    <div style={{ marginTop: 28 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <h2 style={{ margin: 0 }}>Collection accounts</h2>
+        <button className="ghost sm" style={{ marginLeft: 'auto' }} onClick={startNew}>+ Add account</button>
+      </div>
+      <p className="sub">Paybill / Till / Bank destinations you can assign per MikroTik on the Routers page. The <strong>default</strong> collects for any router not pinned to a specific one.</p>
+
+      <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
+        <table className="table-sticky" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <thead>
+            <tr style={{ textAlign: 'left', color: 'var(--muted)' }}>
+              <th style={{ padding: '10px 12px' }}>Label</th>
+              <th style={{ padding: '10px 12px' }}>Method</th>
+              <th style={{ padding: '10px 12px' }}>Destination</th>
+              <th style={{ padding: '10px 12px' }}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {list.map((a) => (
+              <tr key={a.id} style={{ borderTop: '1px solid var(--border)' }}>
+                <td style={{ padding: '10px 12px', fontWeight: 600 }}>
+                  {a.label} {a.is_default && <span style={{ fontSize: 11, color: '#16a34a' }}>· default</span>}
+                </td>
+                <td style={{ padding: '10px 12px', textTransform: 'capitalize' }}>{a.method}</td>
+                <td style={{ padding: '10px 12px' }}>{dest(a)}</td>
+                <td style={{ padding: '10px 12px' }}>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                    {!a.is_default && <button className="ghost sm" disabled={busy} onClick={() => makeDefault(a)}>Make default</button>}
+                    <button className="ghost sm" disabled={busy} onClick={() => startEdit(a)}>Edit</button>
+                    <button className="danger sm" disabled={busy} onClick={() => del(a)}>Delete</button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+            {!list.length && <tr><td colSpan={4}><div className="empty-state"><span className="icon">🏦</span>No collection accounts yet — add one, then assign routers to it.</div></td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      {open && (
+        <div className="card" style={{ marginTop: 12 }}>
+          <h3 style={{ marginTop: 0, fontSize: 14 }}>{editingId ? 'Edit' : 'New'} collection account</h3>
+          <div className="row">
+            <div style={{ flex: 1 }}>
+              <label>Label</label>
+              <input value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} placeholder="e.g. Equity - Main, KCB Westlands" />
+            </div>
+            <div style={{ flex: '0 0 180px' }}>
+              <label>Method</label>
+              <select value={form.method} onChange={(e) => setForm({ ...form, method: e.target.value as CAMethod })}>
+                <option value="bank">Bank</option>
+                <option value="paybill">Paybill</option>
+                <option value="till">Till</option>
+              </select>
+            </div>
+          </div>
+          {form.method === 'till' ? (
+            <>
+              <label>Till number</label>
+              <input value={form.till} onChange={(e) => setForm({ ...form, till: e.target.value })} placeholder="e.g. 5200000" />
+            </>
+          ) : form.method === 'bank' ? (
+            <div className="row">
+              <div style={{ flex: 1 }}>
+                <label>Bank Paybill (shared)</label>
+                <input value={form.paybill} onChange={(e) => setForm({ ...form, paybill: e.target.value })} placeholder="e.g. Equity 247247, KCB 522522" />
+              </div>
+              <div style={{ flex: 1 }}>
+                <label>Bank account number</label>
+                <input value={form.account_no} onChange={(e) => setForm({ ...form, account_no: e.target.value })} placeholder="your account no. (routing key)" />
+              </div>
+              <div style={{ flex: 1 }}>
+                <label>Account name</label>
+                <input value={form.account_name} onChange={(e) => setForm({ ...form, account_name: e.target.value })} placeholder="name on the account" />
+              </div>
+            </div>
+          ) : (
+            <>
+              <label>Paybill number</label>
+              <input value={form.paybill} onChange={(e) => setForm({ ...form, paybill: e.target.value })} placeholder="e.g. 400200" />
+            </>
+          )}
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12 }}>
+            <input type="checkbox" style={{ width: 'auto' }} checked={form.is_default} onChange={(e) => setForm({ ...form, is_default: e.target.checked })} />
+            Make this the default collection account
+          </label>
+          <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+            <button onClick={save} disabled={busy || !form.label.trim()}>{busy ? 'Saving…' : 'Save account'}</button>
+            <button className="ghost" onClick={() => { setOpen(false); setEditingId(null); }} disabled={busy}>Cancel</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
