@@ -16,15 +16,17 @@
   --text-2: #475569;
   --muted: #94a3b8;
   --accent: #2563eb;
+  --accent-hover: #1d4ed8;
   --accent-ink: #ffffff;
   --accent-weak: rgba(37, 99, 235, 0.10);
   --green: #15803d;  --green-weak: rgba(22, 163, 74, 0.12);
   --red: #b91c1c;    --red-weak: rgba(220, 38, 38, 0.10);
   --orange: #b45309; --orange-weak: rgba(217, 119, 6, 0.12);
-  --shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
-  --shadow-lg: 0 6px 24px rgba(15, 23, 42, 0.09);
+  --shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 3px rgba(15, 23, 42, 0.06);
+  --shadow-lg: 0 4px 12px rgba(15, 23, 42, 0.08), 0 14px 34px rgba(15, 23, 42, 0.10);
   --nav-bg: rgba(255, 255, 255, 0.85);
   --row-hover: rgba(37, 99, 235, 0.05);
+  --radius: 10px; --radius-lg: 14px;
 }
 [data-theme='dark'] {
   --bg: #0a0f1e;
@@ -37,6 +39,7 @@
   --text-2: #aac4e0;
   --muted: #6b88a6;
   --accent: #38bdf8;
+  --accent-hover: #0ea5e9;
   --accent-ink: #04121f;
   --accent-weak: rgba(56, 189, 248, 0.14);
   --green: #34d399;  --green-weak: rgba(52, 211, 153, 0.14);
@@ -56,11 +59,29 @@ body {
   color: var(--text);
   font-family: 'Plus Jakarta Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
   min-height: 100vh;
+  line-height: 1.5;
+  letter-spacing: -0.005em;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
   transition: background 0.25s ease, color 0.25s ease;
 }
 
 a { color: var(--accent); text-decoration: none; transition: color 0.15s ease; }
+a:hover { color: var(--accent-hover); }
+
+/* Keyboard accessibility: a clear focus ring for interactive elements, but only
+   for keyboard users (not on mouse click). */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+button:focus-visible, .btn:focus-visible, .side-link:focus-visible { outline-offset: 2px; }
+
+::selection { background: var(--accent); color: var(--accent-ink); }
+
+/* Thin, themed scrollbars for a more refined feel. */
+* { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-thumb { background: var(--border); border-radius: 99px; border: 3px solid transparent; background-clip: content-box; }
+*::-webkit-scrollbar-thumb:hover { background: var(--muted); background-clip: content-box; }
+*::-webkit-scrollbar-track { background: transparent; }
 
 /* ----------------------------------- Nav ---------------------------------- */
 .nav {
@@ -109,24 +130,31 @@ a { color: var(--accent); text-decoration: none; transition: color 0.15s ease; }
 
 /* --------------------------------- Layout --------------------------------- */
 .container { max-width: 1200px; margin: 0 auto; padding: 28px; }
-h1 { font-size: 24px; margin-bottom: 4px; letter-spacing: -0.4px; }
-h2 { font-size: 16px; margin: 24px 0 12px; letter-spacing: -0.2px; }
-.sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+h1 { font-size: 24px; font-weight: 800; margin-bottom: 4px; letter-spacing: -0.5px; line-height: 1.2; }
+h2 { font-size: 16px; font-weight: 700; margin: 24px 0 12px; letter-spacing: -0.2px; }
+h3 { font-weight: 700; letter-spacing: -0.1px; }
+.sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; line-height: 1.55; }
 
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; }
 .card {
   background: var(--card); border: 1px solid var(--border);
-  border-radius: 12px; padding: 18px; box-shadow: var(--shadow);
-  transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.25s ease;
+  border-radius: var(--radius-lg); padding: 18px; box-shadow: var(--shadow);
+  transition: border-color 0.15s ease, box-shadow 0.18s ease, transform 0.18s ease, background 0.25s ease;
 }
+/* Opt-in lift for clickable cards (quick-action tiles, nav cards). */
+.card.hover:hover, a.card:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); border-color: var(--accent); }
 .stat .label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
-.stat .value { font-size: 26px; font-weight: 700; margin-top: 6px; }
+.stat .value { font-size: 26px; font-weight: 800; margin-top: 6px; letter-spacing: -0.5px; }
 
 /* --------------------------------- Tables --------------------------------- */
 table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
 th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); }
-th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 1px; font-weight: 600; }
+th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; font-weight: 700; }
+tbody tr { transition: background 0.12s ease; }
 tr:hover td { background: var(--row-hover); }
+tbody tr:last-child td { border-bottom: none; }
+/* Opt-in: keep the header visible while scrolling a long table in a card. */
+.table-sticky thead th { position: sticky; top: 0; z-index: 1; background: var(--card); box-shadow: inset 0 -1px 0 var(--border); }
 
 /* --------------------------------- Badges --------------------------------- */
 .badge { font-size: 11px; padding: 3px 9px; border-radius: 99px; border: 1px solid var(--border); font-weight: 600; }
@@ -136,15 +164,20 @@ tr:hover td { background: var(--row-hover); }
 
 /* --------------------------------- Controls ------------------------------- */
 button, .btn {
-  background: var(--accent); color: var(--accent-ink); border: none; cursor: pointer;
+  background: var(--accent); color: var(--accent-ink); border: 1px solid transparent; cursor: pointer;
   padding: 9px 16px; border-radius: 8px; font-weight: 600; font-size: 13px;
-  transition: filter 0.15s ease, transform 0.05s ease, box-shadow 0.15s ease;
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  transition: background 0.15s ease, transform 0.06s ease, box-shadow 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
-button:hover, .btn:hover { filter: brightness(1.07); box-shadow: var(--shadow); }
+button:hover, .btn:hover { background: var(--accent-hover); box-shadow: var(--shadow); }
 button:active, .btn:active { transform: translateY(1px); }
-button.ghost { background: transparent; color: var(--text); border: 1px solid var(--border); }
-button.ghost:hover { background: var(--card-2); border-color: var(--accent); filter: none; }
-button:disabled { opacity: 0.5; cursor: not-allowed; filter: none; transform: none; box-shadow: none; }
+button.ghost { background: transparent; color: var(--text); border-color: var(--border); }
+button.ghost:hover { background: var(--card-2); border-color: var(--accent); color: var(--accent); box-shadow: none; }
+button.danger { background: var(--red-weak); color: var(--red); border-color: var(--red); }
+button.danger:hover { background: var(--red); color: #fff; box-shadow: none; }
+button.sm, .btn.sm { padding: 6px 11px; font-size: 12px; border-radius: 7px; }
+button:disabled, .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; background: var(--accent); }
+button.ghost:disabled { background: transparent; }
 
 input, select, textarea {
   background: var(--surface); border: 1px solid var(--border); color: var(--text);
@@ -162,9 +195,10 @@ label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px
 .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
 .row > div { flex: 1; min-width: 140px; }
 
-.toast { padding: 11px 14px; border-radius: 8px; margin: 12px 0; font-size: 13px; border: 1px solid transparent; }
+.toast { padding: 11px 14px; border-radius: 8px; margin: 12px 0; font-size: 13px; border: 1px solid transparent; border-left-width: 4px; font-weight: 500; }
 .toast.ok { background: var(--green-weak); color: var(--green); border-color: var(--green); }
 .toast.err { background: var(--red-weak); color: var(--red); border-color: var(--red); }
+.toast.info { background: var(--accent-weak); color: var(--accent); border-color: var(--accent); }
 
 code { font-family: ui-monospace, 'Cascadia Code', monospace; background: var(--card-2); padding: 2px 6px; border-radius: 5px; font-size: 0.92em; }
 
@@ -186,6 +220,23 @@ code { font-family: ui-monospace, 'Cascadia Code', monospace; background: var(--
   70%  { box-shadow: 0 0 0 8px rgba(52, 211, 153, 0); }
   100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0); }
 }
+
+/* ------------------------- Loading + empty states ------------------------- */
+/* Shimmer placeholder for pages to render while data loads. */
+.skeleton {
+  background: linear-gradient(90deg, var(--card-2) 25%, var(--border-2) 37%, var(--card-2) 63%);
+  background-size: 400% 100%; border-radius: 8px;
+  animation: skeleton-shimmer 1.3s ease-in-out infinite;
+}
+@keyframes skeleton-shimmer { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }
+/* Friendly empty state inside a card/table area. */
+.empty-state { text-align: center; color: var(--muted); padding: 36px 18px; font-size: 13.5px; }
+.empty-state .icon { font-size: 28px; opacity: 0.6; display: block; margin-bottom: 8px; }
+
+/* Page-load fade so route transitions feel intentional, not abrupt. Opacity-only
+   (no transform) so position:fixed modals/overlays inside pages aren't affected. */
+.app-main > * { animation: page-in 0.2s ease both; }
+@keyframes page-in { from { opacity: 0; } to { opacity: 1; } }
 
 /* ------------------------------- Responsive ------------------------------- */
 @media (max-width: 640px) {
@@ -230,7 +281,7 @@ code { font-family: ui-monospace, 'Cascadia Code', monospace; background: var(--
   transition: background 0.15s ease, color 0.15s ease;
 }
 .side-link:hover { background: var(--card-2); color: var(--text); filter: none; box-shadow: none; }
-.side-link.active { background: var(--accent-weak); color: var(--accent); font-weight: 600; }
+.side-link.active { background: var(--accent-weak); color: var(--accent); font-weight: 600; box-shadow: inset 3px 0 0 var(--accent); }
 .side-link .ico { width: 20px; text-align: center; font-size: 15px; flex-shrink: 0; }
 .side-link .chev { margin-left: auto; font-size: 10px; opacity: 0.55; transition: transform 0.18s ease; }
 .side-link .chev.open { transform: rotate(90deg); }
