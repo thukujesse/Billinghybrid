@@ -71,7 +71,7 @@ export default function Sessions() {
       </div>
 
       <h2>Active sessions</h2>
-      <table>
+      <table className="table-sticky">
         <thead>
           <tr>
             <th>User</th>
@@ -94,11 +94,11 @@ export default function Sessions() {
               <td>{formatDuration(s.session_time)}</td>
               <td>{formatBytes(Number(s.bytes_in))}</td>
               <td>{formatBytes(Number(s.bytes_out))}</td>
-              <td><button className="ghost" disabled={busy === s.id} onClick={() => kick(s)}>{busy === s.id ? '…' : 'Disconnect'}</button></td>
+              <td><button className="danger sm" disabled={busy === s.id} onClick={() => kick(s)}>{busy === s.id ? '…' : 'Disconnect'}</button></td>
             </tr>
           ))}
           {active.length === 0 && (
-            <tr><td colSpan={8} style={{ color: 'var(--muted)' }}>No active sessions</td></tr>
+            <tr><td colSpan={8}><div className="empty-state"><span className="icon">📡</span>No active sessions right now</div></td></tr>
           )}
         </tbody>
       </table>

@@ -368,7 +368,7 @@ export default function Customers() {
         </button>
       </div>
 
-      <table>
+      <table className="table-sticky">
         <thead>
           <tr>
             <th>Account</th>
@@ -426,7 +426,7 @@ export default function Customers() {
                         Change plan
                       </button>
                       {s.status === 'active' ? (
-                        <button className="ghost" style={{ fontSize: 11, padding: '4px 10px' }}
+                        <button className="danger" style={{ fontSize: 11, padding: '4px 10px' }}
                                 disabled={busy === s.id}
                                 onClick={() => setStatus(s, 'suspended')}>
                           {busy === s.id ? '…' : 'Suspend'}
@@ -445,7 +445,7 @@ export default function Customers() {
             });
           })}
           {list.length === 0 && (
-            <tr><td colSpan={8} style={{ color: 'var(--muted)' }}>No customers yet</td></tr>
+            <tr><td colSpan={8}><div className="empty-state"><span className="icon">👥</span>No customers yet — add your first PPPoE/static customer above.</div></td></tr>
           )}
         </tbody>
       </table>

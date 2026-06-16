@@ -130,7 +130,7 @@ export default function Platform() {
 
       {loading ? <p className="sub">Loading…</p> : (
         <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <table className="table-sticky" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
               <tr style={{ textAlign: 'left', color: 'var(--muted)' }}>
                 <th style={th}>ISP</th>
@@ -166,19 +166,19 @@ export default function Platform() {
                   <td style={td}>
                     {t.slug === 'default' ? <span className="sub">platform</span> : (
                       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                        <button className="ghost" disabled={busy === t.id} onClick={() => impersonate(t.id)}>Impersonate</button>
-                        <button className="ghost" disabled={busy === t.id} onClick={() => collect(t.id, t.name)}>Collect fee</button>
-                        <button className="ghost" disabled={busy === t.id} onClick={() => topUpSms(t.id, t.name)}>Top-up SMS</button>
-                        <button className="ghost" disabled={busy === t.id} onClick={() => changeSub(t.id, t.slug)}>Subdomain</button>
+                        <button className="ghost sm" disabled={busy === t.id} onClick={() => impersonate(t.id)}>Impersonate</button>
+                        <button className="ghost sm" disabled={busy === t.id} onClick={() => collect(t.id, t.name)}>Collect fee</button>
+                        <button className="ghost sm" disabled={busy === t.id} onClick={() => topUpSms(t.id, t.name)}>Top-up SMS</button>
+                        <button className="ghost sm" disabled={busy === t.id} onClick={() => changeSub(t.id, t.slug)}>Subdomain</button>
                         {t.status === 'suspended'
-                          ? <button className="ghost" disabled={busy === t.id} onClick={() => act(t.id, 'resume', `${t.name} resumed`)}>Resume</button>
-                          : <button className="ghost" disabled={busy === t.id} onClick={() => act(t.id, 'suspend', `${t.name} suspended`)}>Suspend</button>}
+                          ? <button className="ghost sm" disabled={busy === t.id} onClick={() => act(t.id, 'resume', `${t.name} resumed`)}>Resume</button>
+                          : <button className="danger sm" disabled={busy === t.id} onClick={() => act(t.id, 'suspend', `${t.name} suspended`)}>Suspend</button>}
                       </div>
                     )}
                   </td>
                 </tr>
               ))}
-              {!rows.length && <tr><td style={td} colSpan={7}><span className="sub">No tenants yet.</span></td></tr>}
+              {!rows.length && <tr><td colSpan={7}><div className="empty-state"><span className="icon">🏢</span>No ISP tenants yet — they appear here after the first signup.</div></td></tr>}
             </tbody>
           </table>
         </div>

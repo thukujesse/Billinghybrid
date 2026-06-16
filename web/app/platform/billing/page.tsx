@@ -102,7 +102,7 @@ export default function PlatformBilling() {
 
       <h3 style={{ fontSize: 15 }}>Invoices</h3>
       <div className="card" style={{ padding: 0, overflowX: 'auto', marginBottom: 22 }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+        <table className="table-sticky" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
           <thead><tr style={{ textAlign: 'left', color: 'var(--muted)' }}>
             <th style={th}>ISP</th><th style={th}>Period</th><th style={th}>Fixed subs</th><th style={th}>Hotspot</th>
             <th style={{ ...th, textAlign: 'right' }}>Total</th><th style={th}>Status</th><th style={th}>Issued</th><th style={th}>Actions</th>
@@ -118,19 +118,19 @@ export default function PlatformBilling() {
                 <td style={td}><Badge status={i.status} /></td>
                 <td style={td}>{fmtDate(i.issued_at)}</td>
                 <td style={td}>
-                  {i.status !== 'paid' && <button className="ghost" disabled={busy === i.id} onClick={() => setStatus(i.id, 'paid')}>Mark paid</button>}
-                  {i.status !== 'void' && i.status !== 'paid' && <button className="ghost" disabled={busy === i.id} onClick={() => setStatus(i.id, 'void')} style={{ marginLeft: 6 }}>Void</button>}
+                  {i.status !== 'paid' && <button className="ghost sm" disabled={busy === i.id} onClick={() => setStatus(i.id, 'paid')}>Mark paid</button>}
+                  {i.status !== 'void' && i.status !== 'paid' && <button className="danger sm" disabled={busy === i.id} onClick={() => setStatus(i.id, 'void')} style={{ marginLeft: 6 }}>Void</button>}
                 </td>
               </tr>
             ))}
-            {!invoices.length && <tr><td colSpan={8} style={{ padding: 16 }}><span className="sub">No invoices yet — they’re generated monthly (or via Collect).</span></td></tr>}
+            {!invoices.length && <tr><td colSpan={8}><div className="empty-state"><span className="icon">🧾</span>No invoices yet — they’re generated monthly (or via Collect).</div></td></tr>}
           </tbody>
         </table>
       </div>
 
       <h3 style={{ fontSize: 15 }}>Collection history</h3>
       <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+        <table className="table-sticky" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
           <thead><tr style={{ textAlign: 'left', color: 'var(--muted)' }}>
             <th style={th}>ISP</th><th style={th}>Period</th><th style={{ ...th, textAlign: 'right' }}>Amount</th>
             <th style={th}>Status</th><th style={th}>M-Pesa receipt</th><th style={th}>When</th>
@@ -146,7 +146,7 @@ export default function PlatformBilling() {
                 <td style={td}>{fmtDate(c.created_at)}</td>
               </tr>
             ))}
-            {!collections.length && <tr><td colSpan={6} style={{ padding: 16 }}><span className="sub">No collection attempts yet.</span></td></tr>}
+            {!collections.length && <tr><td colSpan={6}><div className="empty-state"><span className="icon">💸</span>No collection attempts yet.</div></td></tr>}
           </tbody>
         </table>
       </div>

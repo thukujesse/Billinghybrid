@@ -41,7 +41,14 @@ export function registerTenantRoutes(api: Router): void {
   // active tenant, so a cert is minted for real signups (and tenant custom
   // domains) but never for random probes — which protects the LE rate limit.
   api.get('/tenants/cert-check', ah(async (req, res) => {
-    const domain = typeof req.query.domain === 'string' ? req.query.domain : '';
+    const domain = (typeof req.query.domain === 'string' ? req.query.domain : '').toLowerCase();
+    // Platform infrastructure hosts always get a cert: the WireGuard manager
+    // (vpn.), the default-tenant dashboard (demo.), the signup front door
+    // (auth.) and the bare base domain. These aren't tenant subdomains so they
+    // wouldn't resolve via the registry, but they MUST terminate TLS here.
+    const base = config.control.baseDomain;
+    const infra = new Set([`vpn.${base}`, `demo.${base}`, `auth.${base}`, base]);
+    if (infra.has(domain)) return res.status(200).send('ok');
     const t = domain ? await tenants.resolveTenantByHost(domain) : null;
     if (t && t.status === 'active') return res.status(200).send('ok');
     return res.status(404).send('unknown host');

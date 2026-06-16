@@ -18,6 +18,11 @@
 }
 
 vpn.hubnetwifi.co.ke {
+    # On-demand TLS (same proven path as every other host). The cert-check gate
+    # allowlists vpn.* as a platform infrastructure host, so a cert is minted.
+    tls {
+        on_demand
+    }
     handle_path /wg/* {
         reverse_proxy 127.0.0.1:8081
     }
@@ -26,6 +31,13 @@ vpn.hubnetwifi.co.ke {
     }
 }
 demo.hubnetwifi.co.ke {
+    # On-demand TLS (same proven path as auth/tenant subdomains). demo.* is the
+    # default tenant, so the cert-check gate OKs it. Managed certs on this box
+    # intermittently fail to load into Caddy's cache after a hard restart, so
+    # every host now uses the resilient on-demand flow.
+    tls {
+        on_demand
+    }
     @api path /api/* /health /ready /metrics
     handle @api {
         reverse_proxy 127.0.0.1:4000
