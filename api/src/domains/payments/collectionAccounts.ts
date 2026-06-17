@@ -25,6 +25,8 @@ export interface CollectionAccount {
   account_no: string;
   account_name: string;
   is_default: boolean;
+  provider: string;       // '' = manual (customer pays by hand); else bank STK provider (equity_jenga|kcb)
+  provider_env: string;   // sandbox | live
   created_at: string;
   updated_at: string;
 }
@@ -37,6 +39,8 @@ export interface CollectionAccountInput {
   account_no?: string;
   account_name?: string;
   is_default?: boolean;
+  provider?: string;
+  provider_env?: string;
 }
 
 /** The number the registry routes by + the kind it's registered under. */
@@ -91,11 +95,14 @@ export async function createCollectionAccount(input: CollectionAccountInput): Pr
   const existing = await query<{ n: string }>(`SELECT count(*)::text AS n FROM collection_account`);
   const makeDefault = input.is_default || existing.rows[0].n === '0';
   if (makeDefault) await query(`UPDATE collection_account SET is_default = FALSE WHERE is_default`);
+  // Only bank accounts can fire a bank STK provider; paybill/till stay manual.
+  const provider = input.method === 'bank' ? (input.provider ?? '').trim() : '';
+  const providerEnv = input.provider_env === 'live' ? 'live' : 'sandbox';
   const r = await query<CollectionAccount>(
-    `INSERT INTO collection_account (label, method, paybill, till, account_no, account_name, is_default)
-     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+    `INSERT INTO collection_account (label, method, paybill, till, account_no, account_name, is_default, provider, provider_env)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
     [input.label.trim(), input.method, (input.paybill ?? '').trim(), (input.till ?? '').trim(),
-     (input.account_no ?? '').trim(), (input.account_name ?? '').trim(), makeDefault]
+     (input.account_no ?? '').trim(), (input.account_name ?? '').trim(), makeDefault, provider, providerEnv]
   );
   const acct = r.rows[0];
   await syncRegister(acct); // may throw conflict if the number belongs to another ISP
@@ -107,14 +114,16 @@ export async function updateCollectionAccount(id: string, input: CollectionAccou
   const prev = (await query<CollectionAccount>(`SELECT * FROM collection_account WHERE id = $1`, [id])).rows[0];
   if (!prev) throw notFound('collection account');
   if (input.is_default) await query(`UPDATE collection_account SET is_default = FALSE WHERE is_default AND id <> $1`, [id]);
+  const provider = input.method === 'bank' ? (input.provider ?? '').trim() : '';
+  const providerEnv = input.provider_env === 'live' ? 'live' : 'sandbox';
   const r = await query<CollectionAccount>(
     `UPDATE collection_account
         SET label=$2, method=$3, paybill=$4, till=$5, account_no=$6, account_name=$7,
-            is_default = COALESCE($8, is_default), updated_at = now()
+            is_default = COALESCE($8, is_default), provider=$9, provider_env=$10, updated_at = now()
       WHERE id = $1 RETURNING *`,
     [id, input.label.trim(), input.method, (input.paybill ?? '').trim(), (input.till ?? '').trim(),
      (input.account_no ?? '').trim(), (input.account_name ?? '').trim(),
-     input.is_default === undefined ? null : input.is_default]
+     input.is_default === undefined ? null : input.is_default, provider, providerEnv]
   );
   const acct = r.rows[0];
   // If the routing destination changed, release the old claim before taking the new.

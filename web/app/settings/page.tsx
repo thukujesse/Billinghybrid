@@ -1043,9 +1043,9 @@ type CAMethod = 'paybill' | 'till' | 'bank';
 interface CollectionAccount {
   id: string; label: string; method: CAMethod;
   paybill: string; till: string; account_no: string; account_name: string;
-  is_default: boolean;
+  is_default: boolean; provider: string; provider_env: string;
 }
-const BLANK_CA = { label: '', method: 'bank' as CAMethod, paybill: '', till: '', account_no: '', account_name: '', is_default: false };
+const BLANK_CA = { label: '', method: 'bank' as CAMethod, paybill: '', till: '', account_no: '', account_name: '', is_default: false, provider: '', provider_env: 'sandbox' };
 
 /** Manage the ISP's no-API collection destinations (paybill / till / bank) that
  *  can be assigned per router on the Routers page. The default account collects
@@ -1066,7 +1066,7 @@ function CollectionAccountsManager({ onToast }: { onToast: (t: { ok: boolean; ms
   const startNew = () => { setEditingId(null); setForm({ ...BLANK_CA }); setOpen(true); };
   const startEdit = (a: CollectionAccount) => {
     setEditingId(a.id);
-    setForm({ label: a.label, method: a.method, paybill: a.paybill, till: a.till, account_no: a.account_no, account_name: a.account_name, is_default: a.is_default });
+    setForm({ label: a.label, method: a.method, paybill: a.paybill, till: a.till, account_no: a.account_no, account_name: a.account_name, is_default: a.is_default, provider: a.provider ?? '', provider_env: a.provider_env ?? 'sandbox' });
     setOpen(true);
   };
 
@@ -1125,7 +1125,10 @@ function CollectionAccountsManager({ onToast }: { onToast: (t: { ok: boolean; ms
                 <td style={{ padding: '10px 12px', fontWeight: 600 }}>
                   {a.label} {a.is_default && <span style={{ fontSize: 11, color: '#16a34a' }}>· default</span>}
                 </td>
-                <td style={{ padding: '10px 12px', textTransform: 'capitalize' }}>{a.method}</td>
+                <td style={{ padding: '10px 12px', textTransform: 'capitalize' }}>
+                  {a.method}
+                  {a.provider && <span style={{ marginLeft: 6, fontSize: 11, color: '#2563eb', textTransform: 'none' }}>⚡ {a.provider === 'equity_jenga' ? 'Equity STK' : a.provider === 'kcb' ? 'KCB STK' : 'auto'}</span>}
+                </td>
                 <td style={{ padding: '10px 12px' }}>{dest(a)}</td>
                 <td style={{ padding: '10px 12px' }}>
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
@@ -1140,6 +1143,8 @@ function CollectionAccountsManager({ onToast }: { onToast: (t: { ok: boolean; ms
           </tbody>
         </table>
       </div>
+
+      {list.some((a) => a.provider) && <BankStkProviders onToast={onToast} />}
 
       {open && (
         <div className="card" style={{ marginTop: 12 }}>
@@ -1184,6 +1189,28 @@ function CollectionAccountsManager({ onToast }: { onToast: (t: { ok: boolean; ms
               <input value={form.paybill} onChange={(e) => setForm({ ...form, paybill: e.target.value })} placeholder="e.g. 400200" />
             </>
           )}
+          {form.method === 'bank' && (
+            <div className="row" style={{ marginTop: 4 }}>
+              <div style={{ flex: 1 }}>
+                <label>Collection mode</label>
+                <select value={form.provider} onChange={(e) => setForm({ ...form, provider: e.target.value })}>
+                  <option value="">Manual — customer pays the paybill by hand</option>
+                  <option value="equity_jenga">Automated STK — Equity (JengaHQ)</option>
+                  <option value="kcb">Automated STK — KCB</option>
+                </select>
+                <p className="sub" style={{ marginTop: 4, fontSize: 12 }}>Automated fires the bank&apos;s STK prompt — the customer just enters their PIN and the bank deposits to this account. Add the bank API keys in the panel below.</p>
+              </div>
+              {form.provider && (
+                <div style={{ flex: '0 0 150px' }}>
+                  <label>Environment</label>
+                  <select value={form.provider_env} onChange={(e) => setForm({ ...form, provider_env: e.target.value })}>
+                    <option value="sandbox">Sandbox</option>
+                    <option value="live">Live</option>
+                  </select>
+                </div>
+              )}
+            </div>
+          )}
           <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12 }}>
             <input type="checkbox" style={{ width: 'auto' }} checked={form.is_default} onChange={(e) => setForm({ ...form, is_default: e.target.checked })} />
             Make this the default collection account
@@ -1194,6 +1221,94 @@ function CollectionAccountsManager({ onToast }: { onToast: (t: { ok: boolean; ms
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+interface BankProviderPublic {
+  provider: 'equity_jenga' | 'kcb';
+  merchantCode: string;
+  consumerKeySet: boolean; consumerSecretSet: boolean; apiKeySet: boolean; signingKeySet: boolean;
+  configured: boolean;
+}
+const PROVIDER_LABELS: Record<string, string> = { equity_jenga: 'Equity (JengaHQ)', kcb: 'KCB (Buni)' };
+
+/** Bank STK merchant API credentials (per bank). Required to turn a bank
+ *  collection account from "manual" into an automated STK prompt. Until keys are
+ *  set the flow runs in SIMULATION so it can be demoed end-to-end. */
+function BankStkProviders({ onToast }: { onToast: (t: { ok: boolean; msg: string }) => void }) {
+  const [providers, setProviders] = useState<BankProviderPublic[]>([]);
+  const [forms, setForms] = useState<Record<string, { merchantCode: string; consumerKey: string; consumerSecret: string; apiKey: string; signingKey: string }>>({});
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const load = () =>
+    api<BankProviderPublic[]>('/settings/bank-providers')
+      .then((ps) => {
+        setProviders(ps);
+        setForms((f) => {
+          const next = { ...f };
+          for (const p of ps) if (!next[p.provider]) next[p.provider] = { merchantCode: p.merchantCode, consumerKey: '', consumerSecret: '', apiKey: '', signingKey: '' };
+          return next;
+        });
+      })
+      .catch(() => {/* before deploy */});
+  useEffect(() => { load(); }, []);
+
+  const save = async (provider: string) => {
+    setBusy(provider);
+    try {
+      const f = forms[provider];
+      const body: Record<string, string> = { merchantCode: f.merchantCode };
+      if (f.consumerKey) body.consumerKey = f.consumerKey;
+      if (f.consumerSecret) body.consumerSecret = f.consumerSecret;
+      if (f.apiKey) body.apiKey = f.apiKey;
+      if (f.signingKey) body.signingKey = f.signingKey;
+      await api(`/settings/bank-providers/${provider}`, { method: 'PUT', body: JSON.stringify(body) });
+      onToast({ ok: true, msg: `${PROVIDER_LABELS[provider]} keys saved` });
+      setForms((s) => ({ ...s, [provider]: { ...s[provider], consumerKey: '', consumerSecret: '', apiKey: '', signingKey: '' } }));
+      await load();
+    } catch (e: any) { onToast({ ok: false, msg: e.message }); }
+    finally { setBusy(null); }
+  };
+
+  const setF = (p: string, k: string, v: string) => setForms((s) => ({ ...s, [p]: { ...s[p], [k]: v } }));
+
+  return (
+    <div style={{ marginTop: 16 }}>
+      <h3 style={{ fontSize: 14, marginBottom: 4 }}>Bank STK API keys</h3>
+      <p className="sub" style={{ marginTop: 0 }}>Merchant API credentials for the bank&apos;s own STK Push. Until a bank&apos;s keys are set, its automated accounts run in <strong>simulation</strong>. Secrets are write-only.</p>
+      <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))' }}>
+        {providers.map((p) => {
+          const f = forms[p.provider]; if (!f) return null;
+          const isEquity = p.provider === 'equity_jenga';
+          return (
+            <div key={p.provider} className="card">
+              <h4 style={{ margin: '0 0 8px', fontSize: 13 }}>
+                {PROVIDER_LABELS[p.provider]} {p.configured && <span style={{ color: '#16a34a', fontSize: 11 }}>✓ configured</span>}
+              </h4>
+              {isEquity && (
+                <>
+                  <label>Merchant code</label>
+                  <input value={f.merchantCode} onChange={(e) => setF(p.provider, 'merchantCode', e.target.value)} placeholder="JengaHQ merchant code" />
+                </>
+              )}
+              <label>Consumer key {p.consumerKeySet && <span style={{ color: '#16a34a' }}>✓</span>}</label>
+              <input type="password" value={f.consumerKey} onChange={(e) => setF(p.provider, 'consumerKey', e.target.value)} placeholder={p.consumerKeySet ? '••• keep current' : 'consumer key'} />
+              <label>Consumer secret {p.consumerSecretSet && <span style={{ color: '#16a34a' }}>✓</span>}</label>
+              <input type="password" value={f.consumerSecret} onChange={(e) => setF(p.provider, 'consumerSecret', e.target.value)} placeholder={p.consumerSecretSet ? '••• keep current' : 'consumer secret'} />
+              <label>API key {p.apiKeySet && <span style={{ color: '#16a34a' }}>✓</span>}</label>
+              <input type="password" value={f.apiKey} onChange={(e) => setF(p.provider, 'apiKey', e.target.value)} placeholder={p.apiKeySet ? '••• keep current' : isEquity ? 'JengaHQ Api-Key' : 'KCB API key'} />
+              {isEquity && (
+                <>
+                  <label>Signing key {p.signingKeySet && <span style={{ color: '#16a34a' }}>✓</span>}</label>
+                  <input type="password" value={f.signingKey} onChange={(e) => setF(p.provider, 'signingKey', e.target.value)} placeholder={p.signingKeySet ? '••• keep current' : 'RSA private key (PEM)'} />
+                </>
+              )}
+              <button style={{ marginTop: 12 }} disabled={busy === p.provider} onClick={() => save(p.provider)}>{busy === p.provider ? 'Saving…' : 'Save'}</button>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

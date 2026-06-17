@@ -5,6 +5,7 @@ import { getMpesaConfig } from '../settings/service.js';
 import { normalizeMsisdn } from './daraja.js';
 import { completePurchase } from '../hotspot/service.js';
 import { resolveForRouter } from './collectionAccounts.js';
+import { initiateBankStk, isBankProvider } from './bankStk.js';
 import { badRequest, notFound } from '../../lib/errors.js';
 
 /**
@@ -20,6 +21,9 @@ export interface C2bPurchaseResult {
   amountKes: number;
   payInstructions: { method: 'paybill'; paybill: string; account: string; amountKes: number };
   customerMessage: string;
+  // Present when an automated bank STK prompt was fired (provider-backed bank
+  // account). The manual payInstructions remain as a fallback.
+  stk?: { sent: boolean; simulated: boolean };
 }
 
 /** A short, keypad-friendly payment reference the customer types as the Paybill
@@ -83,11 +87,37 @@ export async function initC2bPurchase(input: {
     [checkoutRequestId, plan.id, phone, input.mac ?? null, amountKes, input.userAgent ?? null, routerId]
   );
   const verb = method === 'till' ? 'Buy Goods' : 'Pay Bill';
+  const manualMsg = `Lipa na M-Pesa → ${verb} → ${payNumber} → Account ${displayAccount} → KES ${amountKes}`;
+
+  // Automated path: a bank account wired to a bank STK provider (Equity JengaHQ
+  // / KCB) fires the prompt straight away, so the customer just enters their PIN
+  // and the bank deposits to the ISP's account. The bank's IPN settles via the
+  // shared bank-IPN endpoint (routed by account number). Manual instructions
+  // stay as a fallback in case the prompt is dismissed.
+  if (account && account.method === 'bank' && isBankProvider(account.provider)) {
+    const token = config.control.sharedCallbackToken ? `?token=${encodeURIComponent(config.control.sharedCallbackToken)}` : '';
+    const callbackUrl = `https://${config.control.sharedPayHost}/api/payments/shared/jenga/ipn${token}`;
+    const r = await initiateBankStk(account.provider, {
+      env: (account.provider_env === 'live' ? 'live' : 'sandbox'),
+      paybill: account.paybill, accountNo: account.account_no,
+      phone, amountKes, reference: checkoutRequestId, callbackUrl,
+    });
+    return {
+      checkoutRequestId,
+      amountKes,
+      payInstructions: { method: 'paybill', paybill: payNumber, account: displayAccount, amountKes },
+      customerMessage: r.ok
+        ? `${r.message}. Enter your M-Pesa PIN to pay KES ${amountKes}.${r.simulated ? '' : ` (Or pay manually: ${manualMsg})`}`
+        : `Could not send the prompt — pay manually: ${manualMsg}`,
+      stk: { sent: r.ok, simulated: r.simulated },
+    };
+  }
+
   return {
     checkoutRequestId,
     amountKes,
     payInstructions: { method: 'paybill', paybill: payNumber, account: displayAccount, amountKes },
-    customerMessage: `Lipa na M-Pesa → ${verb} → ${payNumber} → Account ${displayAccount} → KES ${amountKes}`,
+    customerMessage: manualMsg,
   };
 }
 

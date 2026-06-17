@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { ah, parse } from './helpers.js';
+import { badRequest } from '../lib/errors.js';
 import { currentTenantStatus, currentTenantUuid, runWithTenant } from '../db/pool.js';
 import * as tenantPaybill from '../domains/platform/tenantPaybill.js';
 import { requireAuth } from './middleware/auth.js';
@@ -21,6 +22,7 @@ import * as payments from '../domains/payments/service.js';
 import { parseCallback, stkPush } from '../domains/payments/daraja.js';
 import * as c2b from '../domains/payments/c2b.js';
 import * as collectionAccounts from '../domains/payments/collectionAccounts.js';
+import * as bankStk from '../domains/payments/bankStk.js';
 import * as jenga from '../domains/payments/jenga.js';
 import * as intasend from '../domains/payments/intasend.js';
 import * as kopokopo from '../domains/payments/kopokopo.js';
@@ -812,6 +814,27 @@ api.put('/routers/:id/collection-account', requireAuth('admin', 'staff'), ah(asy
   const body = parse(z.object({ collection_account_id: z.string().uuid().nullable() }), req.body);
   await collectionAccounts.setRouterCollectionAccount(req.params.id, body.collection_account_id);
   res.json({ ok: true });
+}));
+
+// ---------- Bank STK providers (Equity JengaHQ / KCB) ----------
+// Per-tenant merchant API credentials for firing the bank's own STK Push so a
+// bank collection account can prompt the customer and deposit DIRECTLY into the
+// ISP's bank account. Secrets are write-only (GET returns only *Set booleans).
+api.get('/settings/bank-providers', requireAuth('admin', 'staff'), ah(async (_req, res) => {
+  res.json(await Promise.all(bankStk.BANK_PROVIDERS.map((p) => bankStk.getBankProviderPublic(p))));
+}));
+api.put('/settings/bank-providers/:provider', requireAuth('admin'), ah(async (req, res) => {
+  const provider = req.params.provider;
+  if (!bankStk.isBankProvider(provider)) throw badRequest('unknown bank provider');
+  const body = parse(z.object({
+    merchantCode: z.string().optional(),
+    consumerKey: z.string().optional(),
+    consumerSecret: z.string().optional(),
+    apiKey: z.string().optional(),
+    signingKey: z.string().optional(),
+  }), req.body);
+  await bankStk.setBankProvider(provider, body, (req.user as { username?: string } | undefined)?.username);
+  res.json(await bankStk.getBankProviderPublic(provider));
 }));
 // IntaSend aggregator settings (env + keys + webhook challenge).
 api.get('/settings/intasend', requireAuth('admin', 'staff'), ah(async (_req, res) => {
