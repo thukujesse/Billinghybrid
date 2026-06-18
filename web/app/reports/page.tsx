@@ -19,6 +19,15 @@ interface RouterRow {
   router_id: string | null; router_name: string; site: string | null;
   revenue_cents: number; payment_count: number;
 }
+interface AccountRow {
+  collection_account_id: string | null; label: string;
+  method: string | null; destination: string | null;
+  revenue_cents: number; payment_count: number;
+}
+interface RouterOpt { id: string; name: string }
+
+const RANGE_DAYS: Record<string, number> = { '7d': 7, '30d': 30, '90d': 90, lifetime: 36500 };
+const RANGE_LABEL: Record<string, string> = { '7d': 'last 7 days', '30d': 'last 30 days', '90d': 'last 90 days', lifetime: 'all time' };
 interface Outstanding {
   expiring_24h: { count: number; potential_cents: number };
   expiring_7d:  { count: number; potential_cents: number };
@@ -68,19 +77,30 @@ function StackedRevenueChart({ data }: { data: RevenuePoint[] }) {
   );
 }
 
-export default async function Reports() {
+export default async function Reports({ searchParams }: { searchParams?: Promise<Record<string, string | undefined>> }) {
+  const sp = (await searchParams) ?? {};
+  const range = sp.range && RANGE_DAYS[sp.range] ? sp.range : 'lifetime';
+  const venue = sp.venue || '';
+  const days = RANGE_DAYS[range];
+  const rangeLabel = RANGE_LABEL[range];
+  const venueQ = venue ? `&router=${encodeURIComponent(venue)}` : '';
+
   let revenue: RevenuePoint[] = [];
   let byPlan: PlanRow[] = [];
   let byRouter: RouterRow[] = [];
+  let byAccount: AccountRow[] = [];
+  let routerOpts: RouterOpt[] = [];
   let outstanding: Outstanding | null = null;
   let mrr: PppoeMrr | null = null;
   let churn: any = null;
   let error: string | null = null;
   try {
-    [revenue, byPlan, byRouter, outstanding, mrr, churn] = await Promise.all([
+    [revenue, byPlan, byRouter, byAccount, routerOpts, outstanding, mrr, churn] = await Promise.all([
       serverApi<RevenuePoint[]>('/reports/revenue-combined?months=12'),
-      serverApi<PlanRow[]>('/reports/revenue-by-plan?days=30'),
-      serverApi<RouterRow[]>('/reports/revenue-by-router?days=30'),
+      serverApi<PlanRow[]>(`/reports/revenue-by-plan?days=${days}${venueQ}`),
+      serverApi<RouterRow[]>(`/reports/revenue-by-router?days=${days}`),
+      serverApi<AccountRow[]>(`/reports/revenue-by-account?days=${days}${venueQ}`),
+      serverApi<RouterOpt[]>('/routers'),
       serverApi<Outstanding>('/reports/outstanding-renewals'),
       serverApi<PppoeMrr>('/reports/pppoe-mrr'),
       serverApi('/reports/churn'),
@@ -114,6 +134,27 @@ export default async function Reports() {
         Unified across M-Pesa hotspot purchases and PPPoE renewals. PPPoE MRR is the recurring
         monthly figure (active services on 25-35 day plans); 12-month total is everything settled.
       </p>
+
+      <form method="get" style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap', margin: '10px 0 2px' }}>
+        <div>
+          <label className="sub" style={{ display: 'block', fontSize: 12, marginBottom: 2 }}>Window</label>
+          <select name="range" defaultValue={range}>
+            <option value="7d">Last 7 days</option>
+            <option value="30d">Last 30 days</option>
+            <option value="90d">Last 90 days</option>
+            <option value="lifetime">Lifetime</option>
+          </select>
+        </div>
+        <div>
+          <label className="sub" style={{ display: 'block', fontSize: 12, marginBottom: 2 }}>Venue</label>
+          <select name="venue" defaultValue={venue}>
+            <option value="">All venues</option>
+            {routerOpts.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+          </select>
+        </div>
+        <button type="submit">Apply</button>
+        <span className="sub" style={{ fontSize: 12, paddingBottom: 6 }}>The plan / account / venue tables below reflect this window{venue ? ' and venue' : ''}.</span>
+      </form>
 
       <div className="grid">
         <div className="card stat">
@@ -153,7 +194,7 @@ export default async function Reports() {
       </p>
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 32 }}>
-        <h2 style={{ margin: 0 }}>Revenue by plan · last 30 days</h2>
+        <h2 style={{ margin: 0 }}>Revenue by plan · {rangeLabel}</h2>
         <div style={{ display: 'flex', gap: 6 }}>
           <a className="btn ghost" href="/api/reports/customers.csv" style={{ textDecoration: 'none' }}>Export customers CSV</a>
           <a className="btn ghost" href="/api/reports/hotspot-purchases.csv" style={{ textDecoration: 'none' }}>Export payments CSV</a>
@@ -172,13 +213,38 @@ export default async function Reports() {
           ))}
           {byPlan.length === 0 && (
             <tr><td colSpan={4} style={{ color: 'var(--muted)' }}>
-              No successful payments in the last 30 days.
+              No successful payments in this window.
             </td></tr>
           )}
         </tbody>
       </table>
 
-      <h2 style={{ marginTop: 32 }}>Revenue by venue · last 30 days</h2>
+      <h2 style={{ marginTop: 32 }}>Revenue by collection account · {rangeLabel}</h2>
+      <p className="sub" style={{ marginTop: 0 }}>
+        Which paybill / till / bank destination received the money. &ldquo;Direct / global&rdquo; covers
+        STK / aggregator collection, the legacy single config, and any deleted account.
+      </p>
+      <table>
+        <thead><tr><th>Account</th><th>Method</th><th>Destination</th><th>Payments</th><th>Revenue</th></tr></thead>
+        <tbody>
+          {byAccount.map((a) => (
+            <tr key={a.collection_account_id ?? 'direct'}>
+              <td>{a.collection_account_id
+                ? <strong>{a.label}</strong>
+                : <span style={{ color: 'var(--muted)' }}>{a.label}</span>}</td>
+              <td>{a.method ? <span className="badge" style={{ textTransform: 'capitalize' }}>{a.method}</span> : '—'}</td>
+              <td>{a.destination || '—'}</td>
+              <td>{a.payment_count}</td>
+              <td><strong>{money(a.revenue_cents)}</strong></td>
+            </tr>
+          ))}
+          {byAccount.length === 0 && (
+            <tr><td colSpan={5} style={{ color: 'var(--muted)' }}>No hotspot revenue in this window.</td></tr>
+          )}
+        </tbody>
+      </table>
+
+      <h2 style={{ marginTop: 32 }}>Revenue by venue · {rangeLabel}</h2>
       <p className="sub" style={{ marginTop: 0 }}>
         Hotspot revenue attributed to the MikroTik the customer paid through (per-router collection).
         &ldquo;Unattributed&rdquo; covers purchases with no router context.
@@ -198,7 +264,7 @@ export default async function Reports() {
           ))}
           {byRouter.length === 0 && (
             <tr><td colSpan={4} style={{ color: 'var(--muted)' }}>
-              No hotspot revenue in the last 30 days.
+              No hotspot revenue in this window.
             </td></tr>
           )}
         </tbody>

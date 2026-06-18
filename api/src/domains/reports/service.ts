@@ -196,7 +196,7 @@ export interface RevenueByPlanRow {
 
 /** Revenue grouped by plan (hotspot_purchases only — has plan_id linkage).
  *  Window is last N days, defaulting to 30. Sorted by revenue descending. */
-export async function revenueByPlan(days = 30): Promise<RevenueByPlanRow[]> {
+export async function revenueByPlan(days = 30, routerId?: string): Promise<RevenueByPlanRow[]> {
   const r = await query<RevenueByPlanRow & { revenue_cents: string }>(
     `SELECT hp.plan_id,
             COALESCE(p.name, 'Unknown plan') AS plan_name,
@@ -207,10 +207,49 @@ export async function revenueByPlan(days = 30): Promise<RevenueByPlanRow[]> {
        LEFT JOIN plans p ON p.id = hp.plan_id
       WHERE hp.status = 'success'
         AND hp.created_at > now() - ($1 || ' days')::interval
+        AND ($2::uuid IS NULL OR hp.router_id = $2)
       GROUP BY hp.plan_id, p.name, p.type
       ORDER BY SUM(hp.amount_kes) DESC NULLS LAST
       LIMIT 50`,
-    [days]
+    [days, routerId ?? null]
+  );
+  return r.rows.map((row) => ({ ...row, revenue_cents: Number(row.revenue_cents) || 0 }));
+}
+
+export interface RevenueByAccountRow {
+  collection_account_id: string | null;
+  label: string;
+  method: string | null;
+  destination: string | null;
+  revenue_cents: number;
+  payment_count: number;
+}
+
+/** Hotspot revenue grouped by the collection account (bank/paybill/till
+ *  destination) that received it — stamped at purchase time. NULL groups as
+ *  "Direct / global" (STK / aggregator / the legacy single config, plus any
+ *  deleted account whose attribution was cleared). Optional per-venue filter. */
+export async function revenueByAccount(days = 30, routerId?: string): Promise<RevenueByAccountRow[]> {
+  const r = await query<RevenueByAccountRow & { revenue_cents: string }>(
+    `SELECT hp.collection_account_id,
+            COALESCE(ca.label, 'Direct / global') AS label,
+            ca.method,
+            CASE ca.method
+              WHEN 'bank' THEN NULLIF(ca.paybill,'') || ' · acct ' || ca.account_no
+              WHEN 'till' THEN 'Till ' || ca.till
+              WHEN 'paybill' THEN 'Paybill ' || ca.paybill
+              ELSE NULL END AS destination,
+            COALESCE(SUM(hp.amount_kes * 100), 0)::text AS revenue_cents,
+            COUNT(*)::int AS payment_count
+       FROM hotspot_purchases hp
+       LEFT JOIN collection_account ca ON ca.id = hp.collection_account_id
+      WHERE hp.status = 'success'
+        AND hp.created_at > now() - ($1 || ' days')::interval
+        AND ($2::uuid IS NULL OR hp.router_id = $2)
+      GROUP BY hp.collection_account_id, ca.label, ca.method, ca.paybill, ca.till, ca.account_no
+      ORDER BY SUM(hp.amount_kes) DESC NULLS LAST
+      LIMIT 100`,
+    [days, routerId ?? null]
   );
   return r.rows.map((row) => ({ ...row, revenue_cents: Number(row.revenue_cents) || 0 }));
 }

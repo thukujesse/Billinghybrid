@@ -16,13 +16,17 @@ export function registerReportsRoutes(api: Router): void {
     const months = req.query.months ? Math.min(Number(req.query.months), 36) : 12;
     res.json(await reports.revenueByMonthCombined(months));
   }));
+  // days caps at 36500 (~100y) so the UI can offer a "Lifetime" window.
+  const windowDays = (q: unknown) => (q ? Math.min(Number(q), 36500) : 30);
+  const venue = (q: unknown) => (typeof q === 'string' && q ? q : undefined);
   api.get('/reports/revenue-by-plan', ah(async (req, res) => {
-    const days = req.query.days ? Math.min(Number(req.query.days), 365) : 30;
-    res.json(await reports.revenueByPlan(days));
+    res.json(await reports.revenueByPlan(windowDays(req.query.days), venue(req.query.router)));
   }));
   api.get('/reports/revenue-by-router', ah(async (req, res) => {
-    const days = req.query.days ? Math.min(Number(req.query.days), 365) : 30;
-    res.json(await reports.revenueByRouter(days));
+    res.json(await reports.revenueByRouter(windowDays(req.query.days)));
+  }));
+  api.get('/reports/revenue-by-account', ah(async (req, res) => {
+    res.json(await reports.revenueByAccount(windowDays(req.query.days), venue(req.query.router)));
   }));
   api.get('/reports/outstanding-renewals', ah(async (_req, res) => {
     res.json(await reports.outstandingRenewals());

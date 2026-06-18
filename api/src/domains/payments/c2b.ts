@@ -83,9 +83,9 @@ export async function initC2bPurchase(input: {
 
   await query(
     `INSERT INTO hotspot_purchases
-       (checkout_request_id, plan_id, phone, mac_address, amount_kes, status, user_agent, router_id)
-     VALUES ($1,$2,$3,$4,$5,'pending',$6,$7)`,
-    [checkoutRequestId, plan.id, phone, input.mac ?? null, amountKes, input.userAgent ?? null, routerId]
+       (checkout_request_id, plan_id, phone, mac_address, amount_kes, status, user_agent, router_id, collection_account_id)
+     VALUES ($1,$2,$3,$4,$5,'pending',$6,$7,$8)`,
+    [checkoutRequestId, plan.id, phone, input.mac ?? null, amountKes, input.userAgent ?? null, routerId, account?.id ?? null]
   );
   const verb = method === 'till' ? 'Buy Goods' : 'Pay Bill';
   const manualMsg = `Lipa na M-Pesa → ${verb} → ${payNumber} → Account ${displayAccount} → KES ${amountKes}`;
