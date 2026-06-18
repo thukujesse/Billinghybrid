@@ -476,6 +476,9 @@ export async function completePurchase(input: {
     } catch (err) {
       console.error('[renew] setServiceStatus failed:', (err as Error).message);
     }
+    // Renewed — clear any auto-STK dunning counters so next cycle starts fresh.
+    await query(`UPDATE services SET stk_dun_attempts = 0, last_stk_dun_at = NULL WHERE id = $1`, [row.service_id])
+      .catch((e) => console.error('[stk-dunning] reset failed:', (e as Error).message));
     return;
   }
 

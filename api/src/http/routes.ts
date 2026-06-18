@@ -24,6 +24,7 @@ import * as c2b from '../domains/payments/c2b.js';
 import * as collectionAccounts from '../domains/payments/collectionAccounts.js';
 import * as bankStk from '../domains/payments/bankStk.js';
 import * as unmatched from '../domains/payments/unmatched.js';
+import * as dunning from '../domains/customers/dunning.js';
 import * as jenga from '../domains/payments/jenga.js';
 import * as intasend from '../domains/payments/intasend.js';
 import * as kopokopo from '../domains/payments/kopokopo.js';
@@ -810,6 +811,32 @@ api.delete('/settings/collection-accounts/:id', requireAuth('admin'), ah(async (
   await collectionAccounts.deleteCollectionAccount(req.params.id);
   res.status(204).end();
 }));
+// ---------- Auto-STK renewal dunning (opt-in) ----------
+// Config + a live preview of who'd be prompted + a manual run trigger.
+api.get('/settings/renewal-dunning', requireAuth('admin', 'staff'), ah(async (_req, res) => {
+  const config = await dunning.getDunningConfig();
+  const eligible = (await dunning.dunningTargets(config)).length;
+  res.json({ ...config, eligible });
+}));
+api.put('/settings/renewal-dunning', requireAuth('admin'), ah(async (req, res) => {
+  const body = parse(z.object({
+    enabled: z.boolean().optional(),
+    maxAttempts: z.number().int().min(1).max(10).optional(),
+    windowHours: z.number().int().min(1).max(168).optional(),
+    graceHours: z.number().int().min(0).max(720).optional(),
+  }), req.body);
+  const config = await dunning.setDunningConfig(body);
+  const eligible = (await dunning.dunningTargets(config)).length;
+  res.json({ ...config, eligible });
+}));
+api.get('/settings/renewal-dunning/preview', requireAuth('admin', 'staff'), ah(async (_req, res) => {
+  const config = await dunning.getDunningConfig();
+  res.json(await dunning.dunningTargets(config));
+}));
+api.post('/settings/renewal-dunning/run', requireAuth('admin'), ah(async (_req, res) => {
+  res.json(await dunning.runStkDunningOnce());
+}));
+
 // ---------- Payment reconciliation (unmatched payments) ----------
 // Confirmations that arrived without matching a pending purchase. Operators
 // recover them (claim -> grant) or dismiss them.

@@ -45,6 +45,19 @@ export function startExpireWorker(intervalMs = 60 * 60 * 1000): () => Promise<vo
         } catch (err) {
           console.error('[expire-worker] auto-renew sweep failed:', (err as Error).message);
         }
+        // Auto-STK renewal dunning (opt-in, OFF by default). Fires an M-Pesa
+        // prompt to lapsing manual-pay customers so they renew with one tap.
+        // Runs AFTER autoRenewDue so wallet customers are renewed silently
+        // first and never get an STK prompt.
+        try {
+          const { runStkDunningOnce } = await import('./dunning.js');
+          const d = await runStkDunningOnce();
+          if (d.fired > 0) {
+            console.log(JSON.stringify({ level: 'info', msg: 'stk_dunning_sweep', fired: d.fired, eligible: d.eligible }));
+          }
+        } catch (err) {
+          console.error('[expire-worker] stk dunning failed:', (err as Error).message);
+        }
         // Low-balance sweep — SMS customers whose auto-renew is on but
         // wallet can't cover the next renewal in 7 days. Runs AFTER
         // autoRenewDue so customers who just got renewed don't get a

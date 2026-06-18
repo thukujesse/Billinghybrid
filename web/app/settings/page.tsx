@@ -754,6 +754,8 @@ export default function SettingsPage() {
 
       <CollectionAccountsManager onToast={setToast} />
 
+      <RenewalDunning onToast={setToast} />
+
       </>)}
 
       {tab === 'sms' && (<>
@@ -1308,6 +1310,83 @@ function BankStkProviders({ onToast }: { onToast: (t: { ok: boolean; msg: string
             </div>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+interface DunningCfg { enabled: boolean; maxAttempts: number; windowHours: number; graceHours: number; eligible: number }
+
+/** Opt-in auto-STK renewal prompts for lapsing manual-pay PPPoE customers. */
+function RenewalDunning({ onToast }: { onToast: (t: { ok: boolean; msg: string }) => void }) {
+  const [cfg, setCfg] = useState<DunningCfg | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = () => api<DunningCfg>('/settings/renewal-dunning').then(setCfg).catch(() => {/* before deploy */});
+  useEffect(() => { load(); }, []);
+
+  const save = async (patch: Partial<DunningCfg>) => {
+    if (!cfg) return;
+    setBusy(true);
+    try {
+      const next = await api<DunningCfg>('/settings/renewal-dunning', {
+        method: 'PUT',
+        body: JSON.stringify({ ...{ enabled: cfg.enabled, maxAttempts: cfg.maxAttempts, windowHours: cfg.windowHours, graceHours: cfg.graceHours }, ...patch }),
+      });
+      setCfg(next);
+      onToast({ ok: true, msg: 'Renewal prompts updated' });
+    } catch (e: any) { onToast({ ok: false, msg: e.message }); }
+    finally { setBusy(false); }
+  };
+  const runNow = async () => {
+    setBusy(true);
+    try {
+      const r = await api<{ enabled: boolean; fired: number; eligible: number; skipped?: string }>('/settings/renewal-dunning/run', { method: 'POST' });
+      onToast({ ok: !r.skipped, msg: r.skipped ? r.skipped : `Sent ${r.fired} prompt${r.fired === 1 ? '' : 's'} (${r.eligible} eligible)` });
+      await load();
+    } catch (e: any) { onToast({ ok: false, msg: e.message }); }
+    finally { setBusy(false); }
+  };
+
+  if (!cfg) return null;
+  return (
+    <div style={{ marginTop: 28 }}>
+      <h2 style={{ margin: 0 }}>Auto-renew prompts (STK)</h2>
+      <p className="sub">
+        When a manual-pay PPPoE customer is about to lapse (or just has), automatically send them an
+        M-Pesa STK prompt so they renew with one PIN tap. Wallet auto-renew customers are unaffected.
+        Runs hourly with the expire worker. <strong>Needs M-Pesa STK (Daraja) configured above.</strong>
+      </p>
+      <div className="card">
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <input type="checkbox" style={{ width: 'auto' }} checked={cfg.enabled} disabled={busy}
+            onChange={(e) => save({ enabled: e.target.checked })} />
+          <span><strong>Enabled</strong> — fire renewal prompts automatically</span>
+        </label>
+        <div className="row" style={{ marginTop: 12 }}>
+          <div style={{ flex: 1 }}>
+            <label>Prompt this many hours BEFORE expiry</label>
+            <input type="number" min={1} max={168} defaultValue={cfg.windowHours}
+              onBlur={(e) => Number(e.target.value) !== cfg.windowHours && save({ windowHours: Number(e.target.value) })} />
+          </div>
+          <div style={{ flex: 1 }}>
+            <label>Keep prompting hours AFTER expiry</label>
+            <input type="number" min={0} max={720} defaultValue={cfg.graceHours}
+              onBlur={(e) => Number(e.target.value) !== cfg.graceHours && save({ graceHours: Number(e.target.value) })} />
+          </div>
+          <div style={{ flex: 1 }}>
+            <label>Max prompts per cycle</label>
+            <input type="number" min={1} max={10} defaultValue={cfg.maxAttempts}
+              onBlur={(e) => Number(e.target.value) !== cfg.maxAttempts && save({ maxAttempts: Number(e.target.value) })} />
+          </div>
+        </div>
+        <p className="sub" style={{ marginTop: 10 }}>
+          <strong>{cfg.eligible}</strong> customer{cfg.eligible === 1 ? '' : 's'} eligible right now
+          {' '}(min 20h between prompts to the same customer).
+        </p>
+        <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+          <button className="ghost" disabled={busy || !cfg.enabled} onClick={runNow}>{busy ? 'Working…' : 'Run now'}</button>
+        </div>
       </div>
     </div>
   );
