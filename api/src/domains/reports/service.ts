@@ -26,7 +26,7 @@ const REVENUE_UNION = `
 
 /** Dashboard / revenue analytics (the doc's NET-NEW Reports Service). */
 export async function dashboard() {
-  const [subs, revenue, invoices, vouchersStat, recentPayments, pppoe] = await Promise.all([
+  const [subs, revenue, invoices, vouchersStat, recentPayments, pppoe, unmatched] = await Promise.all([
     query(`SELECT status, COUNT(*)::int AS n FROM subscribers GROUP BY status`),
     // Unified across both legacy payments AND hotspot_purchases — the home
     // tile previously showed only the legacy slice and looked wrong on
@@ -57,6 +57,11 @@ export async function dashboard() {
                   AND expiry_date < now() + interval '24 hours'
               )::int AS expiring_24h
             FROM services WHERE service_type = 'pppoe'`),
+    // Unclaimed payments waiting on reconciliation — surfaced on the home page
+    // so operators notice money to recover instead of it sitting in the log.
+    query(`SELECT COUNT(*) FILTER (WHERE status='unmatched')::int AS open,
+                  COALESCE(SUM(amount_kes) FILTER (WHERE status='unmatched'),0)::int AS open_amount_kes
+             FROM unmatched_payment`),
   ]);
 
   const byStatus = (rows: any[]) =>
@@ -69,6 +74,7 @@ export async function dashboard() {
     vouchers: byStatus(vouchersStat.rows),
     recent_payments: recentPayments.rows,
     pppoe: pppoe.rows[0] ?? { active: 0, expired: 0, suspended: 0, expiring_24h: 0 },
+    unmatched: unmatched.rows[0] ?? { open: 0, open_amount_kes: 0 },
   };
 }
 

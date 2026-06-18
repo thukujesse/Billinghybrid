@@ -95,7 +95,7 @@ export async function handleIntasendWebhook(p: IntasendWebhook): Promise<{ ok: b
     BillRefNumber: String(p.api_ref ?? ''),      // our HUB reference
     MSISDN: String(p.account ?? ''),
   };
-  const r = await handleC2bConfirmation(mapped);
+  const r = await handleC2bConfirmation(mapped, 'intasend');
   console.log(`[intasend-webhook] ref=${p.api_ref} amount=${p.value} invoice=${p.invoice_id} -> ${r.note}`);
   return { ok: r.matched, note: r.note };
 }

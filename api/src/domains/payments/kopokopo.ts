@@ -105,7 +105,7 @@ export async function handleKopokopoWebhook(p: any): Promise<{ ok: boolean; note
     BillRefNumber: String(attr.metadata?.reference ?? ''),         // our HUB reference
     MSISDN: String(resource.sender_phone_number ?? ''),
   };
-  const r = await handleC2bConfirmation(mapped);
+  const r = await handleC2bConfirmation(mapped, 'kopokopo');
   console.log(`[kopokopo-webhook] ref=${attr.metadata?.reference} amount=${resource.amount} -> ${r.note}`);
   return { ok: r.matched, note: r.note };
 }

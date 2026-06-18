@@ -202,6 +202,7 @@ export default async function Dashboard() {
 
   const subs = data.subscribers ?? {};
   const pppoe = data.pppoe ?? { active: 0, expired: 0, suspended: 0, expiring_24h: 0 };
+  const unmatched = data.unmatched ?? { open: 0, open_amount_kes: 0 };
   const revSpark = revenue.map((r) => r.revenue_cents);
   const total12mo = revenue.reduce((a, b) => a + b.revenue_cents, 0);
   const lastMonth = revenue.length > 0 ? revenue[revenue.length - 1].revenue_cents : 0;
@@ -238,6 +239,24 @@ export default async function Dashboard() {
           <StatusPill label="active PPPoE" count={pppoe.active} tone="ok" />
         </div>
       </div>
+
+      {/* Unclaimed payments — money that came in but didn't auto-match. High
+          visibility so the operator recovers it instead of it sitting unseen. */}
+      {unmatched.open > 0 && (
+        <a href="/reconciliation" style={{
+          display: 'flex', alignItems: 'center', gap: 10, marginTop: 16,
+          padding: '12px 16px', borderRadius: 10, textDecoration: 'none',
+          background: 'var(--orange-weak)', color: 'var(--orange)',
+          border: '1px solid color-mix(in srgb, var(--orange) 30%, transparent)',
+        }}>
+          <span style={{ fontSize: 18 }}>💸</span>
+          <span style={{ flex: 1, fontSize: 13, color: 'var(--text)' }}>
+            <strong>{unmatched.open} unclaimed payment{unmatched.open === 1 ? '' : 's'}</strong>
+            {' '}· KES {Number(unmatched.open_amount_kes).toLocaleString()} paid but not matched to a customer.
+          </span>
+          <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--orange)', whiteSpace: 'nowrap' }}>Reconcile →</span>
+        </a>
+      )}
 
       {/* Hero strip — the four numbers an operator cares about every morning. */}
       <div style={{
