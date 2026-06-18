@@ -20,6 +20,10 @@ export function registerReportsRoutes(api: Router): void {
     const days = req.query.days ? Math.min(Number(req.query.days), 365) : 30;
     res.json(await reports.revenueByPlan(days));
   }));
+  api.get('/reports/revenue-by-router', ah(async (req, res) => {
+    const days = req.query.days ? Math.min(Number(req.query.days), 365) : 30;
+    res.json(await reports.revenueByRouter(days));
+  }));
   api.get('/reports/outstanding-renewals', ah(async (_req, res) => {
     res.json(await reports.outstandingRenewals());
   }));

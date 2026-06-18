@@ -215,6 +215,37 @@ export async function revenueByPlan(days = 30): Promise<RevenueByPlanRow[]> {
   return r.rows.map((row) => ({ ...row, revenue_cents: Number(row.revenue_cents) || 0 }));
 }
 
+export interface RevenueByRouterRow {
+  router_id: string | null;
+  router_name: string;
+  site: string | null;
+  revenue_cents: number;
+  payment_count: number;
+}
+
+/** Hotspot revenue grouped by the router (venue) the payment came from — uses
+ *  hotspot_purchases.router_id, stamped at purchase time. "Unattributed" covers
+ *  purchases with no router context (e.g. pre-router-tracking, or a router that
+ *  didn't pass its NAS/slug). Window is last N days (default 30). */
+export async function revenueByRouter(days = 30): Promise<RevenueByRouterRow[]> {
+  const r = await query<RevenueByRouterRow & { revenue_cents: string }>(
+    `SELECT hp.router_id,
+            COALESCE(r.name, 'Unattributed') AS router_name,
+            r.site,
+            COALESCE(SUM(hp.amount_kes * 100), 0)::text AS revenue_cents,
+            COUNT(*)::int AS payment_count
+       FROM hotspot_purchases hp
+       LEFT JOIN routers r ON r.id = hp.router_id
+      WHERE hp.status = 'success'
+        AND hp.created_at > now() - ($1 || ' days')::interval
+      GROUP BY hp.router_id, r.name, r.site
+      ORDER BY SUM(hp.amount_kes) DESC NULLS LAST
+      LIMIT 100`,
+    [days]
+  );
+  return r.rows.map((row) => ({ ...row, revenue_cents: Number(row.revenue_cents) || 0 }));
+}
+
 export interface OutstandingRenewals {
   expiring_24h: { count: number; potential_cents: number };
   expiring_7d: { count: number; potential_cents: number };

@@ -15,6 +15,10 @@ interface PlanRow {
   revenue_cents: number; payment_count: number;
   service_type: string | null;
 }
+interface RouterRow {
+  router_id: string | null; router_name: string; site: string | null;
+  revenue_cents: number; payment_count: number;
+}
 interface Outstanding {
   expiring_24h: { count: number; potential_cents: number };
   expiring_7d:  { count: number; potential_cents: number };
@@ -67,14 +71,16 @@ function StackedRevenueChart({ data }: { data: RevenuePoint[] }) {
 export default async function Reports() {
   let revenue: RevenuePoint[] = [];
   let byPlan: PlanRow[] = [];
+  let byRouter: RouterRow[] = [];
   let outstanding: Outstanding | null = null;
   let mrr: PppoeMrr | null = null;
   let churn: any = null;
   let error: string | null = null;
   try {
-    [revenue, byPlan, outstanding, mrr, churn] = await Promise.all([
+    [revenue, byPlan, byRouter, outstanding, mrr, churn] = await Promise.all([
       serverApi<RevenuePoint[]>('/reports/revenue-combined?months=12'),
       serverApi<PlanRow[]>('/reports/revenue-by-plan?days=30'),
+      serverApi<RouterRow[]>('/reports/revenue-by-router?days=30'),
       serverApi<Outstanding>('/reports/outstanding-renewals'),
       serverApi<PppoeMrr>('/reports/pppoe-mrr'),
       serverApi('/reports/churn'),
@@ -167,6 +173,32 @@ export default async function Reports() {
           {byPlan.length === 0 && (
             <tr><td colSpan={4} style={{ color: 'var(--muted)' }}>
               No successful payments in the last 30 days.
+            </td></tr>
+          )}
+        </tbody>
+      </table>
+
+      <h2 style={{ marginTop: 32 }}>Revenue by venue · last 30 days</h2>
+      <p className="sub" style={{ marginTop: 0 }}>
+        Hotspot revenue attributed to the MikroTik the customer paid through (per-router collection).
+        &ldquo;Unattributed&rdquo; covers purchases with no router context.
+      </p>
+      <table>
+        <thead><tr><th>Router / venue</th><th>Site</th><th>Payments</th><th>Revenue (30d)</th></tr></thead>
+        <tbody>
+          {byRouter.map((r) => (
+            <tr key={r.router_id ?? 'none'}>
+              <td>{r.router_id
+                ? <a href={`/routers/${r.router_id}`}><strong>{r.router_name}</strong></a>
+                : <span style={{ color: 'var(--muted)' }}>{r.router_name}</span>}</td>
+              <td>{r.site || '—'}</td>
+              <td>{r.payment_count}</td>
+              <td><strong>{money(r.revenue_cents)}</strong></td>
+            </tr>
+          ))}
+          {byRouter.length === 0 && (
+            <tr><td colSpan={4} style={{ color: 'var(--muted)' }}>
+              No hotspot revenue in the last 30 days.
             </td></tr>
           )}
         </tbody>
