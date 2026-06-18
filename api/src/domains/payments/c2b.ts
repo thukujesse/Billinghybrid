@@ -65,7 +65,7 @@ export async function initC2bPurchase(input: {
   // types the ISP's bank ACCOUNT NUMBER as the M-Pesa account (that's how the
   // bank routes + how the IPN identifies the tenant; we settle by phone+amount).
   // For paybill/till the account = our HUB reference (matched on BillRefNumber).
-  const { account, routerId } = await resolveForRouter({ nas: input.nas, slug: input.slug });
+  const { account, routerId } = await resolveForRouter({ nas: input.nas, slug: input.slug, globalMethod: mp.collectionMethod });
   let method: 'paybill' | 'till' | 'bank';
   let payNumber: string;
   let displayAccount: string;

@@ -963,7 +963,7 @@ api.get('/hotspot/pay-config', ah(async (req, res) => {
   const m = await settings.getMpesaConfigPublic();
   const nas = typeof req.query.nas === 'string' ? req.query.nas : undefined;
   const slug = typeof req.query.slug === 'string' ? req.query.slug : undefined;
-  const { account } = await collectionAccounts.resolveForRouter({ nas, slug });
+  const { account } = await collectionAccounts.resolveForRouter({ nas, slug, globalMethod: m.collectionMethod });
   if (account) {
     res.json({
       collectionMethod: account.method,

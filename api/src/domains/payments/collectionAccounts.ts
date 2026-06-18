@@ -159,7 +159,7 @@ export async function setDefaultCollectionAccount(id: string): Promise<Collectio
  * legacy global M-Pesa settings.
  */
 export async function resolveForRouter(
-  opts: { nas?: string; slug?: string }
+  opts: { nas?: string; slug?: string; globalMethod?: string }
 ): Promise<{ account: CollectionAccount | null; routerId: string | null }> {
   let router: { id: string; collection_account_id: string | null } | undefined;
   const nas = (opts.nas ?? '').trim();
@@ -175,11 +175,20 @@ export async function resolveForRouter(
     )).rows[0];
   }
   let account: CollectionAccount | null = null;
+  // An EXPLICIT per-router pin always wins — even over an automated global rail.
   if (router?.collection_account_id) {
     account = (await query<CollectionAccount>(`SELECT * FROM collection_account WHERE id = $1`, [router.collection_account_id])).rows[0] ?? null;
   }
+  // The DEFAULT account only stands in for a NO-API global method (bank / paybill
+  // / till). When the ISP's global method is an automated rail (STK / IntaSend /
+  // Kopo Kopo), that rail wins everywhere except the explicit pins above — so a
+  // stray default account never silently hijacks automated collection.
   if (!account) {
-    account = (await query<CollectionAccount>(`SELECT * FROM collection_account WHERE is_default LIMIT 1`)).rows[0] ?? null;
+    const g = opts.globalMethod;
+    const defaultApplies = g === undefined || g === 'bank' || g === 'paybill' || g === 'till';
+    if (defaultApplies) {
+      account = (await query<CollectionAccount>(`SELECT * FROM collection_account WHERE is_default LIMIT 1`)).rows[0] ?? null;
+    }
   }
   return { account, routerId: router?.id ?? null };
 }
