@@ -23,6 +23,7 @@ import { parseCallback, stkPush } from '../domains/payments/daraja.js';
 import * as c2b from '../domains/payments/c2b.js';
 import * as collectionAccounts from '../domains/payments/collectionAccounts.js';
 import * as bankStk from '../domains/payments/bankStk.js';
+import * as unmatched from '../domains/payments/unmatched.js';
 import * as jenga from '../domains/payments/jenga.js';
 import * as intasend from '../domains/payments/intasend.js';
 import * as kopokopo from '../domains/payments/kopokopo.js';
@@ -809,6 +810,32 @@ api.delete('/settings/collection-accounts/:id', requireAuth('admin'), ah(async (
   await collectionAccounts.deleteCollectionAccount(req.params.id);
   res.status(204).end();
 }));
+// ---------- Payment reconciliation (unmatched payments) ----------
+// Confirmations that arrived without matching a pending purchase. Operators
+// recover them (claim -> grant) or dismiss them.
+api.get('/payments/unmatched', requireAuth('admin', 'staff'), ah(async (req, res) => {
+  const status = typeof req.query.status === 'string' ? req.query.status : 'unmatched';
+  res.json(await unmatched.listUnmatched(status));
+}));
+api.get('/payments/unmatched/stats', requireAuth('admin', 'staff'), ah(async (_req, res) => {
+  res.json(await unmatched.unmatchedStats());
+}));
+api.post('/payments/unmatched/:id/claim', requireAuth('admin', 'staff'), ah(async (req, res) => {
+  const body = parse(z.object({
+    plan_id: z.string().uuid(),
+    phone: z.string().optional(),
+    mac: z.string().optional(),
+  }), req.body);
+  res.json(await unmatched.claimUnmatched(
+    req.params.id, { planId: body.plan_id, phone: body.phone, mac: body.mac },
+    (req.user as { username?: string } | undefined)?.username
+  ));
+}));
+api.post('/payments/unmatched/:id/ignore', requireAuth('admin', 'staff'), ah(async (req, res) => {
+  await unmatched.ignoreUnmatched(req.params.id, (req.user as { username?: string } | undefined)?.username);
+  res.json({ ok: true });
+}));
+
 // Assign (or clear) the collection account a router collects into.
 api.put('/routers/:id/collection-account', requireAuth('admin', 'staff'), ah(async (req, res) => {
   const body = parse(z.object({ collection_account_id: z.string().uuid().nullable() }), req.body);

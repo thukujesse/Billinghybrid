@@ -6,6 +6,7 @@ import { normalizeMsisdn } from './daraja.js';
 import { completePurchase } from '../hotspot/service.js';
 import { resolveForRouter } from './collectionAccounts.js';
 import { initiateBankStk, isBankProvider } from './bankStk.js';
+import { recordUnmatched } from './unmatched.js';
 import { badRequest, notFound } from '../../lib/errors.js';
 
 /**
@@ -132,7 +133,7 @@ export interface C2bConfirmation {
 /** Handle a Daraja C2B confirmation: dedupe on TransID, match a pending purchase
  * by account-ref (phone) or payer MSISDN + amount, settle it (grant via the
  * existing completePurchase path). Always safe to ACK 0 to Safaricom. */
-export async function handleC2bConfirmation(p: C2bConfirmation): Promise<{ matched: boolean; note: string }> {
+export async function handleC2bConfirmation(p: C2bConfirmation, source = 'c2b'): Promise<{ matched: boolean; note: string }> {
   const transId = String(p.TransID ?? '').trim();
   const amount = Math.round(Number(p.TransAmount));
   // The account number the payer typed = our generated reference (e.g. HUB458721).
@@ -164,11 +165,13 @@ export async function handleC2bConfirmation(p: C2bConfirmation): Promise<{ match
   }
   if (!row) {
     console.warn(`[c2b] UNMATCHED payment TransID=${transId} amount=${amount} ref=${ref} msisdn=${msisdn}`);
-    return { matched: false, note: 'no pending purchase matched (logged for manual claim)' };
+    await recordUnmatched({ source, transId, amount, msisdn, reference: ref, reason: 'no_match', raw: p });
+    return { matched: false, note: 'no pending purchase matched (parked for reconciliation)' };
   }
   // Guard: the payment must cover the package price (no partial activation).
   if (amount < row.amount_kes) {
     console.warn(`[c2b] UNDERPAID ref=${ref} TransID=${transId} paid=${amount} need=${row.amount_kes}`);
+    await recordUnmatched({ source, transId, amount, msisdn, reference: ref, reason: 'underpaid', raw: p });
     return { matched: false, note: 'underpaid — not activated' };
   }
   await completePurchase({ checkoutRequestId: row.checkout_request_id, success: true, receipt: transId });

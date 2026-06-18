@@ -21,6 +21,7 @@ const GROUPS: Group[] = [
       { href: '/vouchers', label: 'Vouchers' },
       { href: '/invoices', label: 'Invoices' },
       { href: '/payments', label: 'Payments' },
+      { href: '/reconciliation', label: 'Reconciliation' },
       { href: '/resellers', label: 'Resellers' },
       { href: '/reports', label: 'Reports' },
       { href: '/audit', label: 'Audit' },

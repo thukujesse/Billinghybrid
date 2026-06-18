@@ -67,7 +67,7 @@ export async function handleJengaIpn(payload: any): Promise<{ matched: boolean; 
     BillRefNumber: reference,
     MSISDN: msisdn,
   };
-  const result = await handleC2bConfirmation(mapped);
+  const result = await handleC2bConfirmation(mapped, 'jenga');
   console.log(`[jenga-ipn] ref=${reference} amount=${amount} txn=${txnId} -> ${result.note}`);
   return result;
 }
