@@ -6,29 +6,44 @@ import { api, getToken, setToken } from '@/lib/api';
 // Hidden on the captive portal + the standalone login page.
 const CUSTOMER_PATHS = ['/hotspot', '/renew', '/portal', '/login'];
 
+const BRAND = 'HUBNETWORKS';
+
 type Item = { href: string; label: string };
 type Group = { key: string; label: string; ico: string; items: Item[] };
 
-// Four top-level areas (Users / Communication / Network / Routers). Dashboard
-// is the home item above them; Settings + theme live in the footer.
+// Flat, always-visible sections (matches the overview design). Every route the
+// app exposes is grouped here — nothing is hidden behind an accordion. Labels
+// follow the product vocabulary; hrefs are the real, existing routes.
 const GROUPS: Group[] = [
   {
-    key: 'users', label: 'Users', ico: '👥', items: [
-      { href: '/customers', label: 'Customers' },
+    key: 'customers', label: 'Customers', ico: '👥', items: [
+      { href: '/customers', label: 'Subscribers' },
       { href: '/leads', label: 'Leads' },
       { href: '/users/hotspot', label: 'Hotspot users' },
-      { href: '/plans', label: 'Plans' },
-      { href: '/vouchers', label: 'Vouchers' },
-      { href: '/invoices', label: 'Invoices' },
-      { href: '/payments', label: 'Payments' },
-      { href: '/reconciliation', label: 'Reconciliation' },
-      { href: '/resellers', label: 'Resellers' },
-      { href: '/reports', label: 'Reports' },
-      { href: '/audit', label: 'Audit' },
     ],
   },
   {
-    key: 'comms', label: 'Communication', ico: '💬', items: [
+    key: 'network', label: 'Network', ico: '📶', items: [
+      { href: '/sessions', label: 'Live sessions' },
+      { href: '/plans', label: 'Plans' },
+      { href: '/routers', label: 'Routers' },
+      { href: '/network', label: 'Overview' },
+      { href: '/network/twin', label: 'Live map' },
+      { href: '/payment-events', label: 'Payment queue' },
+      { href: '/plugins', label: 'Plugins' },
+    ],
+  },
+  {
+    key: 'finance', label: 'Finance', ico: '💳', items: [
+      { href: '/invoices', label: 'Invoices' },
+      { href: '/payments', label: 'Payments' },
+      { href: '/reconciliation', label: 'Reconciliation' },
+      { href: '/vouchers', label: 'Vouchers' },
+      { href: '/resellers', label: 'Resellers' },
+    ],
+  },
+  {
+    key: 'outreach', label: 'Outreach', ico: '📣', items: [
       { href: '/alerts', label: 'Alerts' },
       { href: '/messages', label: 'Message templates' },
       { href: '/ads', label: 'Ads' },
@@ -36,17 +51,9 @@ const GROUPS: Group[] = [
     ],
   },
   {
-    key: 'network', label: 'Network', ico: '🌐', items: [
-      { href: '/network', label: 'Overview' },
-      { href: '/network/twin', label: 'Live map' },
-      { href: '/sessions', label: 'Sessions' },
-      { href: '/payment-events', label: 'Payment queue' },
-      { href: '/plugins', label: 'Plugins' },
-    ],
-  },
-  {
-    key: 'routers', label: 'Routers', ico: '📡', items: [
-      { href: '/routers', label: 'Routers' },
+    key: 'insights', label: 'Insights', ico: '📊', items: [
+      { href: '/reports', label: 'Analytics' },
+      { href: '/audit', label: 'Audit log' },
     ],
   },
   {
@@ -74,8 +81,6 @@ export function Sidebar() {
 
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
   const [hidden, setHidden] = useState(false);
-  // Which group accordions are open. Seed with the group owning the active route.
-  const [open, setOpen] = useState<Record<string, boolean>>({});
   const [me, setMe] = useState<{ username?: string; role?: string } | null>(null);
 
   // Who's signed in (drives the footer). Quietly null if not authenticated.
@@ -95,12 +100,6 @@ export function Sidebar() {
     const s = document.documentElement.getAttribute('data-sidebar');
     setHidden(s === 'hidden');
   }, []);
-
-  // Auto-expand the group that contains the current page.
-  useEffect(() => {
-    const active = GROUPS.find((g) => g.items.some((i) => isActive(pathname, i.href)));
-    if (active) setOpen((o) => (o[active.key] ? o : { ...o, [active.key]: true }));
-  }, [pathname]);
 
   // Customer routes: no sidebar, and collapse the shell so content isn't pushed.
   useEffect(() => {
@@ -139,7 +138,7 @@ export function Sidebar() {
 
       <aside className="sidebar">
         <div className="sidebar-head">
-          <span className="brand">JTM <em>Billing</em></span>
+          <span className="brand">{BRAND}</span>
           <button
             className="nav-icon-btn sidebar-collapse"
             aria-label="Hide menu"
@@ -154,40 +153,27 @@ export function Sidebar() {
             className={`side-link${isActive(pathname, '/') ? ' active' : ''}`}
             onClick={onNavigate}
           >
-            <span className="ico">⌂</span> Dashboard
+            <span className="ico">⌂</span> Overview
           </a>
 
-          <div className="sidebar-divider" />
-
-          {GROUPS.map((g) => {
-            const groupActive = g.items.some((i) => isActive(pathname, i.href));
-            const isOpen = open[g.key] ?? false;
-            return (
-              <div key={g.key}>
-                <button
-                  className={`side-link${groupActive && !isOpen ? ' active' : ''}`}
-                  aria-expanded={isOpen}
-                  onClick={() => setOpen((o) => ({ ...o, [g.key]: !o[g.key] }))}
-                >
-                  <span className="ico">{g.ico}</span>
-                  {g.label}
-                  <span className={`chev${isOpen ? ' open' : ''}`}>▶</span>
-                </button>
-                {isOpen && (
-                  <div className="side-sub">
-                    {g.items.map((i) => (
-                      <a
-                        key={i.href}
-                        href={i.href}
-                        className={isActive(pathname, i.href) ? 'active' : ''}
-                        onClick={onNavigate}
-                      >{i.label}</a>
-                    ))}
-                  </div>
-                )}
+          {GROUPS.map((g) => (
+            <div key={g.key} style={{ marginTop: 14 }}>
+              <div style={{
+                fontSize: 10, fontWeight: 700, letterSpacing: 0.7, textTransform: 'uppercase',
+                color: 'var(--muted)', padding: '0 12px 6px', display: 'flex', alignItems: 'center', gap: 7,
+              }}>
+                <span aria-hidden style={{ fontSize: 12 }}>{g.ico}</span>{g.label}
               </div>
-            );
-          })}
+              {g.items.map((i) => (
+                <a
+                  key={i.href}
+                  href={i.href}
+                  className={`side-link${isActive(pathname, i.href) ? ' active' : ''}`}
+                  onClick={onNavigate}
+                >{i.label}</a>
+              ))}
+            </div>
+          ))}
         </nav>
 
         <div className="sidebar-foot" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 4 }}>
