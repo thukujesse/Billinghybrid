@@ -16,6 +16,8 @@
  * worker — replicas that don't run jobs shouldn't run this either).
  */
 import { config } from '../../config.js';
+import { runWithTenant, currentTenantId } from '../../db/pool.js';
+import { listTenants, poolForTenant } from '../tenants/service.js';
 import { expireDueServices, notifyExpiringSoon } from './service.js';
 import { autoRenewDue } from './wallet.js';
 import { lowBalanceSweep } from './notifications.js';
@@ -24,67 +26,74 @@ export function startExpireWorker(intervalMs = 60 * 60 * 1000): () => Promise<vo
   let stopping = false;
   let inFlight: Promise<void> | null = null;
 
+  // One tenant's worth of sweeps, in order, within the caller's tenant context
+  // (query() hits that tenant's DB). Each sweep is independently guarded so one
+  // failure doesn't abort the rest. Order: wallet auto-renew FIRST (silent,
+  // keeps the customer online), then STK dunning, low-balance + expiry SMS,
+  // then the expire sweep for the past-due.
+  const runSweeps = async () => {
+    const tenant = currentTenantId();
+    try {
+      const renewed = await autoRenewDue(24);
+      if (renewed.length > 0) {
+        console.log(JSON.stringify({
+          level: 'info', msg: 'auto_renew_sweep', tenant,
+          count: renewed.length, total_kes: renewed.reduce((a, b) => a + b.amount_cents, 0) / 100,
+        }));
+      }
+    } catch (err) { console.error(`[expire-worker:${tenant}] auto-renew sweep failed:`, (err as Error).message); }
+
+    // Auto-STK renewal dunning (opt-in, OFF by default). Runs after autoRenewDue
+    // so wallet customers are renewed silently first and never get an STK prompt.
+    try {
+      const { runStkDunningOnce } = await import('./dunning.js');
+      const d = await runStkDunningOnce();
+      if (d.fired > 0) console.log(JSON.stringify({ level: 'info', msg: 'stk_dunning_sweep', tenant, fired: d.fired, eligible: d.eligible }));
+    } catch (err) { console.error(`[expire-worker:${tenant}] stk dunning failed:`, (err as Error).message); }
+
+    try {
+      const { warned } = await lowBalanceSweep(7 * 24);
+      if (warned > 0) console.log(JSON.stringify({ level: 'info', msg: 'low_balance_sweep', tenant, count: warned }));
+    } catch (err) { console.error(`[expire-worker:${tenant}] low-balance sweep failed:`, (err as Error).message); }
+
+    try {
+      const { warned } = await notifyExpiringSoon(24);
+      if (warned > 0) console.log(JSON.stringify({ level: 'info', msg: 'expiry_warning_sweep', tenant, count: warned }));
+    } catch (err) { console.error(`[expire-worker:${tenant}] warning sweep failed:`, (err as Error).message); }
+
+    try {
+      const expired = await expireDueServices();
+      if (expired.length > 0) {
+        console.log(JSON.stringify({
+          level: 'info', msg: 'auto_expire_sweep', tenant,
+          count: expired.length, services: expired.map((s) => ({ id: s.id, username: s.username })),
+        }));
+      }
+    } catch (err) { console.error(`[expire-worker:${tenant}] expire sweep failed:`, (err as Error).message); }
+  };
+
   const run = async () => {
     if (stopping || inFlight) return;
     inFlight = (async () => {
       try {
-        // Order: wallet auto-renew FIRST (silent, no SMS, customer stays
-        // online), then warning sweep for customers without enough wallet
-        // balance, then expire sweep for the past-due. The auto-renew
-        // step shortens the warning list — customers who got auto-renewed
-        // are no longer 'expiring soon' and don't get an SMS.
-        try {
-          const renewed = await autoRenewDue(24);
-          if (renewed.length > 0) {
-            console.log(JSON.stringify({
-              level: 'info', msg: 'auto_renew_sweep',
-              count: renewed.length,
-              total_kes: renewed.reduce((a, b) => a + b.amount_cents, 0) / 100,
-            }));
+        // Multitenant: run the sweeps for EVERY active tenant, each in its own
+        // DB context. listTenants() always hits the control DB. Falls back to a
+        // single default-pool sweep when the registry is empty/unavailable (the
+        // original single-tenant install).
+        let tenants: Awaited<ReturnType<typeof listTenants>> = [];
+        try { tenants = (await listTenants()).filter((t) => t.status === 'active'); }
+        catch (e) { console.error('[expire-worker] listTenants failed; using default pool:', (e as Error).message); }
+        console.log(JSON.stringify({ level: 'info', msg: 'expire_worker_run', tenants: tenants.length || 1 }));
+        if (tenants.length === 0) {
+          await runSweeps();
+        } else {
+          for (const t of tenants) {
+            try {
+              await runWithTenant({ tenantId: t.slug, pool: poolForTenant(t), uuid: t.id, status: t.status }, runSweeps);
+            } catch (err) {
+              console.error(`[expire-worker] tenant ${t.slug} sweep failed:`, (err as Error).message);
+            }
           }
-        } catch (err) {
-          console.error('[expire-worker] auto-renew sweep failed:', (err as Error).message);
-        }
-        // Auto-STK renewal dunning (opt-in, OFF by default). Fires an M-Pesa
-        // prompt to lapsing manual-pay customers so they renew with one tap.
-        // Runs AFTER autoRenewDue so wallet customers are renewed silently
-        // first and never get an STK prompt.
-        try {
-          const { runStkDunningOnce } = await import('./dunning.js');
-          const d = await runStkDunningOnce();
-          if (d.fired > 0) {
-            console.log(JSON.stringify({ level: 'info', msg: 'stk_dunning_sweep', fired: d.fired, eligible: d.eligible }));
-          }
-        } catch (err) {
-          console.error('[expire-worker] stk dunning failed:', (err as Error).message);
-        }
-        // Low-balance sweep — SMS customers whose auto-renew is on but
-        // wallet can't cover the next renewal in 7 days. Runs AFTER
-        // autoRenewDue so customers who just got renewed don't get a
-        // pointless "your wallet is low" message in the same tick.
-        try {
-          const { warned } = await lowBalanceSweep(7 * 24);
-          if (warned > 0) {
-            console.log(JSON.stringify({ level: 'info', msg: 'low_balance_sweep', count: warned }));
-          }
-        } catch (err) {
-          console.error('[expire-worker] low-balance sweep failed:', (err as Error).message);
-        }
-        try {
-          const { warned } = await notifyExpiringSoon(24);
-          if (warned > 0) {
-            console.log(JSON.stringify({ level: 'info', msg: 'expiry_warning_sweep', count: warned }));
-          }
-        } catch (err) {
-          console.error('[expire-worker] warning sweep failed:', (err as Error).message);
-        }
-        const expired = await expireDueServices();
-        if (expired.length > 0) {
-          console.log(JSON.stringify({
-            level: 'info', msg: 'auto_expire_sweep',
-            count: expired.length,
-            services: expired.map((s) => ({ id: s.id, username: s.username })),
-          }));
         }
       } catch (err) {
         console.error('[expire-worker] sweep failed:', (err as Error).message);
