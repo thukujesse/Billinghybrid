@@ -232,6 +232,7 @@ api.get('/plugins', ah(async (_req, res) => res.json(listPlugins())));
 
 // ---------------------------- Dashboard -----------------------------
 api.get('/dashboard', ah(async (_req, res) => res.json(await reports.dashboard())));
+api.get('/dashboard/overview', ah(async (_req, res) => res.json(await reports.overviewDashboard())));
 api.get('/reports/revenue', ah(async (_req, res) => res.json(await reports.revenueByMonth())));
 api.get('/reports/top-plans', ah(async (_req, res) => res.json(await reports.topPlans())));
 api.get('/reports/churn', ah(async (_req, res) => res.json(await reports.churnAndMrr())));

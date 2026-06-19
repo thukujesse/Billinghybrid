@@ -411,3 +411,134 @@ export async function hotspotPurchasesCsv(): Promise<string> {
   ]));
   return [header, ...rows].join('\n');
 }
+
+// =====================================================================
+// Operator Overview — one resilient aggregate that powers the home page.
+// Every metric degrades to a safe default so a single failing query never
+// blanks the dashboard.
+// =====================================================================
+
+async function safeMetric<T>(p: Promise<T>, fallback: T): Promise<T> {
+  try { return await p; } catch (e) { console.error('[overview] metric failed:', (e as Error).message); return fallback; }
+}
+
+export interface OverviewDashboard {
+  online_now: number;
+  total_subscribers: number;
+  active_subscriptions: number;
+  routers: { total: number; healthy: number; offline: number };
+  expiring_24h: number;
+  revenue_today_cents: number;
+  revenue_yesterday_window_cents: number;
+  revenue_delta_pct: number | null;
+  traffic_last_hour_bytes: number;
+  traffic_series: number[];
+  latest_payment: { amount_cents: number; source: string; created_at: string } | null;
+  unpaid_invoices: { count: number; total_cents: number };
+  renewals_due: Array<{ id: string; full_name: string | null; account_number: string | null; phone: string | null; expiry_date: string; plan_name: string | null }>;
+  busiest_routers: Array<{ id: string; name: string; sessions: number; bytes_total: number; pct: number }>;
+  today_events: Array<{ kind: string; created_at: string; label: string | null; amount_cents: number | null }>;
+}
+
+export async function overviewDashboard(): Promise<OverviewDashboard> {
+  const { routerStatus } = await import('../network/service.js');
+
+  const [routers, rev, active, subsTotal, expiring24, unpaid, renewals, events, latest, trafficSeries] = await Promise.all([
+    safeMetric(routerStatus(), [] as any[]),
+    safeMetric(
+      query<{ today: string; yest: string }>(
+        `SELECT
+           (SELECT COALESCE(SUM(amount_cents),0) FROM (${REVENUE_UNION}) u
+              WHERE status='success' AND created_at >= now()::date)::text AS today,
+           (SELECT COALESCE(SUM(amount_cents),0) FROM (${REVENUE_UNION}) u
+              WHERE status='success'
+                AND created_at >= (now()::date - interval '1 day')
+                AND created_at <  (now() - interval '1 day'))::text AS yest`
+      ).then((r) => r.rows[0]),
+      { today: '0', yest: '0' }
+    ),
+    safeMetric(query<{ n: string }>(`SELECT COUNT(*)::text n FROM services WHERE status='active'`).then((r) => Number(r.rows[0].n)), 0),
+    safeMetric(query<{ n: string }>(`SELECT COUNT(*)::text n FROM subscribers`).then((r) => Number(r.rows[0].n)), 0),
+    safeMetric(query<{ n: string }>(`SELECT COUNT(*)::text n FROM services WHERE service_type='pppoe' AND status='active' AND expiry_date > now() AND expiry_date < now() + interval '24 hours'`).then((r) => Number(r.rows[0].n)), 0),
+    safeMetric(query<{ n: string; amt: string }>(`SELECT COUNT(*)::text n, COALESCE(SUM(total_cents),0)::text amt FROM invoices WHERE status IN ('open','overdue')`).then((r) => ({ count: Number(r.rows[0].n), total_cents: Number(r.rows[0].amt) })), { count: 0, total_cents: 0 }),
+    safeMetric(query<any>(
+      `SELECT s.id, s.expiry_date, c.full_name, c.account_number, c.phone, p.name AS plan_name
+         FROM services s JOIN customers c ON c.id = s.customer_id LEFT JOIN plans p ON p.id = s.plan_id
+        WHERE s.service_type='pppoe' AND s.status='active'
+          AND s.expiry_date > now() AND s.expiry_date < now() + interval '48 hours'
+        ORDER BY s.expiry_date LIMIT 12`
+    ).then((r) => r.rows), []),
+    safeMetric(query<any>(
+      `(SELECT 'payment' AS kind, hp.completed_at AS created_at,
+               COALESCE(NULLIF(c.full_name,''), '••• ' || RIGHT(hp.phone, 3)) AS label,
+               (hp.amount_kes * 100)::bigint AS amount_cents
+          FROM hotspot_purchases hp LEFT JOIN customers c ON c.phone = hp.phone
+         WHERE hp.status='success' AND hp.completed_at >= now()::date)
+       UNION ALL
+       (SELECT 'signup' AS kind, created_at, full_name AS label, NULL::bigint AS amount_cents
+          FROM customers WHERE created_at >= now()::date)
+       ORDER BY created_at DESC LIMIT 12`
+    ).then((r) => r.rows), []),
+    safeMetric(query<any>(
+      `SELECT (hp.amount_kes * 100)::bigint AS amount_cents,
+              COALESCE(NULLIF(c.full_name,''), '••• ' || RIGHT(hp.phone, 3)) AS source,
+              hp.completed_at AS created_at
+         FROM hotspot_purchases hp LEFT JOIN customers c ON c.phone = hp.phone
+        WHERE hp.status='success' AND hp.completed_at IS NOT NULL
+        ORDER BY hp.completed_at DESC LIMIT 1`
+    ).then((r) => r.rows[0] ?? null), null),
+    // Real per-hour traffic (bytes moved) for the last 12 hours, from the
+    // cumulative router_metrics counters: per router per hour = max-min of the
+    // running byte totals (clamped at 0 so a counter reset reads as 0), summed
+    // across routers. Drives the hero sparkline with HONEST traffic data.
+    safeMetric(query<{ bytes: string }>(
+      `WITH hourly AS (
+         SELECT router_id, date_trunc('hour', sampled_at) AS hr,
+                GREATEST(0, MAX(total_bytes_in + total_bytes_out) - MIN(total_bytes_in + total_bytes_out)) AS bytes
+           FROM router_metrics
+          WHERE sampled_at > now() - interval '12 hours'
+          GROUP BY router_id, date_trunc('hour', sampled_at)
+       )
+       SELECT COALESCE(SUM(bytes),0)::text AS bytes
+         FROM hourly GROUP BY hr ORDER BY hr`
+    ).then((r) => r.rows.map((x) => Number(x.bytes) || 0)), [] as number[]),
+  ]);
+
+  const total = (routers as any[]).length;
+  const healthy = (routers as any[]).filter((r) => r.wg_up).length;
+  const online_now = (routers as any[]).reduce((a, r) => a + (Number(r.active_sessions) || 0), 0);
+  const bytesOf = (r: any) => (Number(r.total_bytes_in) || 0) + (Number(r.total_bytes_out) || 0);
+  // "Last hour" is the live throughput (bytes/sec) extrapolated over an hour;
+  // busiest-router volume below uses the cumulative byte counters instead.
+  const traffic_last_hour_bytes = (routers as any[]).reduce(
+    (a, r) => a + ((Number(r.rate_bps_in) || 0) + (Number(r.rate_bps_out) || 0)) * 3600, 0
+  );
+  const busiestTotal = traffic_last_hour_bytes || 1;
+  const busiest_routers = (routers as any[])
+    .map((r) => ({ id: r.id, name: r.name, sessions: Number(r.active_sessions) || 0, bytes_total: bytesOf(r) }))
+    .filter((r) => r.sessions > 0 || r.bytes_total > 0)
+    .sort((a, b) => b.bytes_total - a.bytes_total)
+    .slice(0, 6)
+    .map((r) => ({ ...r, pct: Math.round((r.bytes_total / busiestTotal) * 100) }));
+
+  const today_c = Number(rev.today) || 0;
+  const yest_c = Number(rev.yest) || 0;
+
+  return {
+    online_now,
+    total_subscribers: subsTotal,
+    active_subscriptions: active,
+    routers: { total, healthy, offline: total - healthy },
+    expiring_24h: expiring24,
+    revenue_today_cents: today_c,
+    revenue_yesterday_window_cents: yest_c,
+    revenue_delta_pct: yest_c > 0 ? Math.round(((today_c - yest_c) / yest_c) * 100) : null,
+    traffic_last_hour_bytes,
+    traffic_series: trafficSeries as number[],
+    latest_payment: latest ? { amount_cents: Number(latest.amount_cents), source: latest.source, created_at: latest.created_at } : null,
+    unpaid_invoices: unpaid,
+    renewals_due: renewals,
+    busiest_routers,
+    today_events: (events as any[]).map((e) => ({ kind: e.kind, created_at: e.created_at, label: e.label, amount_cents: e.amount_cents === null ? null : Number(e.amount_cents) })),
+  };
+}

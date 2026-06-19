@@ -5,448 +5,347 @@ import { serverApi } from '@/lib/serverApi';
 
 export const dynamic = 'force-dynamic';
 
-interface RevenuePoint {
-  month: string;
-  revenue_cents: number;
-  hotspot_guest_cents: number;
-  pppoe_renewal_cents: number;
+const BRAND = 'HUBNETWORKS';
+
+interface Overview {
+  online_now: number;
+  total_subscribers: number;
+  active_subscriptions: number;
+  routers: { total: number; healthy: number; offline: number };
+  expiring_24h: number;
+  revenue_today_cents: number;
+  revenue_yesterday_window_cents: number;
+  revenue_delta_pct: number | null;
+  traffic_last_hour_bytes: number;
+  traffic_series: number[];
+  latest_payment: { amount_cents: number; source: string; created_at: string } | null;
+  unpaid_invoices: { count: number; total_cents: number };
+  renewals_due: Array<{ id: string; full_name: string | null; account_number: string | null; phone: string | null; expiry_date: string; plan_name: string | null }>;
+  busiest_routers: Array<{ id: string; name: string; sessions: number; bytes_total: number; pct: number }>;
+  today_events: Array<{ kind: string; created_at: string; label: string | null; amount_cents: number | null }>;
+}
+interface RevenuePoint { month: string; revenue_cents: number }
+interface Me { username?: string }
+
+// ---------- formatting helpers ----------
+function greeting(h: number): string {
+  if (h < 12) return 'Good morning';
+  if (h < 17) return 'Good afternoon';
+  if (h < 22) return 'Good evening';
+  return 'Working late';
+}
+function shift(h: number): string {
+  if (h < 5) return 'NIGHT SHIFT';
+  if (h < 12) return 'MORNING SHIFT';
+  if (h < 17) return 'MIDDAY SHIFT';
+  if (h < 21) return 'EVENING SHIFT';
+  return 'NIGHT SHIFT';
+}
+function dayPhrase(h: number): string {
+  if (h < 9) return 'The day is just getting started.';
+  if (h < 12) return 'Morning rush is on.';
+  if (h < 17) return 'The day is in full swing.';
+  if (h < 21) return 'Evening peak — keep an eye on capacity.';
+  return 'Quiet hours — a good time for maintenance.';
+}
+function compactKes(cents: number): string {
+  const k = cents / 100;
+  if (k >= 1_000_000) return `${(k / 1_000_000).toFixed(1)}M`;
+  if (k >= 1_000) return `${(k / 1_000).toFixed(1)}k`;
+  return `${Math.round(k)}`;
+}
+function fmtBytes(n: number): string {
+  if (!n || n < 0) return '0 B';
+  const u = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+  let i = 0; let v = n;
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  return `${v.toFixed(v >= 100 || i === 0 ? 0 : 1)} ${u[i]}`;
+}
+function ago(iso: string): string {
+  const s = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+  if (s < 60) return 'just now';
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m} min${m === 1 ? '' : 's'} ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h} hour${h === 1 ? '' : 's'} ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+function fromNow(iso: string): string {
+  const s = Math.max(0, Math.floor((new Date(iso).getTime() - Date.now()) / 1000));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (h > 0) return `${h}h ${m}m from now`;
+  return `${m}m ${s % 60}s from now`;
+}
+function initial(s: string | null): string {
+  return (s ?? '?').trim().charAt(0).toUpperCase() || '?';
+}
+function maskPhone(p: string | null): string {
+  if (!p) return '';
+  const d = p.replace(/\D/g, '');
+  if (d.length < 6) return p;
+  return `${d.slice(0, 6)}···${d.slice(-3)}`;
 }
 
-interface OutstandingBucket { count: number; potential_cents: number }
-interface Outstanding {
-  expiring_24h: OutstandingBucket;
-  expiring_7d: OutstandingBucket;
-  expired_grace_7d: OutstandingBucket;
-}
-
-interface PppoeMrr { active_count: number; mrr_cents: number }
-
-interface AlertRow {
-  id: string;
-  kind: string;
-  severity: 'info' | 'warning' | 'critical';
-  message: string;
-  status: 'open' | 'acked' | 'resolved';
-  opened_at: string;
-}
-
-/** Tiny inline sparkline — 12 monthly revenue points → polyline area chart. */
-function Sparkline({ data, color = '#2563eb', height = 36, width = 160 }: {
-  data: number[]; color?: string; height?: number; width?: number;
-}) {
+/** Minimal area sparkline (no axes) — pure flourish from a real series. */
+function Sparkline({ data, color = 'var(--accent, #e8590c)', w = 150, h = 40 }: { data: number[]; color?: string; w?: number; h?: number }) {
   if (data.length < 2) return null;
   const max = Math.max(...data, 1);
-  const stepX = width / (data.length - 1);
-  const pts = data.map((v, i) => {
-    const x = i * stepX;
-    const y = height - (height - 4) * (v / max) - 2;
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
-  }).join(' ');
-  const area = `0,${height} ${pts} ${width},${height}`;
+  const min = Math.min(...data, 0);
+  const span = max - min || 1;
+  const step = w / (data.length - 1);
+  const pts = data.map((v, i) => `${(i * step).toFixed(1)},${(h - 3 - (h - 6) * ((v - min) / span)).toFixed(1)}`).join(' ');
   return (
-    <svg width={width} height={height} style={{ display: 'block' }}>
-      <polyline points={area} fill={`${color}22`} stroke="none" />
-      <polyline points={pts} fill="none" stroke={color} strokeWidth={1.5} />
+    <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} style={{ display: 'block' }}>
+      <polyline points={`0,${h} ${pts} ${w},${h}`} fill={color} opacity={0.10} stroke="none" />
+      <polyline points={pts} fill="none" stroke={color} strokeWidth={1.75} strokeLinejoin="round" strokeLinecap="round" />
     </svg>
   );
 }
 
-function HeroCard({
-  label, value, sublabel, sublabelColor, accent, sparkline, accentBar,
-}: {
-  label: string;
-  value: string;
-  sublabel?: string;
-  sublabelColor?: string;
-  accent: string;
-  sparkline?: number[];
-  accentBar?: boolean;
+function StatCard({ label, value, sub, subTone, spark }: {
+  label: string; value: string; sub: string; subTone?: 'up' | 'muted'; spark?: number[];
 }) {
   return (
-    <div style={{
-      background: 'var(--card)',
-      border: '1px solid var(--border)',
-      borderRadius: 12,
-      padding: '16px 18px',
-      display: 'flex', flexDirection: 'column', justifyContent: 'space-between',
-      minHeight: 110,
-      position: 'relative',
-      overflow: 'hidden',
-      boxShadow: 'var(--shadow)',
-    }}>
-      {accentBar && (
-        <div style={{
-          position: 'absolute', top: 0, left: 0, right: 0, height: 3, background: accent,
-        }} />
-      )}
+    <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, padding: '18px 20px', boxShadow: 'var(--shadow)', position: 'relative', overflow: 'hidden', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', minHeight: 132 }}>
       <div>
-        <div style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.6, fontWeight: 700 }}>
-          {label}
-        </div>
-        <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--text)', marginTop: 6, lineHeight: 1.1 }}>
-          {value}
-        </div>
-        {sublabel && (
-          <div style={{ fontSize: 11, color: sublabelColor ?? 'var(--muted)', marginTop: 4 }}>
-            {sublabel}
-          </div>
-        )}
+        <div style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.7, fontWeight: 700 }}>{label}</div>
+        <div style={{ fontSize: 34, fontWeight: 800, color: 'var(--text)', marginTop: 8, lineHeight: 1 }}>{value}</div>
+        <div style={{ fontSize: 12, color: subTone === 'up' ? '#15803d' : 'var(--muted)', marginTop: 8, fontWeight: subTone === 'up' ? 600 : 400 }}>{sub}</div>
       </div>
-      {sparkline && sparkline.length >= 2 && (
-        <div style={{ marginTop: 8, marginLeft: -4 }}>
-          <Sparkline data={sparkline} color={accent} />
+      {spark && spark.length >= 2 && (
+        <div style={{ marginTop: 10, marginLeft: -4, marginBottom: -10 }}>
+          <Sparkline data={spark} />
         </div>
       )}
     </div>
-  );
-}
-
-function StatusPill({
-  label, count, tone,
-}: { label: string; count: number; tone: 'ok' | 'warn' | 'crit' | 'mute' }) {
-  const colors = {
-    ok:   { bg: 'var(--green-weak)',  fg: 'var(--green)',  dot: '#22c55e' },
-    warn: { bg: 'var(--orange-weak)', fg: 'var(--orange)', dot: '#d97706' },
-    crit: { bg: 'var(--red-weak)',    fg: 'var(--red)',    dot: '#dc2626' },
-    mute: { bg: 'var(--card-2)',      fg: 'var(--text-2)', dot: 'var(--muted)' },
-  }[tone];
-  return (
-    <span style={{
-      display: 'inline-flex', alignItems: 'center', gap: 6,
-      background: colors.bg, color: colors.fg,
-      padding: '4px 10px 4px 8px', borderRadius: 999,
-      fontSize: 12, fontWeight: 600,
-    }}>
-      <span style={{
-        width: 6, height: 6, borderRadius: '50%', background: colors.dot,
-        boxShadow: tone === 'crit' ? '0 0 6px currentColor' : undefined,
-      }} />
-      {count} {label}
-    </span>
-  );
-}
-
-function QuickActionTile({
-  href, icon, label, description,
-}: { href: string; icon: string; label: string; description: string }) {
-  return (
-    <a href={href} style={{
-      background: 'var(--card)',
-      border: '1px solid var(--border)',
-      borderRadius: 10,
-      padding: 14,
-      display: 'flex', alignItems: 'center', gap: 12,
-      textDecoration: 'none', color: 'inherit',
-      transition: 'border-color 0.15s, transform 0.15s',
-    }}>
-      <div style={{
-        width: 36, height: 36, borderRadius: 8,
-        background: 'rgba(37,99,235,0.10)', color: '#2563eb',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        fontSize: 18, fontWeight: 700, flexShrink: 0,
-      }}>{icon}</div>
-      <div style={{ minWidth: 0 }}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{label}</div>
-        <div style={{ fontSize: 11, color: 'var(--muted)' }}>{description}</div>
-      </div>
-    </a>
   );
 }
 
 export default async function Dashboard() {
-  // The operator console host lands straight on tenant management, not an ISP
-  // dashboard. (support.<base> is the platform operator's front door.)
   const host = (headers().get('host') ?? '').toLowerCase();
   if (host.split('.')[0] === 'support') redirect('/platform');
 
-  let data: any = null;
-  let revenue: RevenuePoint[] = [];
-  let outstanding: Outstanding | null = null;
-  let mrr: PppoeMrr | null = null;
-  let openAlerts: AlertRow[] = [];
-  let error: string | null = null;
-  // Headline tile + supporting series in parallel — page is server-rendered so
-  // this is one round-trip from the operator's POV. serverApi forwards the login
-  // cookie + tenant host. Each read is independent: a single failure (e.g.
-  // /admin/alerts 401 on an unauthenticated visit, where AuthGuard redirects to
-  // /login anyway) must NOT blank the whole dashboard — degrade per call. Only a
-  // failing /dashboard (the public core read) signals the API is truly down.
   const settled = await Promise.allSettled([
-    serverApi('/dashboard'),
+    serverApi<Overview>('/dashboard/overview'),
     serverApi<RevenuePoint[]>('/reports/revenue-combined?months=12'),
-    serverApi<Outstanding>('/reports/outstanding-renewals'),
-    serverApi<PppoeMrr>('/reports/pppoe-mrr'),
-    serverApi<AlertRow[]>('/admin/alerts?status=open&limit=5'),
+    serverApi<Me>('/auth/me'),
   ]);
-  const pick = <T,>(i: number, d: T): T =>
-    settled[i].status === 'fulfilled' ? (settled[i] as PromiseFulfilledResult<T>).value : d;
-  data = pick<any>(0, null);
-  revenue = pick<RevenuePoint[]>(1, []);
-  outstanding = pick<Outstanding | null>(2, null);
-  mrr = pick<PppoeMrr | null>(3, null);
-  openAlerts = pick<AlertRow[]>(4, []);
-  if (!data) {
-    error = settled[0].status === 'rejected'
-      ? (settled[0].reason?.message ?? 'unknown error')
-      : 'no data';
-  }
+  const ov = settled[0].status === 'fulfilled' ? settled[0].value : null;
+  const revenue = settled[1].status === 'fulfilled' ? settled[1].value : [];
+  const me = settled[2].status === 'fulfilled' ? settled[2].value : null;
 
-  if (error) {
+  if (!ov) {
+    const err = settled[0].status === 'rejected' ? (settled[0].reason?.message ?? 'unknown error') : 'no data';
     return (
       <div className="container">
-        <h1>Dashboard</h1>
-        <div className="toast err">Could not reach the API: {error}.</div>
+        <h1>Overview</h1>
+        <div className="toast err">Could not reach the API: {err}.</div>
       </div>
     );
   }
 
-  const subs = data.subscribers ?? {};
-  const pppoe = data.pppoe ?? { active: 0, expired: 0, suspended: 0, expiring_24h: 0 };
-  const unmatched = data.unmatched ?? { open: 0, open_amount_kes: 0 };
+  const now = new Date();
+  const h = now.getHours();
+  const name = me?.username || BRAND;
   const revSpark = revenue.map((r) => r.revenue_cents);
-  const total12mo = revenue.reduce((a, b) => a + b.revenue_cents, 0);
-  const lastMonth = revenue.length > 0 ? revenue[revenue.length - 1].revenue_cents : 0;
-  const prevMonth = revenue.length > 1 ? revenue[revenue.length - 2].revenue_cents : 0;
-  const momPct = prevMonth > 0 ? Math.round(((lastMonth - prevMonth) / prevMonth) * 100) : null;
-  const outstandingTotal =
-    (outstanding?.expiring_24h.potential_cents ?? 0) +
-    (outstanding?.expiring_7d.potential_cents ?? 0);
-  const critAlerts = openAlerts.filter((a) => a.severity === 'critical').length;
+  const onlinePct = ov.total_subscribers > 0 ? Math.round((ov.online_now / ov.total_subscribers) * 100) : 0;
+  const delta = ov.revenue_delta_pct;
 
-  const greeting = (() => {
-    const h = new Date().getHours();
-    if (h < 12) return 'Good morning';
-    if (h < 17) return 'Good afternoon';
-    return 'Good evening';
-  })();
+  // Build the "What's next?" urgent list from live signals.
+  const urgent: Array<{ icon: string; title: string; tag?: string; desc: string; href: string }> = [];
+  if (ov.routers.offline > 0) urgent.push({ icon: '📡', title: `${ov.routers.offline} router${ov.routers.offline === 1 ? '' : 's'} offline`, tag: 'URGENT', desc: 'Not responding to network monitoring.', href: '/network' });
+  if (ov.unpaid_invoices.count > 0) urgent.push({ icon: '🧾', title: `${ov.unpaid_invoices.count} unpaid invoice${ov.unpaid_invoices.count === 1 ? '' : 's'}`, desc: 'Follow up or mark paid before the cycle closes.', href: '/invoices' });
+  if (ov.expiring_24h > 0) urgent.push({ icon: '⏳', title: `${ov.expiring_24h} expiring in 24h`, desc: 'Customers about to lapse — nudge them to renew.', href: '/customers' });
+
+  const headLine = [
+    ov.routers.offline > 0 ? `${ov.routers.offline} router${ov.routers.offline === 1 ? '' : 's'} offline` : null,
+    ov.expiring_24h > 0 ? `${ov.expiring_24h} expir${ov.expiring_24h === 1 ? 'y' : 'ies'} due in 24h` : null,
+  ].filter(Boolean).join(' · ');
 
   return (
-    <div className="container">
-      <div style={{
-        display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end',
-        flexWrap: 'wrap', gap: 12, marginBottom: 6,
-      }}>
-        <div>
-          <h1 style={{ margin: 0 }}>{greeting}</h1>
-          <p className="sub" style={{ margin: 0 }}>
-            Here's what's happening across HUB Networks right now.
-          </p>
-        </div>
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-          {critAlerts > 0 && <StatusPill label="critical alerts" count={critAlerts} tone="crit" />}
-          {pppoe.expired > 0 && <StatusPill label="expired services" count={pppoe.expired} tone="crit" />}
-          {pppoe.expiring_24h > 0 && <StatusPill label="expiring <24h" count={pppoe.expiring_24h} tone="warn" />}
-          <StatusPill label="active PPPoE" count={pppoe.active} tone="ok" />
-        </div>
-      </div>
-
-      {/* Unclaimed payments — money that came in but didn't auto-match. High
-          visibility so the operator recovers it instead of it sitting unseen. */}
-      {unmatched.open > 0 && (
-        <a href="/reconciliation" style={{
-          display: 'flex', alignItems: 'center', gap: 10, marginTop: 16,
-          padding: '12px 16px', borderRadius: 10, textDecoration: 'none',
-          background: 'var(--orange-weak)', color: 'var(--orange)',
-          border: '1px solid color-mix(in srgb, var(--orange) 30%, transparent)',
-        }}>
-          <span style={{ fontSize: 18 }}>💸</span>
-          <span style={{ flex: 1, fontSize: 13, color: 'var(--text)' }}>
-            <strong>{unmatched.open} unclaimed payment{unmatched.open === 1 ? '' : 's'}</strong>
-            {' '}· KES {Number(unmatched.open_amount_kes).toLocaleString()} paid but not matched to a customer.
-          </span>
-          <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--orange)', whiteSpace: 'nowrap' }}>Reconcile →</span>
-        </a>
-      )}
-
-      {/* Hero strip — the four numbers an operator cares about every morning. */}
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-        gap: 14, marginTop: 20,
-      }}>
-        <HeroCard
-          label="Revenue · 12 mo"
-          value={money(total12mo)}
-          sublabel={momPct !== null ? `${momPct >= 0 ? '↗' : '↘'} ${momPct >= 0 ? '+' : ''}${momPct}% vs prior month` : 'first month'}
-          sublabelColor={momPct === null ? 'var(--muted)' : momPct >= 0 ? '#15803d' : '#b91c1c'}
-          accent="#2563eb"
-          accentBar
-          sparkline={revSpark}
-        />
-        <HeroCard
-          label="PPPoE MRR"
-          value={money(mrr?.mrr_cents ?? 0)}
-          sublabel={`${mrr?.active_count ?? 0} active monthly customers`}
-          accent="#22c55e"
-          accentBar
-        />
-        <HeroCard
-          label="Renewals at risk · 7d"
-          value={money(outstandingTotal)}
-          sublabel={`${(outstanding?.expiring_24h.count ?? 0) + (outstanding?.expiring_7d.count ?? 0)} expiring soon`}
-          sublabelColor={outstandingTotal > 0 ? '#d97706' : 'var(--muted)'}
-          accent="#d97706"
-          accentBar
-        />
-        <HeroCard
-          label="Settled payments"
-          value={String(data.revenue.payments ?? 0)}
-          sublabel={`${money(data.revenue.total_cents)} processed lifetime`}
-          accent="#6d28d9"
-          accentBar
-        />
-      </div>
-
-      {/* Quick actions — six big things operators do. */}
-      <h2 style={{ marginTop: 32, fontSize: 16 }}>Quick actions</h2>
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
-        gap: 10,
-      }}>
-        <QuickActionTile href="/customers" icon="+" label="New PPPoE customer" description="Onboard a customer + service" />
-        <QuickActionTile href="/users/hotspot" icon="◴" label="Hotspot users" description="Live grants + STK status" />
-        <QuickActionTile href="/network" icon="▲" label="Network monitor" description="Routers + sessions + bandwidth" />
-        <QuickActionTile href="/alerts" icon="!" label="Alerts" description={`${openAlerts.length} open`} />
-        <QuickActionTile href="/reports" icon="$" label="Reports" description="Revenue + CSV exports" />
-        <QuickActionTile href="/settings" icon="⚙" label="Settings" description="M-Pesa + SMS + branding" />
-      </div>
-
-      {/* Two-column grid: PPPoE health on the left, recent activity right. */}
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
-        gap: 16, marginTop: 32,
-      }}>
-        <section>
-          <h2 style={{ fontSize: 16, marginTop: 0 }}>PPPoE state</h2>
-          <div style={{
-            background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden',
-          }}>
-            {[
-              { label: 'Active', value: pppoe.active, color: '#15803d', dot: '#22c55e' },
-              { label: 'Expiring < 24h', value: pppoe.expiring_24h, color: pppoe.expiring_24h > 0 ? '#a16207' : 'var(--muted)', dot: '#d97706' },
-              { label: 'Expired', value: pppoe.expired, color: pppoe.expired > 0 ? '#b91c1c' : 'var(--muted)', dot: '#dc2626' },
-              { label: 'Suspended', value: pppoe.suspended, color: 'var(--text-2)', dot: 'var(--muted)' },
-            ].map((row, i) => (
-              <div key={row.label} style={{
-                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                padding: '12px 16px',
-                borderTop: i === 0 ? 'none' : '1px solid var(--border-2)',
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{ width: 6, height: 6, borderRadius: '50%', background: row.dot }} />
-                  <span style={{ fontSize: 13, color: 'var(--text-2)' }}>{row.label}</span>
-                </div>
-                <strong style={{ color: row.color, fontSize: 16 }}>{row.value}</strong>
-              </div>
-            ))}
+    <div className="container" style={{ maxWidth: 1180 }}>
+      {/* ---------------- Hero ---------------- */}
+      <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 18, padding: '22px 26px', boxShadow: 'var(--shadow)', position: 'relative', overflow: 'hidden' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, flexWrap: 'wrap' }}>
+          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.6, color: 'var(--muted)', textTransform: 'uppercase', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#e8590c' }} />
+            {BRAND} WIFI
+            <span style={{ color: '#e8590c' }}>— {ov.online_now} ONLINE RIGHT NOW</span>
+            <span>— {shift(h)}</span>
           </div>
+          <div style={{ textAlign: 'right' }}>
+            <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.6, color: 'var(--muted)', textTransform: 'uppercase' }}>Traffic · last hour</div>
+            <div style={{ marginTop: 2, minHeight: 40 }}><Sparkline data={ov.traffic_series} w={170} h={40} /></div>
+            <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: -2 }}>{fmtBytes(ov.traffic_last_hour_bytes)} moved</div>
+          </div>
+        </div>
 
-          {totalCount(subs) > 0 && (
-            <>
-              <h2 style={{ fontSize: 14, marginTop: 20, color: 'var(--muted)' }}>Legacy subscribers</h2>
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                {Object.entries(subs).map(([k, v]) => (
-                  <span key={k} style={{
-                    background: 'var(--card-2)', border: '1px solid var(--border)', borderRadius: 6,
-                    padding: '4px 10px', fontSize: 12,
-                  }}>
-                    {k}: <strong>{String(v)}</strong>
-                  </span>
-                ))}
-              </div>
-            </>
-          )}
-        </section>
+        <h1 style={{ margin: '14px 0 0', fontSize: 30, fontWeight: 800 }}>
+          {greeting(h)}, <em style={{ color: '#e8590c', fontStyle: 'italic' }}>{name}</em>.
+        </h1>
+        <p style={{ margin: '8px 0 0', color: 'var(--text-2, var(--muted))', fontSize: 14 }}>
+          {headLine ? `${headLine} — a few things need a minute.` : 'Everything looks healthy right now.'}
+        </p>
 
-        <section>
-          <h2 style={{ fontSize: 16, marginTop: 0 }}>Recent activity</h2>
-          {(data.recent_payments ?? []).length === 0 ? (
-            <p className="sub">No payments yet.</p>
-          ) : (
-            <div style={{
-              background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden',
-            }}>
-              {(data.recent_payments ?? []).slice(0, 6).map((p: any, i: number) => (
-                <div key={p.id} style={{
-                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                  padding: '10px 14px',
-                  borderTop: i === 0 ? 'none' : '1px solid var(--border-2)',
-                }}>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontSize: 13, fontWeight: 600 }}>
-                      {money(Number(p.amount_cents))}
-                      <span style={{
-                        marginLeft: 8, fontSize: 10, padding: '2px 6px', borderRadius: 4,
-                        background: p.status === 'success' ? 'var(--green-weak)' : 'var(--orange-weak)',
-                        color: p.status === 'success' ? 'var(--green)' : 'var(--orange)',
-                        textTransform: 'uppercase', fontWeight: 700, letterSpacing: 0.4,
-                      }}>{p.status}</span>
-                    </div>
-                    <div style={{ fontSize: 11, color: 'var(--muted)' }}>{p.provider}</div>
-                  </div>
-                  <div style={{ fontSize: 11, color: 'var(--muted)', textAlign: 'right', flexShrink: 0 }}>
-                    {new Date(p.created_at).toLocaleString()}
-                  </div>
-                </div>
-              ))}
-            </div>
+        <div style={{ display: 'flex', gap: 10, marginTop: 16, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 12.5, color: 'var(--muted)', fontStyle: 'italic', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            ☀️ {dayPhrase(h)}
+          </span>
+          {delta !== null && delta > 0 && (
+            <span style={{ fontSize: 12.5, fontWeight: 600, color: '#e8590c', background: 'rgba(232,89,12,0.08)', border: '1px solid rgba(232,89,12,0.20)', borderRadius: 999, padding: '4px 12px', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              ✦ {delta}% ahead of yesterday at this hour — nice pace.
+            </span>
           )}
-
-          {openAlerts.length > 0 && (
-            <>
-              <h2 style={{ fontSize: 14, marginTop: 20, color: 'var(--muted)' }}>Open alerts</h2>
-              <div style={{
-                background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden',
-              }}>
-                {openAlerts.map((a, i) => (
-                  <a key={a.id} href="/alerts" style={{
-                    display: 'flex', alignItems: 'center', gap: 10,
-                    padding: '10px 14px', textDecoration: 'none', color: 'inherit',
-                    borderTop: i === 0 ? 'none' : '1px solid var(--border-2)',
-                  }}>
-                    <span style={{
-                      width: 6, height: 6, borderRadius: '50%', flexShrink: 0,
-                      background: a.severity === 'critical' ? '#dc2626' : a.severity === 'warning' ? '#d97706' : '#2563eb',
-                      boxShadow: a.severity === 'critical' ? '0 0 6px currentColor' : undefined,
-                    }} />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 12, color: 'var(--text)' }}>{a.message}</div>
-                      <div style={{ fontSize: 10, color: 'var(--muted)' }}>
-                        {a.kind} · opened {new Date(a.opened_at).toLocaleString()}
-                      </div>
-                    </div>
-                  </a>
-                ))}
-              </div>
-            </>
-          )}
-        </section>
+        </div>
       </div>
 
-      {/* Invoices summary — keep as the existing table for compat. */}
-      {(data.invoices ?? []).length > 0 && (
-        <>
-          <h2 style={{ marginTop: 32, fontSize: 16 }}>Invoices by status</h2>
-          <table>
-            <thead><tr><th>Status</th><th>Count</th><th>Amount</th></tr></thead>
-            <tbody>
-              {data.invoices.map((r: any) => (
-                <tr key={r.status}>
-                  <td><span className={`badge ${r.status}`}>{r.status}</span></td>
-                  <td>{r.n}</td>
-                  <td>{money(Number(r.amount))}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </>
-      )}
+      {/* ---------------- Live ticker ---------------- */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 12, padding: '12px 18px', marginTop: 14, boxShadow: 'var(--shadow)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
+          <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: 0.5, color: '#dc2626', background: 'var(--red-weak, rgba(220,38,38,0.10))', borderRadius: 5, padding: '3px 7px', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+            <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#dc2626' }} /> LIVE
+          </span>
+          {ov.latest_payment ? (
+            <span style={{ fontSize: 13.5, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              Payment of <strong>{money(ov.latest_payment.amount_cents)}</strong> from {ov.latest_payment.source}
+              <span style={{ color: 'var(--muted)' }}> · {ago(ov.latest_payment.created_at)}</span>
+            </span>
+          ) : (
+            <span style={{ fontSize: 13.5, color: 'var(--muted)' }}>No payments yet today.</span>
+          )}
+        </div>
+        <span style={{ fontSize: 12.5, color: ov.routers.offline > 0 ? '#b45309' : '#15803d', whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ width: 7, height: 7, borderRadius: '50%', background: ov.routers.offline > 0 ? '#d97706' : '#16a34a' }} />
+          {ov.routers.healthy}/{ov.routers.total} routers healthy
+        </span>
+      </div>
+
+      {/* ---------------- Stat cards ---------------- */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 14, marginTop: 14 }}>
+        <StatCard label="Revenue today" value={compactKes(ov.revenue_today_cents)}
+          sub={delta !== null ? `${delta >= 0 ? '+' : ''}${delta}% vs yesterday` : 'since midnight'}
+          subTone={delta !== null && delta >= 0 ? 'up' : 'muted'} spark={revSpark} />
+        <StatCard label="Active subscriptions" value={`${ov.active_subscriptions}`}
+          sub={`${ov.total_subscribers} subscribers on record`} />
+        <StatCard label="Online now" value={`${onlinePct}%`}
+          sub={`${ov.online_now} of ${ov.total_subscribers} subscribers online`} />
+      </div>
+
+      {/* ---------------- Today + What's next ---------------- */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(330px, 1fr))', gap: 16, marginTop: 22 }}>
+        <Panel title="Today" badge={`${ov.today_events.length} event${ov.today_events.length === 1 ? '' : 's'}`} sub="Payments, signups and tickets since midnight">
+          {ov.today_events.length === 0 ? (
+            <div className="empty-state" style={{ padding: '24px 0' }}><span className="icon">✨</span>Nothing yet today.</div>
+          ) : ov.today_events.slice(0, 6).map((e, i) => (
+            <Row key={i}>
+              <span style={{ width: 28, height: 28, borderRadius: 8, background: 'rgba(232,89,12,0.10)', color: '#e8590c', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                {e.kind === 'payment' ? '➤' : '+'}
+              </span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13.5 }}>
+                  {e.kind === 'payment'
+                    ? <>Payment of <strong>{money(Number(e.amount_cents ?? 0))}</strong> from {e.label || 'a customer'}</>
+                    : <>New signup — <strong>{e.label || 'customer'}</strong></>}
+                </div>
+              </div>
+              <span style={{ fontSize: 12, color: 'var(--muted)', whiteSpace: 'nowrap' }}>{ago(e.created_at)}</span>
+            </Row>
+          ))}
+        </Panel>
+
+        <Panel title="What's next?" badge={urgent.length ? `${urgent.length} urgent` : 'all clear'} badgeTone={urgent.length ? 'warn' : 'ok'} sub="Things that need a decision">
+          {urgent.length === 0 ? (
+            <div className="empty-state" style={{ padding: '24px 0' }}><span className="icon">✅</span>Nothing needs you right now.</div>
+          ) : urgent.map((u, i) => (
+            <a key={i} href={u.href} style={{ textDecoration: 'none', color: 'inherit' }}>
+              <Row hover>
+                <span style={{ width: 34, height: 34, borderRadius: 9, background: u.tag ? 'var(--red-weak, rgba(220,38,38,0.10))' : 'rgba(232,89,12,0.10)', color: u.tag ? '#dc2626' : '#e8590c', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 17, flexShrink: 0 }}>{u.icon}</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13.5, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    {u.title}
+                    {u.tag && <span style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: 0.5, color: '#dc2626', background: 'var(--red-weak, rgba(220,38,38,0.10))', borderRadius: 4, padding: '2px 6px' }}>{u.tag}</span>}
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>{u.desc}</div>
+                </div>
+                <span style={{ color: 'var(--muted)', flexShrink: 0 }}>›</span>
+              </Row>
+            </a>
+          ))}
+        </Panel>
+      </div>
+
+      {/* ---------------- Renewals due + Busiest routers ---------------- */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(330px, 1fr))', gap: 16, marginTop: 16 }}>
+        <Panel title="Renewals due" sub={`Next 48 hours · ${ov.renewals_due.length} subscriber${ov.renewals_due.length === 1 ? '' : 's'}`}>
+          {ov.renewals_due.length === 0 ? (
+            <div className="empty-state" style={{ padding: '24px 0' }}><span className="icon">👍</span>No renewals in the next 48 hours.</div>
+          ) : ov.renewals_due.map((r) => (
+            <a key={r.id} href="/customers" style={{ textDecoration: 'none', color: 'inherit' }}>
+              <Row hover>
+                <span style={{ width: 30, height: 30, borderRadius: '50%', background: 'rgba(232,89,12,0.10)', color: '#e8590c', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 13, flexShrink: 0 }}>{initial(r.full_name || r.account_number)}</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13.5, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.full_name || r.account_number || 'Customer'}</div>
+                  <div style={{ fontSize: 11.5, color: 'var(--muted)' }}>{maskPhone(r.phone)}{r.account_number ? ` · ${r.account_number}` : ''}</div>
+                </div>
+                <span style={{ fontSize: 12, color: '#b45309', whiteSpace: 'nowrap' }}>{fromNow(r.expiry_date)}</span>
+              </Row>
+            </a>
+          ))}
+        </Panel>
+
+        <Panel title="Where the traffic is" sub="Busiest routers · last hour" badge={`${ov.routers.healthy}/${ov.routers.total} healthy`} badgeTone={ov.routers.offline > 0 ? 'warn' : 'ok'}>
+          {ov.busiest_routers.length === 0 ? (
+            <div className="empty-state" style={{ padding: '24px 0' }}><span className="icon">📶</span>No live traffic right now.</div>
+          ) : ov.busiest_routers.map((r) => (
+            <a key={r.id} href={`/routers/${r.id}`} style={{ textDecoration: 'none', color: 'inherit', display: 'block', padding: '12px 4px', borderTop: '1px solid var(--border-2, var(--border))' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10 }}>
+                <strong style={{ fontSize: 13.5, fontFamily: 'monospace' }}>{r.name}</strong>
+                <span style={{ fontSize: 11.5, color: 'var(--muted)', whiteSpace: 'nowrap' }}>{r.sessions} sessions · {fmtBytes(r.bytes_total)}</span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 7 }}>
+                <div style={{ flex: 1, height: 7, borderRadius: 5, background: 'var(--card-2, rgba(0,0,0,0.06))', overflow: 'hidden' }}>
+                  <div style={{ width: `${Math.max(3, r.pct)}%`, height: '100%', background: '#e8590c', borderRadius: 5 }} />
+                </div>
+                <span style={{ fontSize: 11.5, color: 'var(--muted)', width: 64, textAlign: 'right' }}>{r.pct}% of live</span>
+              </div>
+            </a>
+          ))}
+        </Panel>
+      </div>
     </div>
   );
 }
 
-function totalCount(obj: Record<string, any>): number {
-  return Object.values(obj).reduce((a, b) => a + Number(b), 0);
+function Panel({ title, sub, badge, badgeTone, children }: {
+  title: string; sub?: string; badge?: string; badgeTone?: 'ok' | 'warn'; children: React.ReactNode;
+}) {
+  const tone = badgeTone === 'warn'
+    ? { bg: 'var(--orange-weak, rgba(217,119,6,0.10))', fg: 'var(--orange, #b45309)' }
+    : badgeTone === 'ok'
+    ? { bg: 'var(--green-weak, rgba(22,163,74,0.10))', fg: 'var(--green, #15803d)' }
+    : { bg: 'var(--card-2, rgba(0,0,0,0.05))', fg: 'var(--muted)' };
+  return (
+    <section style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, padding: '16px 18px', boxShadow: 'var(--shadow)' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 16 }}>{title}</h2>
+          {sub && <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>{sub}</div>}
+        </div>
+        {badge && <span style={{ fontSize: 11, fontWeight: 700, color: tone.fg, background: tone.bg, borderRadius: 999, padding: '3px 10px', whiteSpace: 'nowrap' }}>{badge}</span>}
+      </div>
+      <div style={{ marginTop: 12 }}>{children}</div>
+    </section>
+  );
+}
+
+function Row({ children, hover }: { children: React.ReactNode; hover?: boolean }) {
+  return (
+    <div className={hover ? 'card hover' : undefined} style={{
+      display: 'flex', alignItems: 'center', gap: 12, padding: '10px 4px',
+      borderTop: '1px solid var(--border-2, var(--border))',
+    }}>
+      {children}
+    </div>
+  );
 }
