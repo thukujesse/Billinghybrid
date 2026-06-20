@@ -146,16 +146,39 @@ export async function pollVpsHandshakes(): Promise<void> {
     console.error('[heartbeat] wg-manager unreachable:', (err as Error).message);
     return;
   }
-  for (const peer of peers) {
-    if (!peer.latestHandshake) continue;
-    const handshakeIso = new Date(peer.latestHandshake * 1000).toISOString();
-    await query(
-      `UPDATE routers
-          SET last_handshake_at = $2
-        WHERE wg_public_key = $1
-          AND (last_handshake_at IS NULL OR last_handshake_at < $2)`,
-      [peer.publicKey, handshakeIso]
-    );
+  const fresh = peers.filter((p) => p.latestHandshake);
+  if (!fresh.length) return;
+
+  // The WG peers are VPS-global (one wg0 across all tenants), but each peer's
+  // pubkey identifies a router in SOME tenant's OWN database. Sync the handshake
+  // into every active tenant DB — a no-context query would only touch the
+  // default tenant, leaving isolated tenants' routers stuck "pending" forever.
+  const updateAll = async () => {
+    for (const peer of fresh) {
+      if (!peer.latestHandshake) continue;
+      const handshakeIso = new Date(peer.latestHandshake * 1000).toISOString();
+      await query(
+        `UPDATE routers
+            SET last_handshake_at = $2
+          WHERE wg_public_key = $1
+            AND (last_handshake_at IS NULL OR last_handshake_at < $2)`,
+        [peer.publicKey, handshakeIso]
+      );
+    }
+  };
+
+  const { listTenants, poolForTenant } = await import('../tenants/service.js');
+  const { runWithTenant } = await import('../../db/pool.js');
+  let tenants: Awaited<ReturnType<typeof listTenants>> = [];
+  try { tenants = (await listTenants()).filter((t) => t.status === 'active'); }
+  catch (e) { console.error('[heartbeat] listTenants failed; default pool only:', (e as Error).message); }
+  if (tenants.length === 0) { await updateAll(); return; }
+  for (const t of tenants) {
+    try {
+      await runWithTenant({ tenantId: t.slug, pool: poolForTenant(t), uuid: t.id, status: t.status }, updateAll);
+    } catch (err) {
+      console.error(`[heartbeat] tenant ${t.slug} handshake sync failed:`, (err as Error).message);
+    }
   }
 }
 
