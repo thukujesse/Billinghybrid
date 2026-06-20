@@ -6,8 +6,6 @@ import { api, getToken, setToken } from '@/lib/api';
 // Hidden on the captive portal + the standalone login page.
 const CUSTOMER_PATHS = ['/hotspot', '/renew', '/portal', '/login'];
 
-const BRAND = 'HUBNETWORKS';
-
 type Item = { href: string; label: string };
 type Group = { key: string; label: string; ico: string; items: Item[] };
 interface NavCounts { subscribers: number; live_sessions: number; unmatched_payments: number; open_alerts: number }
@@ -84,6 +82,22 @@ export function Sidebar() {
   const [hidden, setHidden] = useState(false);
   const [me, setMe] = useState<{ username?: string; role?: string } | null>(null);
   const [counts, setCounts] = useState<NavCounts | null>(null);
+  const [brand, setBrand] = useState('');
+
+  // The ISP's own brand for the header — their hotspot brand, else their
+  // registered tenant name. Never our platform name or the operator login.
+  useEffect(() => {
+    Promise.allSettled([
+      api<{ name?: string }>('/hotspot/branding'),
+      api<{ name?: string | null }>('/tenants/status'),
+    ]).then(([b, t]) => {
+      const bn = b.status === 'fulfilled' ? (b.value?.name ?? '').trim() : '';
+      const tn = t.status === 'fulfilled' ? (t.value?.name ?? '').trim() : '';
+      // Ignore the platform-default hotspot brand ('HUB Networks') so an
+      // un-customised tenant shows its registered name, not ours.
+      setBrand((bn && bn !== 'HUB Networks' ? bn : '') || tn);
+    }).catch(() => { /* keep fallback */ });
+  }, []);
 
   // Who's signed in (drives the footer) + live badge counts. Quietly null if not
   // authenticated. Refreshes on navigation so badges reflect recent actions.
@@ -153,7 +167,7 @@ export function Sidebar() {
 
       <aside className="sidebar">
         <div className="sidebar-head">
-          <span className="brand">{BRAND}</span>
+          <span className="brand">{brand || 'Dashboard'}</span>
           <button
             className="nav-icon-btn sidebar-collapse"
             aria-label="Hide menu"

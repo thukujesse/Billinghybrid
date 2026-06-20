@@ -5,8 +5,6 @@ import { serverApi } from '@/lib/serverApi';
 
 export const dynamic = 'force-dynamic';
 
-const BRAND = 'HUBNETWORKS';
-
 interface Overview {
   online_now: number;
   total_subscribers: number;
@@ -25,7 +23,9 @@ interface Overview {
   today_events: Array<{ kind: string; created_at: string; label: string | null; amount_cents: number | null }>;
 }
 interface RevenuePoint { month: string; revenue_cents: number }
-interface Me { username?: string }
+// The ISP's own brand (their hotspot brand, else their registered tenant name).
+interface Branding { name?: string }
+interface TenantStatus { name?: string | null }
 
 // ---------- formatting helpers ----------
 function greeting(h: number): string {
@@ -129,11 +129,20 @@ export default async function Dashboard() {
   const settled = await Promise.allSettled([
     serverApi<Overview>('/dashboard/overview'),
     serverApi<RevenuePoint[]>('/reports/revenue-combined?months=12'),
-    serverApi<Me>('/auth/me'),
+    serverApi<Branding>('/hotspot/branding'),
+    serverApi<TenantStatus>('/tenants/status'),
   ]);
   const ov = settled[0].status === 'fulfilled' ? settled[0].value : null;
   const revenue = settled[1].status === 'fulfilled' ? settled[1].value : [];
-  const me = settled[2].status === 'fulfilled' ? settled[2].value : null;
+  const branding = settled[2].status === 'fulfilled' ? settled[2].value : null;
+  const tenant = settled[3].status === 'fulfilled' ? settled[3].value : null;
+  // Always address the ISP by THEIR brand — never the operator/login or our
+  // platform name. Use a CUSTOMISED hotspot brand if set, else the registered
+  // tenant name; ignore the platform-default brand ('HUB Networks') so an
+  // un-customised tenant shows its own name, not ours.
+  const customBrand = branding?.name?.trim();
+  const brandName = (customBrand && customBrand !== 'HUB Networks' ? customBrand : '')
+    || tenant?.name?.trim() || 'Your network';
 
   if (!ov) {
     const err = settled[0].status === 'rejected' ? (settled[0].reason?.message ?? 'unknown error') : 'no data';
@@ -147,7 +156,6 @@ export default async function Dashboard() {
 
   const now = new Date();
   const h = now.getHours();
-  const name = me?.username || BRAND;
   const revSpark = revenue.map((r) => r.revenue_cents);
   const onlinePct = ov.total_subscribers > 0 ? Math.round((ov.online_now / ov.total_subscribers) * 100) : 0;
   const delta = ov.revenue_delta_pct;
@@ -170,7 +178,7 @@ export default async function Dashboard() {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, flexWrap: 'wrap' }}>
           <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.6, color: 'var(--muted)', textTransform: 'uppercase', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#e8590c' }} />
-            {BRAND} WIFI
+            {brandName}
             <span style={{ color: '#e8590c' }}>— {ov.online_now} ONLINE RIGHT NOW</span>
             <span>— {shift(h)}</span>
           </div>
@@ -182,7 +190,7 @@ export default async function Dashboard() {
         </div>
 
         <h1 style={{ margin: '14px 0 0', fontSize: 30, fontWeight: 800 }}>
-          {greeting(h)}, <em style={{ color: '#e8590c', fontStyle: 'italic' }}>{name}</em>.
+          {greeting(h)}, <em style={{ color: '#e8590c', fontStyle: 'italic' }}>{brandName}</em>.
         </h1>
         <p style={{ margin: '8px 0 0', color: 'var(--text-2, var(--muted))', fontSize: 14 }}>
           {headLine ? `${headLine} — a few things need a minute.` : 'Everything looks healthy right now.'}
