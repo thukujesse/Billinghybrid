@@ -507,9 +507,11 @@ export default function SettingsPage() {
       <h2>How customers pay you</h2>
       {mpesa && (mpesa.collectionMethod === 'bank' ? (
         <div className={`toast ${mpesa.accountNo ? 'ok' : 'err'}`} style={{ marginBottom: 12 }}>
-          {mpesa.accountNo
-            ? `Ready — customers pay paybill ${mpesa.shortcode || '(set your paybill)'} to account ${mpesa.accountNo}; each payment is verified and connects them automatically.`
-            : 'Almost there — enter your bank paybill and account number below to start collecting.'}
+          {!mpesa.accountNo
+            ? 'Almost there — enter your bank paybill and account number below to start collecting.'
+            : mpesa.bankProvider
+              ? `Automated — ${mpesa.bankProvider === 'kcb' ? 'KCB' : 'Equity'} sends the customer an STK prompt and deposits straight into your account ${mpesa.accountNo}.`
+              : `Ready — customers pay paybill ${mpesa.shortcode || '(set your paybill)'} to account ${mpesa.accountNo}; each payment is verified and connects them automatically.`}
         </div>
       ) : (
         <div className={`toast ${mpesa.simulated ? 'err' : 'ok'}`} style={{ marginBottom: 12 }}>
@@ -520,11 +522,14 @@ export default function SettingsPage() {
         </div>
       ))}
 
-      {/* Simple, primary form — most ISPs only ever need these two fields.
-          Everything else is automatic (method = bank, registration, settlement). */}
+      {/* Simple, primary form — bank details + (optional) the bank's own STK.
+          Manual: the customer pays the paybill by hand. Automated STK (Equity /
+          KCB): the BANK fires the prompt and deposits straight into the ISP's
+          account — HubNet is never in the money path; it only needs the bank's
+          merchant API keys. */}
       <div className="card">
         <p className="sub" style={{ marginTop: 0 }}>
-          Enter the bank paybill and account number your bank gave you. Customers pay that paybill using your account number; HubNet verifies each payment and connects them automatically. Nothing else to set up.
+          Enter the bank paybill and account number your bank gave you. Customers pay that paybill using your account number; each payment is verified and connects them automatically.
         </p>
         <div className="row">
           <div style={{ flex: 1 }}>
@@ -541,10 +546,37 @@ export default function SettingsPage() {
             <label>Account name (optional)</label>
             <input value={form.accountName} onChange={(e) => setForm({ ...form, accountName: e.target.value })} placeholder="Name on the bank account" />
           </div>
-          <div style={{ flex: 1 }} />
+          <div style={{ flex: 1 }}>
+            <label>How customers pay</label>
+            <select value={form.bankProvider} onChange={(e) => setForm({ ...form, bankProvider: e.target.value })}>
+              <option value="">Manual — they pay the paybill by hand (no prompt)</option>
+              <option value="equity_jenga">Automated STK — Equity (JengaHQ)</option>
+              <option value="kcb">Automated STK — KCB (Buni)</option>
+            </select>
+          </div>
         </div>
+
+        {form.bankProvider && (
+          <div style={{ marginTop: 8, padding: 12, border: '1px solid var(--border)', borderRadius: 8 }}>
+            <p className="sub" style={{ marginTop: 0 }}>
+              The <strong>{form.bankProvider === 'kcb' ? 'KCB' : 'Equity'}</strong> STK prompts the customer and deposits <strong>straight into your account above</strong> — HubNet never touches the money. Paste the merchant API keys from your {form.bankProvider === 'kcb' ? 'KCB Buni' : 'Equity JengaHQ'} portal. Runs in simulation until they&apos;re set.
+            </p>
+            <div style={{ maxWidth: 180, marginBottom: 8 }}>
+              <label>Environment</label>
+              <select value={form.bankProviderEnv} onChange={(e) => setForm({ ...form, bankProviderEnv: e.target.value })}>
+                <option value="sandbox">Sandbox</option>
+                <option value="live">Live</option>
+              </select>
+            </div>
+            <BankStkProviders onToast={setToast} only={form.bankProvider} />
+          </div>
+        )}
+
         <div style={{ marginTop: 16 }}>
           <button onClick={() => save('bank')} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
+          <span className="sub" style={{ marginLeft: 12, fontSize: 12 }}>
+            {form.bankProvider ? 'Save the bank keys above first, then Save here.' : 'Customers will pay the paybill manually.'}
+          </span>
         </div>
       </div>
 
