@@ -1,7 +1,16 @@
 import crypto from 'node:crypto';
-import { query } from '../../db/pool.js';
+import { query, currentTenantId } from '../../db/pool.js';
 import { badRequest, notFound } from '../../lib/errors.js';
 import { config } from '../../config.js';
+
+/** The captive-portal host for the CURRENT tenant. Isolated tenants get their
+ *  OWN subdomain (so customers see the ISP's domain in the browser, and the
+ *  portal page resolves the venue by host); the default tenant — and any call
+ *  outside a tenant context — keeps the shared platform portal host. */
+function tenantPortalHost(): string {
+  const slug = currentTenantId();
+  return slug && slug !== 'default' ? `${slug}.${config.control.baseDomain}` : config.portal.host;
+}
 import { generateWgKeypair } from '../../lib/wireguard.js';
 import * as wgManager from '../../lib/wgManager.js';
 
@@ -814,9 +823,9 @@ function renderUnifiedConfig(
     const gateway = `${octets[0]}.${octets[1]}.${octets[2]}.1`;
     const poolStart = `${octets[0]}.${octets[1]}.${octets[2]}.10`;
     const poolEnd = `${octets[0]}.${octets[1]}.${octets[2]}.250`;
-    const portalHost = config.portal.host;
+    const portalHost = tenantPortalHost();
     const portalIp = config.portal.ip;
-    const tplBase = `${config.publicApiUrl}/api/hotspot/templates`;
+    const tplBase = `https://${portalHost}/api/hotspot/templates`;
 
     lines.push(
       `# ===== Hotspot =====`,
@@ -898,7 +907,7 @@ function renderUnifiedConfig(
   // ---- JTM-tagged firewall rules (walled-garden + expired block) ----
   // Always added (regardless of services) so suspend/restore has teeth. All
   // are commented "jtm-fw" so cleanup-on-reapply finds them.
-  const portalHost = config.portal.host;
+  const portalHost = tenantPortalHost();
   const portalIp = config.portal.ip;
   const radiusServerIp = config.wireguard.network.split('/')[0].replace(/0\.0$/, '0.1');
   lines.push(
@@ -1005,9 +1014,9 @@ function renderHotspotMultiPort(routerName: string, interfaces: string[], cidr: 
   const gateway = `${octets[0]}.${octets[1]}.${octets[2]}.1`;
   const poolStart = `${octets[0]}.${octets[1]}.${octets[2]}.10`;
   const poolEnd = `${octets[0]}.${octets[1]}.${octets[2]}.250`;
-  const portalHost = config.portal.host;
+  const portalHost = tenantPortalHost();
   const portalIp = config.portal.ip;
-  const tplBase = `${config.publicApiUrl}/api/hotspot/templates`;
+  const tplBase = `https://${portalHost}/api/hotspot/templates`;
   const portAdds = interfaces
     .map((i) => `/interface bridge port add bridge=jtm-hs-bridge interface=${i}`)
     .join('\n');
@@ -1228,9 +1237,9 @@ export async function buildHotspotScript(
   const poolStart = `${octets[0]}.${octets[1]}.${octets[2]}.10`;
   const poolEnd   = `${octets[0]}.${octets[1]}.${octets[2]}.250`;
 
-  const portalHost = config.portal.host;
+  const portalHost = tenantPortalHost();
   const portalIp = config.portal.ip;
-  const tplBase = `${config.publicApiUrl}/api/hotspot/templates`;
+  const tplBase = `https://${portalHost}/api/hotspot/templates`;
 
   const script = `# --- JTM hotspot setup for "${router.name}" ---
 # Idempotent: removes prior JTM hotspot config, creates jtm-hs-bridge, adds

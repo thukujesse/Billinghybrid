@@ -13,11 +13,14 @@ import { config } from '../../config.js';
  *   - error         → display $(error) message + voucher form
  *
  * `tenant` (slug) is baked in per-router at template-fetch time so the
- * portal page knows which venue's branding to apply.
+ * portal page knows which venue's branding to apply. `host` is the tenant's
+ * OWN portal host (e.g. hubnet.hubnetwifi.co.ke) so customers see the ISP's
+ * domain, not the platform's — it defaults to the shared host for the default
+ * tenant and for legacy routers that fetch without it.
  */
-const portalUrl = (): string => `https://${config.portal.host}/hotspot`;
+const portalUrl = (host: string): string => `https://${host}/hotspot`;
 
-const LOGIN = (slug: string): string => `<!DOCTYPE html>
+const LOGIN = (slug: string, host: string): string => `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Wi-Fi</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>body{font-family:system-ui,sans-serif;background:#f8fafc;color:#0f172a;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}</style>
@@ -35,7 +38,7 @@ var p=new URLSearchParams({
   'username':'$(username)',
   'error':'$(error)'
 });
-location.href='${portalUrl()}?'+p.toString();
+location.href='${portalUrl(host)}?'+p.toString();
 </script></body></html>`;
 
 const ALOGIN = (): string => `<!DOCTYPE html>
@@ -47,7 +50,7 @@ const ALOGIN = (): string => `<!DOCTYPE html>
 <script>setTimeout(function(){location.href='$(link-orig)'||'https://example.com';},1500);</script>
 </body></html>`;
 
-const STATUS = (slug: string): string => `<!DOCTYPE html>
+const STATUS = (slug: string, host: string): string => `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Session</title></head>
 <body>
 <script>
@@ -64,17 +67,17 @@ var p=new URLSearchParams({
   'bytes-out':'$(bytes-out)',
   'link-logout':'$(link-logout)'
 });
-location.href='${portalUrl()}?'+p.toString();
+location.href='${portalUrl(host)}?'+p.toString();
 </script></body></html>`;
 
-const LOGOUT = (slug: string): string => `<!DOCTYPE html>
+const LOGOUT = (slug: string, host: string): string => `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Logged out</title></head>
 <body>
 <script>
-location.href='${portalUrl()}?tenant=${slug}&mode=logout&mac=$(mac)&uptime=$(uptime)&bytes-in=$(bytes-in)&bytes-out=$(bytes-out)';
+location.href='${portalUrl(host)}?tenant=${slug}&mode=logout&mac=$(mac)&uptime=$(uptime)&bytes-in=$(bytes-in)&bytes-out=$(bytes-out)';
 </script></body></html>`;
 
-const ERROR_PAGE = (slug: string): string => `<!DOCTYPE html>
+const ERROR_PAGE = (slug: string, host: string): string => `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Login error</title></head>
 <body>
 <script>
@@ -88,7 +91,7 @@ var p=new URLSearchParams({
   'ip':'$(ip)',
   'error':'$(error)'
 });
-location.href='${portalUrl()}?'+p.toString();
+location.href='${portalUrl(host)}?'+p.toString();
 </script></body></html>`;
 
 const REDIRECT = (): string => `<!DOCTYPE html>
@@ -98,8 +101,8 @@ const REDIRECT = (): string => `<!DOCTYPE html>
 <script>location.href='$(link-redirect)';</script>
 </body></html>`;
 
-const RLOGIN = (slug: string): string =>
-  LOGIN(slug).replace(`'username':'$(username)',`, `'username':'$(username)','mode':'rlogin',`);
+const RLOGIN = (slug: string, host: string): string =>
+  LOGIN(slug, host).replace(`'username':'$(username)',`, `'username':'$(username)','mode':'rlogin',`);
 
 // MikroTik bundles md5.js for client-side CHAP password hashing on the login
 // form. We use http-pap auth (no client-side crypto needed), so this is a
@@ -108,7 +111,7 @@ const MD5_JS = (): string => `// JTM stub — login is server-side PAP via RADIU
 function doLogin(){return true;}
 function hexMD5(){return '';}`;
 
-const TEMPLATES: Record<string, { body: (slug: string) => string; contentType: string }> = {
+const TEMPLATES: Record<string, { body: (slug: string, host: string) => string; contentType: string }> = {
   'login.html':    { body: LOGIN,                contentType: 'text/html; charset=utf-8' },
   'alogin.html':   { body: () => ALOGIN(),       contentType: 'text/html; charset=utf-8' },
   'status.html':   { body: STATUS,               contentType: 'text/html; charset=utf-8' },
@@ -121,11 +124,12 @@ const TEMPLATES: Record<string, { body: (slug: string) => string; contentType: s
 
 export function getTemplate(
   name: string,
-  slug: string = ''
+  slug: string = '',
+  host: string = config.portal.host
 ): { body: string; contentType: string } | null {
   const tpl = TEMPLATES[name];
   if (!tpl) return null;
-  return { body: tpl.body(slug), contentType: tpl.contentType };
+  return { body: tpl.body(slug, host), contentType: tpl.contentType };
 }
 
 export const TEMPLATE_NAMES = Object.keys(TEMPLATES);

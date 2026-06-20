@@ -1613,7 +1613,10 @@ api.post('/routers/:id/hotspot-script', requireAuth('admin', 'staff'), ah(async 
 // domains/hotspot/templates.ts for the per-file content.
 api.get('/hotspot/templates/:name', ah(async (req, res) => {
   const slug = typeof req.query.slug === 'string' ? req.query.slug : '';
-  const tpl = getHotspotTemplate(req.params.name, slug);
+  // The MikroTik fetches templates from the tenant's own host, so req.hostname
+  // IS that host — bake it into the portal redirect URL the customer follows,
+  // so customers see the ISP's domain rather than the platform's.
+  const tpl = getHotspotTemplate(req.params.name, slug, req.hostname);
   if (!tpl) {
     res.status(404).type('text/plain').send('unknown template');
     return;
