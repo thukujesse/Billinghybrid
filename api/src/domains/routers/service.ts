@@ -303,10 +303,13 @@ export async function provisionRouter(input: {
     serverPublicKey: config.wireguard.serverPublicKey,
     endpoint: config.wireguard.endpoint,
     tunnelNetwork: config.wireguard.network,
-    pubkeyUrl: `${config.wireguard.managerUrl}/ssh-pubkey`,
+    // The MikroTik fetches the pubkey over the TUNNEL (Caddy proxies the WG
+    // server IP -> the manager). NOT WG_MANAGER_URL, which is 127.0.0.1 = the
+    // router's own localhost on the MikroTik.
+    pubkeyUrl: `http://${radiusServerIp()}/ssh-pubkey`,
     mgmtPassword: crypto.randomBytes(16).toString('base64url'),
     radiusSecret,
-    radiusServerIp: config.wireguard.network.split('/')[0].replace(/0\.0$/, '0.1'),
+    radiusServerIp: radiusServerIp(),
     identifyUrl: `${baseUrl}/api/routers/identify`,
     provisionToken: token,
   });
@@ -378,10 +381,12 @@ export async function fetchProvisionScript(token: string, baseUrl = config.publi
     serverPublicKey: config.wireguard.serverPublicKey,
     endpoint: config.wireguard.endpoint,
     tunnelNetwork: config.wireguard.network,
-    pubkeyUrl: `${config.wireguard.managerUrl}/ssh-pubkey`,
+    // Pubkey is fetched over the TUNNEL (WG server IP -> Caddy -> manager), not
+    // WG_MANAGER_URL (127.0.0.1 = the MikroTik's own localhost).
+    pubkeyUrl: `http://${radiusServerIp()}/ssh-pubkey`,
     mgmtPassword: crypto.randomBytes(16).toString('base64url'),
     radiusSecret,
-    radiusServerIp: config.wireguard.network.split('/')[0].replace(/0\.0$/, '0.1'),
+    radiusServerIp: radiusServerIp(),
     identifyUrl: `${baseUrl}/api/routers/identify`,
     provisionToken: token,
   });
@@ -427,6 +432,13 @@ function renderRouterOsScript(p: {
   allowed-address=${p.tunnelNetwork} \\
   persistent-keepalive=25s
 /ip/address add interface=wg-jtm address=${p.tunnelIp}/${networkMask()}
+
+# Bring the tunnel up before fetching over it: WireGuard handshakes lazily on
+# first traffic, so ping the hub to trigger it, then give it a moment. The
+# pubkey fetch below goes over this tunnel (http://${p.radiusServerIp}). Best-effort.
+:delay 2s
+:do { /ping ${p.radiusServerIp} count=3 } on-error={}
+:delay 1s
 
 # Management user "hub-mgmt" — backend SSHs in as this user using a key we
 # fetch below. Password is set but unused; SSH key auth is the access path.
@@ -1089,10 +1101,12 @@ export async function reprovisionRouter(routerId: string, baseUrl = config.publi
     serverPublicKey: config.wireguard.serverPublicKey,
     endpoint: config.wireguard.endpoint,
     tunnelNetwork: config.wireguard.network,
-    pubkeyUrl: `${config.wireguard.managerUrl}/ssh-pubkey`,
+    // Pubkey over the TUNNEL (WG server IP -> Caddy -> manager), not the
+    // API-local WG_MANAGER_URL (127.0.0.1 = the MikroTik's own localhost).
+    pubkeyUrl: `http://${radiusServerIp()}/ssh-pubkey`,
     mgmtPassword: crypto.randomBytes(16).toString('base64url'),
     radiusSecret,
-    radiusServerIp: config.wireguard.network.split('/')[0].replace(/0\.0$/, '0.1'),
+    radiusServerIp: radiusServerIp(),
     identifyUrl: `${baseUrl}/api/routers/identify`,
     provisionToken: token,
   });
