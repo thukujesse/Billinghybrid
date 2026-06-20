@@ -1555,13 +1555,15 @@ api.post('/routers/provision', requireAuth('admin', 'staff'), ah(async (req, res
     name: z.string().min(1),
     site: z.string().optional(),
   }), req.body);
-  res.status(201).json(await routers.provisionRouter(body));
+  // Point the MikroTik at THIS tenant's host so the provision-token fetch
+  // resolves to the tenant that owns it (a global host 404s for isolated tenants).
+  res.status(201).json(await routers.provisionRouter({ ...body, baseUrl: `https://${req.hostname}` }));
 }));
 
 // Public single-use fetch endpoint: MikroTik calls this via `/tool fetch` and
 // receives the RouterOS script as text/plain. Token is consumed on first call.
 api.get('/provision/:token', ah(async (req, res) => {
-  const script = await routers.fetchProvisionScript(req.params.token);
+  const script = await routers.fetchProvisionScript(req.params.token, `https://${req.hostname}`);
   res.setHeader('Content-Type', 'text/plain; charset=utf-8');
   res.setHeader('Cache-Control', 'no-store');
   res.send(script);
@@ -1576,7 +1578,7 @@ api.post('/routers/:id/exec', requireAuth('admin', 'staff'), ah(async (req, res)
 // Re-issue token, rotate RADIUS secret, and SSH-push the new config to the
 // MikroTik. If SSH push works, MikroTik self-applies — true one-touch refresh.
 api.post('/routers/:id/reprovision', requireAuth('admin', 'staff'), ah(async (req, res) => {
-  res.json(await routers.reprovisionRouter(req.params.id));
+  res.json(await routers.reprovisionRouter(req.params.id, `https://${req.hostname}`));
 }));
 
 // Build a RouterOS script that turns a LAN interface into a JTM hotspot.

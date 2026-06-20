@@ -239,10 +239,16 @@ function networkMask(): number {
 export async function provisionRouter(input: {
   name: string;
   site?: string;
+  // The tenant's OWN public host (e.g. https://test1.hubnetwifi.co.ke). The
+  // MikroTik must fetch the provision token from the tenant that owns it — a
+  // single global host would 404 for every isolated tenant. Defaults to the
+  // platform host for the default tenant / single-tenant installs.
+  baseUrl?: string;
 }): Promise<ProvisionResult> {
   if (!config.wireguard.serverPublicKey) {
     throw badRequest('WG_SERVER_PUBKEY not configured on the API');
   }
+  const baseUrl = input.baseUrl || config.publicApiUrl;
   const keys = generateWgKeypair();
   const tunnelIp = await nextTunnelIp();
 
@@ -301,13 +307,13 @@ export async function provisionRouter(input: {
     mgmtPassword: crypto.randomBytes(16).toString('base64url'),
     radiusSecret,
     radiusServerIp: config.wireguard.network.split('/')[0].replace(/0\.0$/, '0.1'),
-    identifyUrl: `${config.publicApiUrl}/api/routers/identify`,
+    identifyUrl: `${baseUrl}/api/routers/identify`,
     provisionToken: token,
   });
 
   const result: ProvisionResult = {
     router,
-    oneLiner: renderOneLiner(token),
+    oneLiner: renderOneLiner(token, baseUrl),
     mikrotikScript,
     vpsAutoAdded,
   };
@@ -317,8 +323,8 @@ export async function provisionRouter(input: {
   return result;
 }
 
-function renderOneLiner(token: string): string {
-  const url = `${config.publicApiUrl}/api/provision/${token}`;
+function renderOneLiner(token: string, baseUrl: string): string {
+  const url = `${baseUrl}/api/provision/${token}`;
   return `/tool fetch url="${url}" dst-path=jtm.rsc check-certificate=no; :delay 2s; /import jtm.rsc; /file remove jtm.rsc`;
 }
 
@@ -327,7 +333,7 @@ function renderOneLiner(token: string): string {
  * Single-use: marks the token consumed on first call. Throws if expired,
  * already used, or unknown.
  */
-export async function fetchProvisionScript(token: string): Promise<string> {
+export async function fetchProvisionScript(token: string, baseUrl = config.publicApiUrl): Promise<string> {
   if (!config.wireguard.serverPublicKey) {
     throw badRequest('WG_SERVER_PUBKEY not configured on the API');
   }
@@ -376,7 +382,7 @@ export async function fetchProvisionScript(token: string): Promise<string> {
     mgmtPassword: crypto.randomBytes(16).toString('base64url'),
     radiusSecret,
     radiusServerIp: config.wireguard.network.split('/')[0].replace(/0\.0$/, '0.1'),
-    identifyUrl: `${config.publicApiUrl}/api/routers/identify`,
+    identifyUrl: `${baseUrl}/api/routers/identify`,
     provisionToken: token,
   });
 }
@@ -1037,7 +1043,7 @@ export interface ReprovisionResult {
  * truly "one-touch". If SSH fails (port closed, hub-mgmt not yet installed),
  * we return the one-liner so admin can paste it manually.
  */
-export async function reprovisionRouter(routerId: string): Promise<ReprovisionResult> {
+export async function reprovisionRouter(routerId: string, baseUrl = config.publicApiUrl): Promise<ReprovisionResult> {
   if (!config.wireguard.serverPublicKey) {
     throw badRequest('WG_SERVER_PUBKEY not configured on the API');
   }
@@ -1087,10 +1093,10 @@ export async function reprovisionRouter(routerId: string): Promise<ReprovisionRe
     mgmtPassword: crypto.randomBytes(16).toString('base64url'),
     radiusSecret,
     radiusServerIp: config.wireguard.network.split('/')[0].replace(/0\.0$/, '0.1'),
-    identifyUrl: `${config.publicApiUrl}/api/routers/identify`,
+    identifyUrl: `${baseUrl}/api/routers/identify`,
     provisionToken: token,
   });
-  const oneLiner = renderOneLiner(token);
+  const oneLiner = renderOneLiner(token, baseUrl);
 
   // Try SSH-push the one-liner. RouterOS executes the semicolon-separated
   // commands directly. If hub-mgmt user/SSH-port aren't right, fall back to
