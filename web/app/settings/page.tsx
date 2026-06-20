@@ -9,6 +9,8 @@ interface MpesaPublic {
   till: string;
   accountName: string;
   accountNo: string;
+  bankProvider: string;
+  bankProviderEnv: string;
   consumerKeySet: boolean;
   consumerSecretSet: boolean;
   passkeySet: boolean;
@@ -111,6 +113,8 @@ export default function SettingsPage() {
     till: '',
     accountName: '',
     accountNo: '',
+    bankProvider: '',
+    bankProviderEnv: 'sandbox',
     consumerKey: '',
     consumerSecret: '',
     passkey: '',
@@ -151,7 +155,7 @@ export default function SettingsPage() {
     api<MpesaPublic>('/settings/mpesa')
       .then((m) => {
         setMpesa(m);
-        setForm((f) => ({ ...f, env: m.env, shortcode: m.shortcode, till: m.till, accountName: m.accountName, accountNo: m.accountNo ?? '', collectionMethod: m.collectionMethod }));
+        setForm((f) => ({ ...f, env: m.env, shortcode: m.shortcode, till: m.till, accountName: m.accountName, accountNo: m.accountNo ?? '', bankProvider: m.bankProvider ?? '', bankProviderEnv: m.bankProviderEnv ?? 'sandbox', collectionMethod: m.collectionMethod }));
       })
       .catch((e: any) => setToast({ ok: false, msg: e.message }));
 
@@ -400,6 +404,8 @@ export default function SettingsPage() {
         till: form.till,
         accountName: form.accountName,
         accountNo: form.accountNo,
+        bankProvider: form.bankProvider,
+        bankProviderEnv: form.bankProviderEnv,
         collectionMethod: form.collectionMethod,
       };
       // Only send secret fields if non-empty — empty means "leave as-is".
@@ -549,6 +555,32 @@ export default function SettingsPage() {
               <label>Bank account name</label>
               <input value={form.accountName} onChange={(e) => setForm({ ...form, accountName: e.target.value })} placeholder="Name on the bank account" />
             </div>
+          </div>
+        )}
+
+        {form.collectionMethod === 'bank' && (
+          <div className="row" style={{ marginTop: 4 }}>
+            <div style={{ flex: 1 }}>
+              <label>Collection mode</label>
+              <select value={form.bankProvider} onChange={(e) => setForm({ ...form, bankProvider: e.target.value })}>
+                <option value="">Manual — customer pays the paybill by hand (no STK)</option>
+                <option value="equity_jenga">Automated STK — Equity (JengaHQ)</option>
+                <option value="kcb">Automated STK — KCB</option>
+              </select>
+              <p className="sub" style={{ marginTop: 4, fontSize: 12 }}>
+                Automated fires the bank&apos;s STK prompt — the customer just enters their PIN and the bank deposits to this account.
+                Needs the bank&apos;s merchant API keys (panel appears below). No bank API? Use IntaSend / Kopo Kopo instead.
+              </p>
+            </div>
+            {form.bankProvider && (
+              <div style={{ flex: '0 0 150px' }}>
+                <label>Environment</label>
+                <select value={form.bankProviderEnv} onChange={(e) => setForm({ ...form, bankProviderEnv: e.target.value })}>
+                  <option value="sandbox">Sandbox</option>
+                  <option value="live">Live</option>
+                </select>
+              </div>
+            )}
           </div>
         )}
 
@@ -751,6 +783,16 @@ export default function SettingsPage() {
         My Apps → Lipa Na M-Pesa Sandbox → Consumer Key + Secret.
         The standard sandbox passkey + shortcode 174379 are pre-fillable above.
       </p>
+
+      {form.collectionMethod === 'bank' && form.bankProvider && (
+        <div style={{ marginTop: 8 }}>
+          <h3 style={{ fontSize: 14, marginBottom: 4 }}>Bank STK API keys — {form.bankProvider === 'kcb' ? 'KCB' : 'Equity (JengaHQ)'}</h3>
+          <p className="sub" style={{ marginTop: 0 }}>
+            Merchant API credentials for the bank&apos;s own STK Push. Until they&apos;re set, the prompt runs in <strong>simulation</strong>.
+          </p>
+          <BankStkProviders onToast={setToast} only={form.bankProvider} />
+        </div>
+      )}
 
       <CollectionAccountsManager onToast={setToast} />
 
@@ -1238,7 +1280,7 @@ const PROVIDER_LABELS: Record<string, string> = { equity_jenga: 'Equity (JengaHQ
 /** Bank STK merchant API credentials (per bank). Required to turn a bank
  *  collection account from "manual" into an automated STK prompt. Until keys are
  *  set the flow runs in SIMULATION so it can be demoed end-to-end. */
-function BankStkProviders({ onToast }: { onToast: (t: { ok: boolean; msg: string }) => void }) {
+function BankStkProviders({ onToast, only }: { onToast: (t: { ok: boolean; msg: string }) => void; only?: string }) {
   const [providers, setProviders] = useState<BankProviderPublic[]>([]);
   const [forms, setForms] = useState<Record<string, { merchantCode: string; consumerKey: string; consumerSecret: string; apiKey: string; signingKey: string }>>({});
   const [busy, setBusy] = useState<string | null>(null);
@@ -1276,11 +1318,15 @@ function BankStkProviders({ onToast }: { onToast: (t: { ok: boolean; msg: string
   const setF = (p: string, k: string, v: string) => setForms((s) => ({ ...s, [p]: { ...s[p], [k]: v } }));
 
   return (
-    <div style={{ marginTop: 16 }}>
-      <h3 style={{ fontSize: 14, marginBottom: 4 }}>Bank STK API keys</h3>
-      <p className="sub" style={{ marginTop: 0 }}>Merchant API credentials for the bank&apos;s own STK Push. Until a bank&apos;s keys are set, its automated accounts run in <strong>simulation</strong>. Secrets are write-only.</p>
+    <div style={{ marginTop: only ? 0 : 16 }}>
+      {!only && (
+        <>
+          <h3 style={{ fontSize: 14, marginBottom: 4 }}>Bank STK API keys</h3>
+          <p className="sub" style={{ marginTop: 0 }}>Merchant API credentials for the bank&apos;s own STK Push. Until a bank&apos;s keys are set, its automated accounts run in <strong>simulation</strong>. Secrets are write-only.</p>
+        </>
+      )}
       <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))' }}>
-        {providers.map((p) => {
+        {providers.filter((p) => !only || p.provider === only).map((p) => {
           const f = forms[p.provider]; if (!f) return null;
           const isEquity = p.provider === 'equity_jenga';
           return (

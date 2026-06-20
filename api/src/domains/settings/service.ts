@@ -19,6 +19,8 @@ export interface MpesaConfig {
   till: string;            // till / Buy-Goods number (till method)
   accountName: string;     // bank account name (bank method)
   accountNo: string;       // bank account NUMBER — the per-ISP routing key (bank method)
+  bankProvider: string;    // '' = manual bank | 'equity_jenga' | 'kcb' — fires bank STK when set
+  bankProviderEnv: string; // sandbox | live
   collectionMethod: CollectionMethod;
 }
 
@@ -31,6 +33,8 @@ export interface MpesaConfigPublic {
   till: string;
   accountName: string;
   accountNo: string;
+  bankProvider: string;
+  bankProviderEnv: string;
   consumerKeySet: boolean;
   consumerSecretSet: boolean;
   passkeySet: boolean;
@@ -64,6 +68,8 @@ export async function getMpesaConfig(): Promise<MpesaConfig> {
     till: map.get('mpesa.till') ?? '',
     accountName: map.get('mpesa.account_name') ?? '',
     accountNo: map.get('mpesa.account_no') ?? '',
+    bankProvider: map.get('mpesa.bank_provider') ?? '',
+    bankProviderEnv: map.get('mpesa.bank_provider_env') ?? 'sandbox',
     collectionMethod,
   };
 }
@@ -76,6 +82,8 @@ export async function getMpesaConfigPublic(): Promise<MpesaConfigPublic> {
     till: c.till,
     accountName: c.accountName,
     accountNo: c.accountNo,
+    bankProvider: c.bankProvider,
+    bankProviderEnv: c.bankProviderEnv,
     consumerKeySet: !!c.consumerKey,
     consumerSecretSet: !!c.consumerSecret,
     passkeySet: !!c.passkey,
@@ -341,6 +349,8 @@ export async function setMpesaConfig(
   if (input.till !== undefined) entries.push(['mpesa.till', input.till.trim(), false]);
   if (input.accountName !== undefined) entries.push(['mpesa.account_name', input.accountName.trim(), false]);
   if (input.accountNo !== undefined) entries.push(['mpesa.account_no', input.accountNo.trim(), false]);
+  if (input.bankProvider !== undefined) entries.push(['mpesa.bank_provider', input.bankProvider.trim(), false]);
+  if (input.bankProviderEnv !== undefined) entries.push(['mpesa.bank_provider_env', input.bankProviderEnv === 'live' ? 'live' : 'sandbox', false]);
   if (input.consumerKey !== undefined) entries.push(['mpesa.consumer_key', input.consumerKey.trim(), true]);
   if (input.consumerSecret !== undefined) entries.push(['mpesa.consumer_secret', input.consumerSecret.trim(), true]);
   if (input.passkey !== undefined) entries.push(['mpesa.passkey', input.passkey.trim(), true]);

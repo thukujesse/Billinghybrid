@@ -90,17 +90,25 @@ export async function initC2bPurchase(input: {
   const verb = method === 'till' ? 'Buy Goods' : 'Pay Bill';
   const manualMsg = `Lipa na M-Pesa → ${verb} → ${payNumber} → Account ${displayAccount} → KES ${amountKes}`;
 
-  // Automated path: a bank account wired to a bank STK provider (Equity JengaHQ
-  // / KCB) fires the prompt straight away, so the customer just enters their PIN
-  // and the bank deposits to the ISP's account. The bank's IPN settles via the
-  // shared bank-IPN endpoint (routed by account number). Manual instructions
-  // stay as a fallback in case the prompt is dismissed.
-  if (account && account.method === 'bank' && isBankProvider(account.provider)) {
+  // Automated path: a BANK destination wired to a bank STK provider (Equity
+  // JengaHQ / KCB) fires the prompt straight away — the customer just enters
+  // their PIN and the bank deposits to the ISP's account. The provider comes
+  // from the resolved collection account, else the global M-Pesa bank config
+  // (so an ISP can pick "Bank -> Equity/KCB STK" without a collection account).
+  // The bank's IPN settles via the shared bank-IPN endpoint (routed by account
+  // number). Manual instructions stay as a fallback in case the prompt is missed.
+  const bankStkProvider =
+    (account && account.method === 'bank' && isBankProvider(account.provider)) ? account.provider
+    : (!account && mp.collectionMethod === 'bank' && isBankProvider(mp.bankProvider)) ? mp.bankProvider
+    : null;
+  if (bankStkProvider) {
+    const env = (account ? account.provider_env : mp.bankProviderEnv) === 'live' ? 'live' : 'sandbox';
+    const bankPaybill = account ? account.paybill : mp.shortcode;
+    const bankAccount = account ? account.account_no : mp.accountNo;
     const token = config.control.sharedCallbackToken ? `?token=${encodeURIComponent(config.control.sharedCallbackToken)}` : '';
     const callbackUrl = `https://${config.control.sharedPayHost}/api/payments/shared/jenga/ipn${token}`;
-    const r = await initiateBankStk(account.provider, {
-      env: (account.provider_env === 'live' ? 'live' : 'sandbox'),
-      paybill: account.paybill, accountNo: account.account_no,
+    const r = await initiateBankStk(bankStkProvider, {
+      env, paybill: bankPaybill, accountNo: bankAccount,
       phone, amountKes, reference: checkoutRequestId, callbackUrl,
     });
     return {

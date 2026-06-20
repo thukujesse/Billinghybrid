@@ -735,6 +735,8 @@ api.put('/settings/mpesa', requireAuth('admin'), ah(async (req, res) => {
     till: z.string().optional(),
     accountName: z.string().optional(),
     accountNo: z.string().optional(),
+    bankProvider: z.enum(['', 'equity_jenga', 'kcb']).optional(),
+    bankProviderEnv: z.enum(['sandbox', 'live']).optional(),
     consumerKey: z.string().optional(),
     consumerSecret: z.string().optional(),
     passkey: z.string().optional(),
