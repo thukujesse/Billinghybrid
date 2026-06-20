@@ -118,7 +118,7 @@ export default function SettingsPage() {
     consumerKey: '',
     consumerSecret: '',
     passkey: '',
-    collectionMethod: 'stk' as CollectionMethod,
+    collectionMethod: 'bank' as CollectionMethod,
   });
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<{ ok: boolean; msg: string } | null>(null);
@@ -395,8 +395,11 @@ export default function SettingsPage() {
     if (logoInputRef.current) logoInputRef.current.value = '';
   };
 
-  const save = async () => {
+  // methodOverride lets the simple Bank form save as bank without the ISP ever
+  // touching the method picker (the backend does the rest automatically).
+  const save = async (methodOverride?: CollectionMethod) => {
     setSaving(true);
+    const method = methodOverride ?? form.collectionMethod;
     try {
       const body: Record<string, unknown> = {
         env: form.env,
@@ -406,7 +409,7 @@ export default function SettingsPage() {
         accountNo: form.accountNo,
         bankProvider: form.bankProvider,
         bankProviderEnv: form.bankProviderEnv,
-        collectionMethod: form.collectionMethod,
+        collectionMethod: method,
       };
       // Only send secret fields if non-empty — empty means "leave as-is".
       if (form.consumerKey) body.consumerKey = form.consumerKey;
@@ -417,8 +420,8 @@ export default function SettingsPage() {
         body: JSON.stringify(body),
       });
       setMpesa(m);
-      setForm({ ...form, consumerKey: '', consumerSecret: '', passkey: '' });
-      setToast({ ok: true, msg: 'M-Pesa settings saved' });
+      setForm({ ...form, collectionMethod: method, consumerKey: '', consumerSecret: '', passkey: '' });
+      setToast({ ok: true, msg: 'Payment settings saved' });
     } catch (e: any) {
       setToast({ ok: false, msg: e.message });
     } finally {
@@ -501,20 +504,57 @@ export default function SettingsPage() {
       </div>
 
       {tab === 'payments' && (<>
-      <h2>M-Pesa (Daraja)</h2>
-      {mpesa && (
-        <div
-          className={`toast ${mpesa.simulated ? 'err' : 'ok'}`}
-          style={{ marginBottom: 12 }}
-        >
+      <h2>How customers pay you</h2>
+      {mpesa && (mpesa.collectionMethod === 'bank' ? (
+        <div className={`toast ${mpesa.accountNo ? 'ok' : 'err'}`} style={{ marginBottom: 12 }}>
+          {mpesa.accountNo
+            ? `Ready — customers pay paybill ${mpesa.shortcode || '(set your paybill)'} to account ${mpesa.accountNo}; each payment is verified and connects them automatically.`
+            : 'Almost there — enter your bank paybill and account number below to start collecting.'}
+        </div>
+      ) : (
+        <div className={`toast ${mpesa.simulated ? 'err' : 'ok'}`} style={{ marginBottom: 12 }}>
           Status:{' '}
           {mpesa.simulated
             ? 'SIMULATION (missing one or more credentials — STK pushes won\'t go to Safaricom)'
             : `LIVE (${mpesa.env} · shortcode ${mpesa.shortcode})`}
         </div>
-      )}
+      ))}
 
+      {/* Simple, primary form — most ISPs only ever need these two fields.
+          Everything else is automatic (method = bank, registration, settlement). */}
       <div className="card">
+        <p className="sub" style={{ marginTop: 0 }}>
+          Enter the bank paybill and account number your bank gave you. Customers pay that paybill using your account number; HubNet verifies each payment and connects them automatically. Nothing else to set up.
+        </p>
+        <div className="row">
+          <div style={{ flex: 1 }}>
+            <label>Bank paybill</label>
+            <input value={form.shortcode} onChange={(e) => setForm({ ...form, shortcode: e.target.value })} placeholder="e.g. Equity 247247, KCB 522522" />
+          </div>
+          <div style={{ flex: 1 }}>
+            <label>Account number</label>
+            <input value={form.accountNo} onChange={(e) => setForm({ ...form, accountNo: e.target.value })} placeholder="your account no. — identifies you" />
+          </div>
+        </div>
+        <div className="row">
+          <div style={{ flex: 1 }}>
+            <label>Account name (optional)</label>
+            <input value={form.accountName} onChange={(e) => setForm({ ...form, accountName: e.target.value })} placeholder="Name on the bank account" />
+          </div>
+          <div style={{ flex: 1 }} />
+        </div>
+        <div style={{ marginTop: 16 }}>
+          <button onClick={() => save('bank')} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
+        </div>
+      </div>
+
+      {/* Advanced — automated gateways (STK / aggregators / bank STK). Opt-in. */}
+      <details style={{ marginTop: 16 }}>
+        <summary style={{ cursor: 'pointer', fontWeight: 600, padding: '6px 0' }}>
+          Advanced — automated gateways (STK Push, IntaSend, Kopo Kopo, bank STK) · optional
+        </summary>
+
+      <div className="card" style={{ marginTop: 8 }}>
         <div className="row">
           <div>
             <label>Environment</label>
@@ -640,7 +680,7 @@ export default function SettingsPage() {
         )}
 
         <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
-          <button onClick={save} disabled={saving}>
+          <button onClick={() => save()} disabled={saving}>
             {saving ? 'Saving…' : 'Save'}
           </button>
           {form.collectionMethod === 'stk' && (
@@ -797,6 +837,7 @@ export default function SettingsPage() {
       <CollectionAccountsManager onToast={setToast} />
 
       <RenewalDunning onToast={setToast} />
+      </details>
 
       </>)}
 

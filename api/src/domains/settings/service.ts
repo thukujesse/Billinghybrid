@@ -57,7 +57,9 @@ async function readSettings(prefix: string): Promise<Map<string, string>> {
 export async function getMpesaConfig(): Promise<MpesaConfig> {
   const map = await readSettings('mpesa.');
   // Legacy 'c2b' rows map to the new 'paybill' method.
-  const rawMethod = map.get('mpesa.collection_method') ?? 'stk';
+  // Default to bank: most ISPs collect via a shared bank paybill + account and
+  // never touch the automated-gateway settings. STK/aggregators are opt-in.
+  const rawMethod = map.get('mpesa.collection_method') ?? 'bank';
   const collectionMethod = (rawMethod === 'c2b' ? 'paybill' : rawMethod) as CollectionMethod;
   return {
     env: ((map.get('mpesa.env') ?? config.mpesa.env) as 'sandbox' | 'production'),
