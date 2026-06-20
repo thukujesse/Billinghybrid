@@ -10,6 +10,7 @@ const BRAND = 'HUBNETWORKS';
 
 type Item = { href: string; label: string };
 type Group = { key: string; label: string; ico: string; items: Item[] };
+interface NavCounts { subscribers: number; live_sessions: number; unmatched_payments: number; open_alerts: number }
 
 // Flat, always-visible sections (matches the overview design). Every route the
 // app exposes is grouped here — nothing is hidden behind an accordion. Labels
@@ -82,15 +83,29 @@ export function Sidebar() {
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
   const [hidden, setHidden] = useState(false);
   const [me, setMe] = useState<{ username?: string; role?: string } | null>(null);
+  const [counts, setCounts] = useState<NavCounts | null>(null);
 
-  // Who's signed in (drives the footer). Quietly null if not authenticated.
+  // Who's signed in (drives the footer) + live badge counts. Quietly null if not
+  // authenticated. Refreshes on navigation so badges reflect recent actions.
   useEffect(() => {
     if (typeof window !== 'undefined' && getToken()) {
       api<{ username?: string; role?: string }>('/auth/me').then(setMe).catch(() => setMe(null));
+      api<NavCounts>('/dashboard/nav-counts').then(setCounts).catch(() => { /* endpoint absent before deploy */ });
     } else {
-      setMe(null);
+      setMe(null); setCounts(null);
     }
   }, [pathname]);
+
+  // Badge for a nav item: neutral counts (subscribers, live sessions) and
+  // attention counts (unclaimed payments, open alerts — only shown when > 0).
+  const badgeFor = (href: string): { v: number; attn: boolean } | null => {
+    if (!counts) return null;
+    if (href === '/customers' && counts.subscribers > 0) return { v: counts.subscribers, attn: false };
+    if (href === '/sessions' && counts.live_sessions > 0) return { v: counts.live_sessions, attn: false };
+    if (href === '/reconciliation' && counts.unmatched_payments > 0) return { v: counts.unmatched_payments, attn: true };
+    if (href === '/alerts' && counts.open_alerts > 0) return { v: counts.open_alerts, attn: true };
+    return null;
+  };
   const logout = () => { setToken(null); setMe(null); router.replace('/login'); };
 
   // Sync local state with what the pre-paint bootstrap already applied.
@@ -164,14 +179,28 @@ export function Sidebar() {
               }}>
                 <span aria-hidden style={{ fontSize: 12 }}>{g.ico}</span>{g.label}
               </div>
-              {g.items.map((i) => (
-                <a
-                  key={i.href}
-                  href={i.href}
-                  className={`side-link${isActive(pathname, i.href) ? ' active' : ''}`}
-                  onClick={onNavigate}
-                >{i.label}</a>
-              ))}
+              {g.items.map((i) => {
+                const b = badgeFor(i.href);
+                return (
+                  <a
+                    key={i.href}
+                    href={i.href}
+                    className={`side-link${isActive(pathname, i.href) ? ' active' : ''}`}
+                    onClick={onNavigate}
+                    style={{ display: 'flex', alignItems: 'center' }}
+                  >
+                    {i.label}
+                    {b && (
+                      <span style={{
+                        marginLeft: 'auto', fontSize: 11, fontWeight: 700, lineHeight: 1,
+                        padding: '2px 7px', borderRadius: 999,
+                        color: b.attn ? '#dc2626' : 'var(--muted)',
+                        background: b.attn ? 'var(--red-weak, rgba(220,38,38,0.12))' : 'var(--card-2, rgba(0,0,0,0.06))',
+                      }}>{b.v > 999 ? '999+' : b.v}</span>
+                    )}
+                  </a>
+                );
+              })}
             </div>
           ))}
         </nav>

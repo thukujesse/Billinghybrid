@@ -542,3 +542,23 @@ export async function overviewDashboard(): Promise<OverviewDashboard> {
     today_events: (events as any[]).map((e) => ({ kind: e.kind, created_at: e.created_at, label: e.label, amount_cents: e.amount_cents === null ? null : Number(e.amount_cents) })),
   };
 }
+
+export interface NavCounts {
+  subscribers: number;
+  live_sessions: number;
+  unmatched_payments: number;
+  open_alerts: number;
+}
+
+/** Lightweight badge counts for the sidebar (one cheap COUNT each, all resilient
+ *  so a missing table never 500s the nav). Fetched on the client per session. */
+export async function navCounts(): Promise<NavCounts> {
+  const n = (sql: string) => safeMetric(query<{ n: string }>(sql).then((r) => Number(r.rows[0]?.n ?? 0)), 0);
+  const [subscribers, live_sessions, unmatched_payments, open_alerts] = await Promise.all([
+    n(`SELECT COUNT(*)::text n FROM subscribers`),
+    n(`SELECT COUNT(*)::text n FROM radacct WHERE acctstoptime IS NULL`),
+    n(`SELECT COUNT(*)::text n FROM unmatched_payment WHERE status='unmatched'`),
+    n(`SELECT COUNT(*)::text n FROM alert_events WHERE status='open'`),
+  ]);
+  return { subscribers, live_sessions, unmatched_payments, open_alerts };
+}
