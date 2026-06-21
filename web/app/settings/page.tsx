@@ -473,18 +473,26 @@ export default function SettingsPage() {
   // Unified "How customers pay" selector — one choice that drives both the
   // collection method and (for banks) the STK provider.
   const payMode =
-    form.collectionMethod === 'intasend' ? 'intasend'
+    form.collectionMethod === 'stk' ? 'stk'
+    : form.collectionMethod === 'intasend' ? 'intasend'
     : form.collectionMethod === 'kopokopo' ? 'kopokopo'
     : form.bankProvider === 'equity_jenga' ? 'equity_jenga'
     : form.bankProvider === 'kcb' ? 'kcb'
     : 'manual';
   const setPayMode = (v: string) => {
-    if (v === 'intasend') setForm({ ...form, collectionMethod: 'intasend', bankProvider: '' });
+    if (v === 'stk') setForm({ ...form, collectionMethod: 'stk', bankProvider: '' });
+    else if (v === 'intasend') setForm({ ...form, collectionMethod: 'intasend', bankProvider: '' });
     else if (v === 'kopokopo') setForm({ ...form, collectionMethod: 'kopokopo', bankProvider: '' });
     else if (v === 'equity_jenga') setForm({ ...form, collectionMethod: 'bank', bankProvider: 'equity_jenga' });
     else if (v === 'kcb') setForm({ ...form, collectionMethod: 'bank', bankProvider: 'kcb' });
     else setForm({ ...form, collectionMethod: 'bank', bankProvider: '' });
   };
+  // Which fields each method actually needs — so we only ever ask for those:
+  //  bank rail  → shared paybill + account number (the routing key)
+  //  own Daraja → own paybill + Daraja keys (bank is linked at Safaricom, no acct no.)
+  //  aggregator → just the aggregator keys (payout bank is set in their dashboard)
+  const isBankRail = payMode === 'manual' || payMode === 'equity_jenga' || payMode === 'kcb';
+  const isOwnDaraja = payMode === 'stk';
 
   // Pick your bank: auto-fill its paybill and route to the right rail —
   // direct STK if the bank has an API, otherwise drop any direct provider so
@@ -601,43 +609,39 @@ export default function SettingsPage() {
           merchant API keys. */}
       <div className="card">
         <p className="sub" style={{ marginTop: 0 }}>
-          Pick your bank — we&apos;ll fill in its paybill and the best way to collect. Customers pay your account; each payment is verified and connects them automatically.
+          Choose how customers pay you — we only ask for what that method needs. Every payment is verified and connects the customer automatically.
         </p>
+        {/* Bank picker only applies to the shared-paybill / bank-STK rails. */}
+        {isBankRail && (
+          <div className="row">
+            <div style={{ flex: 1 }}>
+              <label>Your bank</label>
+              <select value={bankName} onChange={(e) => onPickBank(e.target.value)}>
+                <option value="">Select your bank…</option>
+                {KENYA_BANKS.map((b) => (
+                  <option key={b.name} value={b.name}>{b.name}{b.direct ? ' — direct STK' : ''}</option>
+                ))}
+              </select>
+              {pickedBank && !pickedBank.direct && (
+                <p className="sub" style={{ marginTop: 4, fontSize: 12 }}>
+                  {pickedBank.name} doesn&apos;t expose its own STK API — pick <strong>IntaSend</strong> or <strong>Kopo Kopo</strong> below for an automated prompt (settles straight to your {pickedBank.name} account), or leave it Manual.
+                </p>
+              )}
+            </div>
+          </div>
+        )}
         <div className="row">
-          <div style={{ flex: 1 }}>
-            <label>Your bank</label>
-            <select value={bankName} onChange={(e) => onPickBank(e.target.value)}>
-              <option value="">Select your bank…</option>
-              {KENYA_BANKS.map((b) => (
-                <option key={b.name} value={b.name}>{b.name}{b.direct ? ' — direct STK' : ''}</option>
-              ))}
-            </select>
-            {pickedBank && !pickedBank.direct && (
-              <p className="sub" style={{ marginTop: 4, fontSize: 12 }}>
-                {pickedBank.name} doesn&apos;t expose its own STK API — pick <strong>IntaSend</strong> or <strong>Kopo Kopo</strong> below for an automated prompt (settles straight to your {pickedBank.name} account), or leave it Manual.
-              </p>
-            )}
-          </div>
-        </div>
-        <div className="row">
-          <div style={{ flex: 1 }}>
-            <label>Bank paybill</label>
-            <input value={form.shortcode} onChange={(e) => setForm({ ...form, shortcode: e.target.value })} placeholder="e.g. Equity 247247, KCB 522522" />
-          </div>
-          <div style={{ flex: 1 }}>
-            <label>Account number</label>
-            <input value={form.accountNo} onChange={(e) => setForm({ ...form, accountNo: e.target.value })} placeholder="your account no. — identifies you" />
-          </div>
-        </div>
-        <div className="row">
-          <div style={{ flex: 1 }}>
-            <label>Account name (optional)</label>
-            <input value={form.accountName} onChange={(e) => setForm({ ...form, accountName: e.target.value })} placeholder="Name on the bank account" />
-          </div>
+          {(isBankRail || isOwnDaraja) && (
+            <div style={{ flex: 1 }}>
+              <label>{isOwnDaraja ? 'Your M-Pesa paybill / shortcode' : 'Bank paybill'}</label>
+              <input value={form.shortcode} onChange={(e) => setForm({ ...form, shortcode: e.target.value })} placeholder={isOwnDaraja ? 'e.g. 174379 — your own paybill' : 'e.g. Equity 247247, KCB 522522'} />
+            </div>
+          )}
           <div style={{ flex: 1 }}>
             <label>How customers pay</label>
             <select value={payMode} onChange={(e) => setPayMode(e.target.value)}>
               <option value="manual">Manual — they pay the paybill by hand (no prompt)</option>
+              <option value="stk">Automated STK — your own M-Pesa paybill (Daraja)</option>
               <option value="equity_jenga">Automated STK — Equity (JengaHQ) → your account</option>
               <option value="kcb">Automated STK — KCB (Buni) → your account</option>
               <option value="intasend">Automated STK — IntaSend (any bank) → your account</option>
@@ -645,6 +649,43 @@ export default function SettingsPage() {
             </select>
           </div>
         </div>
+        {/* Account number is the routing key for the bank rails only. */}
+        {isBankRail && (
+          <div className="row">
+            <div style={{ flex: 1 }}>
+              <label>Account number</label>
+              <input value={form.accountNo} onChange={(e) => setForm({ ...form, accountNo: e.target.value })} placeholder="your account no. — identifies you" />
+            </div>
+            <div style={{ flex: 1 }}>
+              <label>Account name (optional)</label>
+              <input value={form.accountName} onChange={(e) => setForm({ ...form, accountName: e.target.value })} placeholder="Name on the bank account" />
+            </div>
+          </div>
+        )}
+
+        {/* Own Safaricom paybill + Daraja keys. Money lands in YOUR paybill and
+            Safaricom sweeps it to the bank you linked in the Safaricom portal —
+            no account number needed here. */}
+        {isOwnDaraja && (
+          <div style={{ marginTop: 8, padding: 12, border: '1px solid var(--border)', borderRadius: 8 }}>
+            <p className="sub" style={{ marginTop: 0 }}>
+              The prompt fires from <strong>your own</strong> paybill; Safaricom settles it to the bank account you linked in the Safaricom Business portal — HubNet never touches the money. Paste your Daraja keys from <a href="https://developer.safaricom.co.ke" target="_blank" rel="noreferrer">developer.safaricom.co.ke</a>. Runs in simulation until they&apos;re set.
+            </p>
+            <div style={{ maxWidth: 180, marginBottom: 8 }}>
+              <label>Environment</label>
+              <select value={form.env} onChange={(e) => setForm({ ...form, env: e.target.value as any })}>
+                <option value="sandbox">Sandbox</option>
+                <option value="production">Production</option>
+              </select>
+            </div>
+            <label>Consumer Key {mpesa?.consumerKeySet && <span style={{ color: 'var(--green)' }}>✓ set</span>}</label>
+            <input type="password" value={form.consumerKey} placeholder={mpesa?.consumerKeySet ? '••• leave empty to keep current' : 'from developer.safaricom.co.ke'} onChange={(e) => setForm({ ...form, consumerKey: e.target.value })} />
+            <label>Consumer Secret {mpesa?.consumerSecretSet && <span style={{ color: 'var(--green)' }}>✓ set</span>}</label>
+            <input type="password" value={form.consumerSecret} placeholder={mpesa?.consumerSecretSet ? '••• leave empty to keep current' : 'from developer.safaricom.co.ke'} onChange={(e) => setForm({ ...form, consumerSecret: e.target.value })} />
+            <label>Passkey {mpesa?.passkeySet && <span style={{ color: 'var(--green)' }}>✓ set</span>}</label>
+            <input type="password" value={form.passkey} placeholder={mpesa?.passkeySet ? '••• leave empty to keep current' : 'Lipa na M-Pesa Online passkey'} onChange={(e) => setForm({ ...form, passkey: e.target.value })} />
+          </div>
+        )}
 
         {/* Equity / KCB direct bank STK — money straight to the account above. */}
         {form.collectionMethod === 'bank' && form.bankProvider && (
@@ -728,8 +769,8 @@ export default function SettingsPage() {
         <div style={{ marginTop: 16 }}>
           <button onClick={() => save()} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
           <span className="sub" style={{ marginLeft: 12, fontSize: 12 }}>
-            {payMode === 'manual'
-              ? 'Customers will pay the paybill manually.'
+            {payMode === 'manual' ? 'Customers will pay the paybill manually.'
+              : payMode === 'stk' ? 'Your Daraja keys save together with this button.'
               : 'Save the keys above first, then Save here.'}
           </span>
         </div>
@@ -838,7 +879,7 @@ export default function SettingsPage() {
           </div>
         </div>
 
-        {form.collectionMethod === 'stk' && (
+        {false /* moved to the simple form above */ && form.collectionMethod === 'stk' && (
           <>
             <label>Consumer Key {mpesa?.consumerKeySet && <span style={{ color: 'var(--green)' }}>✓ set</span>}</label>
             <input
