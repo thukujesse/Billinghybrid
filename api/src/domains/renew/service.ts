@@ -2,6 +2,8 @@ import { query } from '../../db/pool.js';
 import { badRequest, notFound } from '../../lib/errors.js';
 import { config } from '../../config.js';
 import { stkPush, normalizeMsisdn } from '../payments/daraja.js';
+import { getMpesaConfig } from '../settings/service.js';
+import { initiateBankStk, isBankProvider } from '../payments/bankStk.js';
 import crypto from 'node:crypto';
 
 export interface RenewInfo {
@@ -134,11 +136,28 @@ export async function pay(input: {
   if (!/^254\d{9}$/.test(phone)) throw badRequest('invalid phone');
 
   const amountKes = Math.round(plan.price_cents / 100);
-  const simulated = config.mpesa.simulated;
+  const mp = await getMpesaConfig();
+  let simulated = config.mpesa.simulated;
   let checkoutRequestId: string;
   let customerMessage: string;
 
-  if (simulated) {
+  if (mp.collectionMethod === 'bank' && isBankProvider(mp.bankProvider)) {
+    // Direct bank STK — Equity/KCB prompts the customer and deposits straight
+    // into the ISP's bank account (identical path to hotspot). Settles via the
+    // shared bank IPN, matched by this reference.
+    checkoutRequestId = 'RNW' + String(crypto.randomInt(100000, 1000000));
+    const token = config.control.sharedCallbackToken ? `?token=${encodeURIComponent(config.control.sharedCallbackToken)}` : '';
+    const callbackUrl = `https://${config.control.sharedPayHost}/api/payments/shared/jenga/ipn${token}`;
+    const r = await initiateBankStk(mp.bankProvider, {
+      env: mp.bankProviderEnv === 'live' ? 'live' : 'sandbox',
+      paybill: mp.shortcode, accountNo: mp.accountNo,
+      phone, amountKes, reference: checkoutRequestId, callbackUrl,
+    });
+    simulated = r.simulated;
+    customerMessage = r.ok
+      ? `${r.message}. Enter your M-Pesa PIN to renew ${plan.name}.`
+      : 'Could not send the prompt — please try again.';
+  } else if (simulated) {
     checkoutRequestId = 'SIM-' + crypto.randomBytes(8).toString('hex').toUpperCase();
     customerMessage = `[Simulation] Would have charged ${phone} KES ${amountKes}`;
   } else {
