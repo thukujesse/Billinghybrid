@@ -1,5 +1,17 @@
 import type pg from 'pg';
-import { pool, poolForConnString } from '../../db/pool.js';
+import { pool, poolForConnString, runWithTenant, currentTenantId } from '../../db/pool.js';
+import { config } from '../../config.js';
+
+/** Public API base URL for the CURRENT tenant — used when handing Safaricom /
+ *  a provider a callback URL, so the confirmation routes back to THIS tenant's
+ *  host (and DB). Isolated tenants get their subdomain; the default tenant (and
+ *  no-context calls) keep the platform host. */
+export function tenantApiBase(): string {
+  const slug = currentTenantId();
+  return slug && slug !== 'default'
+    ? `https://${slug}.${config.control.baseDomain}`
+    : config.publicApiUrl;
+}
 
 // ---------------------------------------------------------------------------
 // Tenant registry (control plane). These rows live in the CONTROL DB (the
@@ -65,6 +77,31 @@ export async function listTenants(): Promise<Tenant[]> {
        FROM tenant ORDER BY created_at`
   );
   return r.rows;
+}
+
+/**
+ * Run `fn` once per ACTIVE tenant, each inside that tenant's DB context, so a
+ * background sweep covers every tenant's database — not just the default pool.
+ * Per-tenant failures are isolated (logged, never abort the others). Falls back
+ * to a single default-pool run when the registry is empty/unavailable (the
+ * original single-tenant install). Returns the number of contexts run.
+ *
+ * This is the canonical fix for the "worker only touches the default tenant"
+ * class of bug — use it for any periodic job that reads/writes tenant data.
+ */
+export async function eachTenant(fn: () => Promise<void>, label = 'worker'): Promise<number> {
+  let tenants: Tenant[] = [];
+  try { tenants = (await listTenants()).filter((t) => t.status === 'active'); }
+  catch (e) { console.error(`[${label}] listTenants failed; default pool only:`, (e as Error).message); }
+  if (tenants.length === 0) { await fn(); return 1; }
+  for (const t of tenants) {
+    try {
+      await runWithTenant({ tenantId: t.slug, pool: poolForTenant(t), uuid: t.id, status: t.status }, fn);
+    } catch (e) {
+      console.error(`[${label}] tenant ${t.slug} failed:`, (e as Error).message);
+    }
+  }
+  return tenants.length;
 }
 
 export async function getTenantBySlug(slug: string): Promise<Tenant | null> {

@@ -11,6 +11,7 @@
  */
 import { config } from '../../config.js';
 import { captureSample } from './service.js';
+import { eachTenant } from '../tenants/service.js';
 
 export function startMetricsWorker(intervalMs = 60_000): () => Promise<void> {
   let stopping = false;
@@ -20,7 +21,10 @@ export function startMetricsWorker(intervalMs = 60_000): () => Promise<void> {
     if (stopping || inFlight) return;
     inFlight = (async () => {
       try {
-        await captureSample();
+        // Sample EVERY active tenant's routers, each in its own DB context —
+        // a no-context call would only snapshot the default tenant, leaving
+        // isolated tenants' /network charts + dashboard traffic empty.
+        await eachTenant(async () => { await captureSample(); }, 'metrics-worker');
       } catch (err) {
         console.error('[metrics-worker] sample failed:', (err as Error).message);
       } finally {

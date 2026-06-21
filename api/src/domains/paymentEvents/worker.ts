@@ -26,6 +26,7 @@ import {
   reapStaleLocks,
   type PaymentEvent,
 } from './service.js';
+import { eachTenant } from '../tenants/service.js';
 
 const WORKER_ID = `${hostname()}#${process.pid}`;
 // Reap stale locks less often than poll — once every N ticks.
@@ -105,11 +106,16 @@ export function startPaymentWorker(): () => Promise<void> {
     if (stopRequested) return;
     tickCount++;
     try {
+      // Drain EVERY active tenant's queue in its own DB context — payment_events
+      // is per-tenant, so a no-context worker would only settle the default
+      // tenant's callbacks and silently strand every isolated tenant's payments.
       if (tickCount % REAP_EVERY_N_TICKS === 0) {
-        const reaped = await reapStaleLocks();
-        if (reaped > 0) console.log(`[payment-worker] reaped ${reaped} stale lock(s)`);
+        await eachTenant(async () => {
+          const reaped = await reapStaleLocks();
+          if (reaped > 0) console.log(`[payment-worker] reaped ${reaped} stale lock(s)`);
+        }, 'payment-worker');
       }
-      await processBatch();
+      await eachTenant(async () => { await processBatch(); }, 'payment-worker');
     } catch (err) {
       console.error('[payment-worker] tick error:', err);
     }

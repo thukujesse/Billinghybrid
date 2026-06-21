@@ -8,7 +8,9 @@
  * evaluator + slow Telegram fan-out shouldn't pile up).
  */
 import { config } from '../../config.js';
+import { currentTenantId } from '../../db/pool.js';
 import { runEvaluators } from './service.js';
+import { eachTenant } from '../tenants/service.js';
 
 export function startAlertWorker(intervalMs = 5 * 60 * 1000): () => Promise<void> {
   let stopping = false;
@@ -18,14 +20,19 @@ export function startAlertWorker(intervalMs = 5 * 60 * 1000): () => Promise<void
     if (stopping || inFlight) return;
     inFlight = (async () => {
       try {
-        const { opened, resolved } = await runEvaluators();
-        if (opened.length > 0 || resolved.length > 0) {
-          console.log(JSON.stringify({
-            level: 'info', msg: 'alert_sweep',
-            opened: opened.map((a) => ({ kind: a.kind, key: a.dedup_key })),
-            resolved: resolved.map((a) => ({ kind: a.kind, key: a.dedup_key })),
-          }));
-        }
+        // Evaluate EVERY active tenant's conditions in its own DB context — a
+        // no-context sweep would only watch the default tenant, so isolated
+        // tenants' offline routers / queue backlogs would never alert.
+        await eachTenant(async () => {
+          const { opened, resolved } = await runEvaluators();
+          if (opened.length > 0 || resolved.length > 0) {
+            console.log(JSON.stringify({
+              level: 'info', msg: 'alert_sweep', tenant: currentTenantId(),
+              opened: opened.map((a) => ({ kind: a.kind, key: a.dedup_key })),
+              resolved: resolved.map((a) => ({ kind: a.kind, key: a.dedup_key })),
+            }));
+          }
+        }, 'alert-worker');
       } catch (err) {
         console.error('[alert-worker] sweep failed:', (err as Error).message);
       } finally {

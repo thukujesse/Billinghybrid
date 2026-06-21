@@ -4,6 +4,7 @@ import { badRequest, conflict, notFound } from '../../lib/errors.js';
 import { config } from '../../config.js';
 import { stkPush, normalizeMsisdn, parseCallback } from '../payments/daraja.js';
 import { isMpesaSimulated } from '../settings/service.js';
+import { tenantApiBase } from '../tenants/service.js';
 import { render as renderTpl } from '../messageTemplates/service.js';
 import { notify } from '../notifications/service.js';
 import { kickByMac } from '../radius/coa.js';
@@ -291,7 +292,7 @@ export async function initPurchase(input: {
       amountKes,
       accountReference: phone.slice(-9),
       description: plan.name.slice(0, 13),
-      callbackUrl: `${config.publicApiUrl}/api/hotspot/mpesa/callback`,
+      callbackUrl: `${tenantApiBase()}/api/hotspot/mpesa/callback`,
     });
     checkoutRequestId = res.checkoutRequestId;
     customerMessage = res.customerMessage;
