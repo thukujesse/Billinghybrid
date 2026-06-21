@@ -3,6 +3,46 @@ import { useEffect, useRef, useState } from 'react';
 import { api } from '@/lib/api';
 
 type CollectionMethod = 'stk' | 'paybill' | 'till' | 'bank' | 'intasend' | 'kopokopo';
+
+// Every licensed Kenyan commercial bank. `paybill` is the bank's well-known
+// M-Pesa "pay to your account" paybill (confirm with your bank — these are
+// defaults). `direct` marks banks with their own STK API; all others collect
+// via an aggregator (IntaSend/Kopo Kopo), which settles to ANY bank.
+const KENYA_BANKS: { name: string; paybill?: string; direct?: 'equity_jenga' | 'kcb' }[] = [
+  { name: 'Equity Bank', paybill: '247247', direct: 'equity_jenga' },
+  { name: 'KCB Bank', paybill: '522522', direct: 'kcb' },
+  { name: 'Co-operative Bank', paybill: '400200' },
+  { name: 'NCBA Bank', paybill: '880100' },
+  { name: 'Absa Bank Kenya', paybill: '303030' },
+  { name: 'Standard Chartered', paybill: '329329' },
+  { name: 'Diamond Trust Bank (DTB)', paybill: '516600' },
+  { name: 'I&M Bank', paybill: '542542' },
+  { name: 'Family Bank', paybill: '222111' },
+  { name: 'National Bank (NBK)' },
+  { name: 'Stanbic Bank' },
+  { name: 'Prime Bank' },
+  { name: 'HF Group (HFC)' },
+  { name: 'Gulf African Bank' },
+  { name: 'Sidian Bank' },
+  { name: 'Ecobank Kenya' },
+  { name: 'Bank of Africa' },
+  { name: 'Credit Bank' },
+  { name: 'Consolidated Bank' },
+  { name: 'ABC Bank' },
+  { name: 'Victoria Commercial Bank' },
+  { name: 'Guaranty Trust Bank (GTBank)' },
+  { name: 'Mayfair CIB Bank' },
+  { name: 'Access Bank Kenya' },
+  { name: 'UBA Kenya' },
+  { name: 'SBM Bank Kenya' },
+  { name: 'Dubai Islamic Bank' },
+  { name: 'Premier Bank' },
+  { name: 'Kingdom Bank' },
+  { name: 'Bank of Baroda' },
+  { name: 'Bank of India' },
+  { name: 'Citibank Kenya' },
+  { name: 'Other / not listed' },
+];
 interface MpesaPublic {
   env: 'sandbox' | 'production';
   shortcode: string;
@@ -120,6 +160,7 @@ export default function SettingsPage() {
     passkey: '',
     collectionMethod: 'bank' as CollectionMethod,
   });
+  const [bankName, setBankName] = useState('');
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<{ ok: boolean; msg: string } | null>(null);
   const [tab, setTab] = useState<SettingsTab>('payments');
@@ -429,6 +470,37 @@ export default function SettingsPage() {
     }
   };
 
+  // Unified "How customers pay" selector — one choice that drives both the
+  // collection method and (for banks) the STK provider.
+  const payMode =
+    form.collectionMethod === 'intasend' ? 'intasend'
+    : form.collectionMethod === 'kopokopo' ? 'kopokopo'
+    : form.bankProvider === 'equity_jenga' ? 'equity_jenga'
+    : form.bankProvider === 'kcb' ? 'kcb'
+    : 'manual';
+  const setPayMode = (v: string) => {
+    if (v === 'intasend') setForm({ ...form, collectionMethod: 'intasend', bankProvider: '' });
+    else if (v === 'kopokopo') setForm({ ...form, collectionMethod: 'kopokopo', bankProvider: '' });
+    else if (v === 'equity_jenga') setForm({ ...form, collectionMethod: 'bank', bankProvider: 'equity_jenga' });
+    else if (v === 'kcb') setForm({ ...form, collectionMethod: 'bank', bankProvider: 'kcb' });
+    else setForm({ ...form, collectionMethod: 'bank', bankProvider: '' });
+  };
+
+  // Pick your bank: auto-fill its paybill and route to the right rail —
+  // direct STK if the bank has an API, otherwise drop any direct provider so
+  // the ISP uses an aggregator (which settles to that bank) or manual.
+  const pickedBank = KENYA_BANKS.find((b) => b.name === bankName);
+  const onPickBank = (name: string) => {
+    setBankName(name);
+    const b = KENYA_BANKS.find((x) => x.name === name);
+    if (!b) return;
+    setForm((f) => {
+      if (b.direct) return { ...f, shortcode: b.paybill ?? f.shortcode, collectionMethod: 'bank', bankProvider: b.direct };
+      const keepAgg = f.collectionMethod === 'intasend' || f.collectionMethod === 'kopokopo';
+      return { ...f, shortcode: b.paybill ?? f.shortcode, collectionMethod: keepAgg ? f.collectionMethod : 'bank', bankProvider: '' };
+    });
+  };
+
   const sendTestStk = async () => {
     if (!mpesaTestPhone) return;
     setMpesaTesting(true);
@@ -529,8 +601,24 @@ export default function SettingsPage() {
           merchant API keys. */}
       <div className="card">
         <p className="sub" style={{ marginTop: 0 }}>
-          Enter the bank paybill and account number your bank gave you. Customers pay that paybill using your account number; each payment is verified and connects them automatically.
+          Pick your bank — we&apos;ll fill in its paybill and the best way to collect. Customers pay your account; each payment is verified and connects them automatically.
         </p>
+        <div className="row">
+          <div style={{ flex: 1 }}>
+            <label>Your bank</label>
+            <select value={bankName} onChange={(e) => onPickBank(e.target.value)}>
+              <option value="">Select your bank…</option>
+              {KENYA_BANKS.map((b) => (
+                <option key={b.name} value={b.name}>{b.name}{b.direct ? ' — direct STK' : ''}</option>
+              ))}
+            </select>
+            {pickedBank && !pickedBank.direct && (
+              <p className="sub" style={{ marginTop: 4, fontSize: 12 }}>
+                {pickedBank.name} doesn&apos;t expose its own STK API — pick <strong>IntaSend</strong> or <strong>Kopo Kopo</strong> below for an automated prompt (settles straight to your {pickedBank.name} account), or leave it Manual.
+              </p>
+            )}
+          </div>
+        </div>
         <div className="row">
           <div style={{ flex: 1 }}>
             <label>Bank paybill</label>
@@ -548,15 +636,18 @@ export default function SettingsPage() {
           </div>
           <div style={{ flex: 1 }}>
             <label>How customers pay</label>
-            <select value={form.bankProvider} onChange={(e) => setForm({ ...form, bankProvider: e.target.value })}>
-              <option value="">Manual — they pay the paybill by hand (no prompt)</option>
-              <option value="equity_jenga">Automated STK — Equity (JengaHQ)</option>
-              <option value="kcb">Automated STK — KCB (Buni)</option>
+            <select value={payMode} onChange={(e) => setPayMode(e.target.value)}>
+              <option value="manual">Manual — they pay the paybill by hand (no prompt)</option>
+              <option value="equity_jenga">Automated STK — Equity (JengaHQ) → your account</option>
+              <option value="kcb">Automated STK — KCB (Buni) → your account</option>
+              <option value="intasend">Automated STK — IntaSend (any bank) → your account</option>
+              <option value="kopokopo">Automated STK — Kopo Kopo (any bank) → your till/bank</option>
             </select>
           </div>
         </div>
 
-        {form.bankProvider && (
+        {/* Equity / KCB direct bank STK — money straight to the account above. */}
+        {form.collectionMethod === 'bank' && form.bankProvider && (
           <div style={{ marginTop: 8, padding: 12, border: '1px solid var(--border)', borderRadius: 8 }}>
             <p className="sub" style={{ marginTop: 0 }}>
               The <strong>{form.bankProvider === 'kcb' ? 'KCB' : 'Equity'}</strong> STK prompts the customer and deposits <strong>straight into your account above</strong> — HubNet never touches the money. Paste the merchant API keys from your {form.bankProvider === 'kcb' ? 'KCB Buni' : 'Equity JengaHQ'} portal. Runs in simulation until they&apos;re set.
@@ -572,10 +663,74 @@ export default function SettingsPage() {
           </div>
         )}
 
+        {/* IntaSend aggregator — STK to ANY bank, settles straight to the ISP's bank. */}
+        {form.collectionMethod === 'intasend' && (
+          <div style={{ marginTop: 8, padding: 12, border: '1px solid var(--border)', borderRadius: 8 }}>
+            <p className="sub" style={{ marginTop: 0 }}>
+              IntaSend fires the STK and settles <strong>directly to your bank account — any bank</strong> (set the payout bank in your IntaSend dashboard). HubNet never touches the money. Sign up at <a href="https://intasend.com" target="_blank" rel="noreferrer">intasend.com</a> → API keys, and register your webhook URL there as <code>https://&lt;your-subdomain&gt;/api/payments/intasend/webhook</code>.
+            </p>
+            <div style={{ maxWidth: 180, marginBottom: 8 }}>
+              <label>Environment</label>
+              <select value={intaForm.env} onChange={(e) => setIntaForm({ ...intaForm, env: e.target.value as 'sandbox' | 'live' })}>
+                <option value="sandbox">Sandbox (test)</option>
+                <option value="live">Live</option>
+              </select>
+            </div>
+            <label>Publishable key {intasend?.publicKeySet && <span style={{ color: 'var(--green)' }}>✓ set</span>}</label>
+            <input value={intaForm.publicKey} onChange={(e) => setIntaForm({ ...intaForm, publicKey: e.target.value })}
+              placeholder={intasend?.publicKeySet ? '••• leave empty to keep current' : 'ISPubKey_...'} />
+            <label>Secret key {intasend?.secretKeySet && <span style={{ color: 'var(--green)' }}>✓ set</span>}</label>
+            <input type="password" value={intaForm.secretKey} onChange={(e) => setIntaForm({ ...intaForm, secretKey: e.target.value })}
+              placeholder={intasend?.secretKeySet ? '••• leave empty to keep current' : 'ISSecretKey_...'} />
+            <label>Webhook challenge {intasend?.challengeSet && <span style={{ color: 'var(--green)' }}>✓ set</span>}</label>
+            <input type="password" value={intaForm.challenge} onChange={(e) => setIntaForm({ ...intaForm, challenge: e.target.value })}
+              placeholder={intasend?.challengeSet ? '••• leave empty to keep current' : 'a secret you also set in IntaSend'} />
+            <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+              <button onClick={saveIntasend} disabled={intaSaving}>{intaSaving ? 'Saving…' : 'Save IntaSend keys'}</button>
+            </div>
+          </div>
+        )}
+
+        {/* Kopo Kopo aggregator — STK to ANY bank/till. */}
+        {form.collectionMethod === 'kopokopo' && (
+          <div style={{ marginTop: 8, padding: 12, border: '1px solid var(--border)', borderRadius: 8 }}>
+            <p className="sub" style={{ marginTop: 0 }}>
+              Kopo Kopo fires the STK and settles <strong>directly to your till / bank</strong>. HubNet never touches the money. Sign up at <a href="https://kopokopo.com" target="_blank" rel="noreferrer">kopokopo.com</a> → API keys (Client ID + Secret) + your Till. The callback is wired to your subdomain automatically.
+            </p>
+            <div className="row">
+              <div style={{ flex: '0 0 160px' }}>
+                <label>Environment</label>
+                <select value={kopoForm.env} onChange={(e) => setKopoForm({ ...kopoForm, env: e.target.value as 'sandbox' | 'live' })}>
+                  <option value="sandbox">Sandbox (test)</option>
+                  <option value="live">Live</option>
+                </select>
+              </div>
+              <div style={{ flex: 1 }}>
+                <label>Till number</label>
+                <input value={kopoForm.tillNumber} onChange={(e) => setKopoForm({ ...kopoForm, tillNumber: e.target.value })} placeholder="your K2 till / store" />
+              </div>
+            </div>
+            <label>Client ID {kopo?.clientIdSet && <span style={{ color: 'var(--green)' }}>✓ set</span>}</label>
+            <input type="password" value={kopoForm.clientId} onChange={(e) => setKopoForm({ ...kopoForm, clientId: e.target.value })}
+              placeholder={kopo?.clientIdSet ? '••• leave empty to keep current' : 'from the K2 dashboard'} />
+            <label>Client Secret {kopo?.clientSecretSet && <span style={{ color: 'var(--green)' }}>✓ set</span>}</label>
+            <input type="password" value={kopoForm.clientSecret} onChange={(e) => setKopoForm({ ...kopoForm, clientSecret: e.target.value })}
+              placeholder={kopo?.clientSecretSet ? '••• leave empty to keep current' : 'from the K2 dashboard'} />
+            <label>API key (webhook secret) {kopo?.apiKeySet && <span style={{ color: 'var(--green)' }}>✓ set</span>}</label>
+            <input type="password" value={kopoForm.apiKey} onChange={(e) => setKopoForm({ ...kopoForm, apiKey: e.target.value })}
+              placeholder={kopo?.apiKeySet ? '••• leave empty to keep current' : 'optional — for webhook signature'} />
+            <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+              <button onClick={saveKopo} disabled={kopoSaving}>{kopoSaving ? 'Saving…' : 'Save Kopo Kopo keys'}</button>
+            </div>
+          </div>
+        )}
+
         <div style={{ marginTop: 16 }}>
-          <button onClick={() => save('bank')} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
+          <button onClick={() => save()} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
           <span className="sub" style={{ marginLeft: 12, fontSize: 12 }}>
-            {form.bankProvider ? 'Save the bank keys above first, then Save here.' : 'Customers will pay the paybill manually.'}
+            {payMode === 'manual'
+              ? 'Customers will pay the paybill manually.'
+              : 'Save the keys above first, then Save here.'}
           </span>
         </div>
       </div>
@@ -753,7 +908,7 @@ export default function SettingsPage() {
           </div>
         )}
 
-        {form.collectionMethod === 'intasend' && (
+        {false /* moved to the simple form above */ && form.collectionMethod === 'intasend' && (
           <div style={{ marginTop: 20, borderTop: '1px solid var(--border, #e2e8f0)', paddingTop: 16 }}>
             <h3 style={{ marginTop: 0, fontSize: 14 }}>
               IntaSend setup {intasend?.configured && <span style={{ color: 'var(--green)' }}>✓ configured</span>}
@@ -789,7 +944,7 @@ export default function SettingsPage() {
           </div>
         )}
 
-        {form.collectionMethod === 'kopokopo' && (
+        {false /* moved to the simple form above */ && form.collectionMethod === 'kopokopo' && (
           <div style={{ marginTop: 20, borderTop: '1px solid var(--border, #e2e8f0)', paddingTop: 16 }}>
             <h3 style={{ marginTop: 0, fontSize: 14 }}>
               Kopo Kopo setup {kopo?.configured && <span style={{ color: 'var(--green)' }}>✓ configured</span>}
