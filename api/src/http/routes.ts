@@ -234,6 +234,7 @@ api.get('/plugins', ah(async (_req, res) => res.json(listPlugins())));
 api.get('/dashboard', ah(async (_req, res) => res.json(await reports.dashboard())));
 api.get('/dashboard/overview', ah(async (_req, res) => res.json(await reports.overviewDashboard())));
 api.get('/dashboard/nav-counts', ah(async (_req, res) => res.json(await reports.navCounts())));
+api.get('/dashboard/setup-status', ah(async (_req, res) => res.json(await reports.setupStatus())));
 api.get('/reports/revenue', ah(async (_req, res) => res.json(await reports.revenueByMonth())));
 api.get('/reports/top-plans', ah(async (_req, res) => res.json(await reports.topPlans())));
 api.get('/reports/churn', ah(async (_req, res) => res.json(await reports.churnAndMrr())));

@@ -562,3 +562,46 @@ export async function navCounts(): Promise<NavCounts> {
   ]);
   return { subscribers, live_sessions, unmatched_payments, open_alerts };
 }
+
+export interface SetupStep {
+  key: 'plan' | 'router' | 'payments' | 'branding' | 'customer';
+  done: boolean;
+}
+export interface SetupStatus {
+  steps: SetupStep[];
+  done: number;
+  total: number;
+  complete: boolean;
+}
+
+/**
+ * First-run activation checklist for a freshly provisioned ISP. Each step is a
+ * cheap EXISTS probe against the tenant's own DB, resilient (a missing table
+ * never 500s a brand-new tenant whose migrations are still settling). Drives the
+ * "Getting started" card on the dashboard, which hides itself once `complete`.
+ *
+ * Steps, in the order a new ISP naturally works through them:
+ *   plan     — at least one sellable plan exists
+ *   router   — at least one MikroTik provisioned
+ *   payments — a collection method is configured (own paybill / aggregator key)
+ *   branding — the captive-portal brand is customised off the platform default
+ *   customer — the first subscriber is on record
+ */
+export async function setupStatus(): Promise<SetupStatus> {
+  const has = (sql: string) =>
+    safeMetric(query<{ n: string }>(sql).then((r) => Number(r.rows[0]?.n ?? 0) > 0), false);
+  const probes: Array<[SetupStep['key'], string]> = [
+    ['plan', `SELECT COUNT(*)::text n FROM plans`],
+    ['router', `SELECT COUNT(*)::text n FROM routers`],
+    ['payments', `SELECT COUNT(*)::text n FROM settings
+                    WHERE key IN ('mpesa.shortcode','intasend.public_key','kopokopo.client_id')
+                      AND COALESCE(value, '') <> ''`],
+    ['branding', `SELECT COUNT(*)::text n FROM hotspot_branding
+                    WHERE id = TRUE AND COALESCE(name, '') NOT IN ('', 'HUB Networks')`],
+    ['customer', `SELECT COUNT(*)::text n FROM subscribers`],
+  ];
+  const results = await Promise.all(probes.map(([, sql]) => has(sql)));
+  const steps: SetupStep[] = probes.map(([key], i) => ({ key, done: results[i] }));
+  const done = steps.filter((s) => s.done).length;
+  return { steps, done, total: steps.length, complete: done === steps.length };
+}

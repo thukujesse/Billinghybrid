@@ -2,6 +2,7 @@ import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { money } from '@/lib/api';
 import { serverApi } from '@/lib/serverApi';
+import GettingStarted, { type SetupStatus } from './components/GettingStarted';
 
 export const dynamic = 'force-dynamic';
 
@@ -131,11 +132,13 @@ export default async function Dashboard() {
     serverApi<RevenuePoint[]>('/reports/revenue-combined?months=12'),
     serverApi<Branding>('/hotspot/branding'),
     serverApi<TenantStatus>('/tenants/status'),
+    serverApi<SetupStatus>('/dashboard/setup-status'),
   ]);
   const ov = settled[0].status === 'fulfilled' ? settled[0].value : null;
   const revenue = settled[1].status === 'fulfilled' ? settled[1].value : [];
   const branding = settled[2].status === 'fulfilled' ? settled[2].value : null;
   const tenant = settled[3].status === 'fulfilled' ? settled[3].value : null;
+  const setup = settled[4].status === 'fulfilled' ? settled[4].value : null;
   // Always address the ISP by THEIR brand — never the operator/login or our
   // platform name. Use a CUSTOMISED hotspot brand if set, else the registered
   // tenant name; ignore the platform-default brand ('HUB Networks') so an
@@ -173,6 +176,9 @@ export default async function Dashboard() {
 
   return (
     <div className="container" style={{ maxWidth: 1180 }}>
+      {/* ---------- Getting started (hides itself once setup is complete) ---------- */}
+      {setup && !setup.complete && <GettingStarted status={setup} />}
+
       {/* ---------------- Hero ---------------- */}
       <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 18, padding: '22px 26px', boxShadow: 'var(--shadow)', position: 'relative', overflow: 'hidden' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, flexWrap: 'wrap' }}>
