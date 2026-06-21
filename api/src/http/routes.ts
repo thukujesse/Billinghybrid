@@ -176,6 +176,41 @@ api.post('/admin/customers/:id/services/:serviceId/resend-onboarding',
     res.json({ ok: true });
   }));
 
+// Operator-initiated free-text message to one customer. Reuses the same
+// per-channel fan-out as transactional notifications, so the send is logged
+// and shows up in the customer's "Comms" tab. Returns sent/skipped counts so
+// the UI can tell the operator honestly whether it actually went out.
+// Rate-limited: each send spends the tenant's prepaid SMS balance, so cap it
+// like the other cost-/abuse-sensitive endpoints. Channels are validated to be
+// a NON-EMPTY set (omit the field to fall back to the customer's preferences).
+const manualMsgLimit = rateLimit({ name: 'manual_msg', windowMs: 60_000, max: 10 });
+api.post('/admin/customers/:id/message',
+  manualMsgLimit,
+  requireAuth('admin', 'staff'),
+  ah(async (req, res) => {
+    const body = parse(z.object({
+      body: z.string().min(1).max(640),
+      channels: z.array(z.enum(['sms', 'email', 'whatsapp'])).min(1).optional(),
+    }), req.body);
+    const result = await customerSms.sendManual(req.params.id, body.body, body.channels);
+    // Attribute the send to the operator (the actor is already in ALS context
+    // from requireAuth) so it appears in the customer's Activity audit feed —
+    // a brand-attributed outbound message must be traceable to who sent it.
+    audit.logAuditSafe({
+      kind: 'customer.message',
+      entity_type: 'customer',
+      entity_id: req.params.id,
+      metadata: {
+        channels: body.channels ?? 'preferences',
+        length: body.body.length,
+        preview: body.body.slice(0, 80),
+        sent: result.sent,
+        skipped: result.skipped,
+      },
+    });
+    res.json(result);
+  }));
+
 // ----------------------------- Alerts --------------------------------
 // Operator-facing health alerts (DLQ, queue backlog, router offline).
 // Hourly worker fans out to Telegram automatically; these endpoints
@@ -631,6 +666,12 @@ api.get('/customers/:id/audit', requireAuth('admin', 'staff'), ah(async (req, re
     .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
     .slice(0, limit);
   res.json(merged);
+}));
+// Per-customer outbound comms history — every SMS / email / WhatsApp we've
+// fired at this customer. Powers the "Comms" tab on the customer detail page.
+api.get('/customers/:id/notifications', requireAuth('admin', 'staff'), ah(async (req, res) => {
+  const limit = req.query.limit ? Math.min(Number(req.query.limit), 200) : 100;
+  res.json(await customers.listCustomerNotifications(req.params.id, limit));
 }));
 // Global audit feed for compliance review and operator forensics.
 api.get('/admin/audit', requireAuth('admin', 'staff'), ah(async (req, res) => {

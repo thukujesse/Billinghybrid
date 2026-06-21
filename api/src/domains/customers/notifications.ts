@@ -23,7 +23,7 @@ const PORTAL_URL = () => `https://${config.portal.host}/portal`;
 const RENEW_URL  = (username: string) =>
   `https://${config.portal.host}/renew?username=${encodeURIComponent(username)}`;
 
-type Channel = 'sms' | 'email' | 'whatsapp';
+export type Channel = 'sms' | 'email' | 'whatsapp';
 
 interface CustomerRow {
   id: string;
@@ -81,13 +81,32 @@ async function reserveSlot(input: {
   return { id: r.rows[0].id, alreadySent: false };
 }
 
-async function markFailed(id: string, err: unknown): Promise<void> {
+/** Record the real outcome on an already-reserved log row (which was INSERTed
+ *  optimistically as 'sent'). Called when the provider reported failure or the
+ *  send was skipped (e.g. out of SMS credit / simulation), so the Comms tab
+ *  reflects what actually happened rather than a blind 'sent'. */
+async function setOutcome(id: string, status: 'failed' | 'skipped', detail?: string): Promise<void> {
   if (!id) return;
   await query(
-    `UPDATE customer_notifications_log
-        SET status = 'failed', error = $2
-      WHERE id = $1`,
-    [id, (err as Error).message ?? String(err)]
+    `UPDATE customer_notifications_log SET status = $2, error = $3 WHERE id = $1`,
+    [id, status, detail ?? null]
+  ).catch(() => {/* best-effort */});
+}
+
+/** Log a 'skipped' row for a channel that was never dispatched because the
+ *  customer has no address for it (e.g. email selected but no email on file).
+ *  Makes the skip visible in the Comms tab instead of vanishing — the
+ *  to_address column is NOT NULL, so a sentinel is stored. */
+async function logSkipped(input: {
+  customerId: string; kind: string; dedupKey: string;
+  channel: Channel; body: string; reason: string;
+}): Promise<void> {
+  await query(
+    `INSERT INTO customer_notifications_log
+       (customer_id, kind, channel, dedup_key, to_address, body, status, error)
+     VALUES ($1, $2, $3, $4, '(no address on file)', $5, 'skipped', $6)
+     ON CONFLICT (customer_id, kind, dedup_key) DO NOTHING`,
+    [input.customerId, input.kind, input.channel, input.dedupKey, input.body, input.reason]
   ).catch(() => {/* best-effort */});
 }
 
@@ -114,35 +133,51 @@ async function fireNotification(input: {
     : (['sms'] as Channel[]); // safety net — never silent-drop
 
   for (const channel of channels) {
-    const addr = addressFor(channel, input.customer);
-    if (!addr) { skipped++; continue; }
     // Email channel adopts a Subject\nBody envelope so the email module's
     // splitSubject() helper picks a meaningful subject line.
     const body = channel === 'email' && input.subject
       ? `${input.subject}\n${input.body}`
       : input.body;
+    const perChannelKey = `${input.dedupKey}:${channel}`;
+    const addr = addressFor(channel, input.customer);
+    if (!addr) {
+      // No address on file for this channel — log a visible 'skipped' row
+      // rather than silently dropping it.
+      skipped++;
+      await logSkipped({
+        customerId: input.customerId, kind: input.kind, dedupKey: perChannelKey,
+        channel, body,
+        reason: channel === 'email' ? 'no email address on file' : 'no phone number on file',
+      });
+      continue;
+    }
     // Per-channel dedup key so opting into multiple channels doesn't
     // share a single slot (and accidentally suppress one).
     const slot = await reserveSlot({
       customerId: input.customerId,
       kind: input.kind,
-      dedupKey: `${input.dedupKey}:${channel}`,
+      dedupKey: perChannelKey,
       toAddress: addr,
       body,
     });
     if (slot.alreadySent) { skipped++; continue; }
     // Record channel on the log row so the operator can see which channel
-    // each delivery used. (The status column tracks success/failure.)
+    // each delivery used. (The status column tracks the real outcome below.)
     await query(
       `UPDATE customer_notifications_log SET channel = $2 WHERE id = $1`,
       [slot.id, channel]
     ).catch(() => {/* best-effort */});
-    try {
-      await notify(channel, addr, body);
+    // notify() reports its outcome (it never throws); record the TRUTH on the
+    // log row so 'sent' means a provider accepted it, not just "no exception".
+    let res: { status: 'sent' | 'failed' | 'skipped'; detail?: string };
+    try { res = await notify(channel, addr, body); }
+    catch (err) { res = { status: 'failed', detail: (err as Error).message }; }
+    if (res.status === 'sent') {
       sent++;
-    } catch (err) {
-      await markFailed(slot.id, err);
-      console.error(`[notify-${channel}:${input.kind}]`, (err as Error).message);
+    } else {
+      skipped++;
+      await setOutcome(slot.id, res.status, res.detail);
+      if (res.status === 'failed') console.error(`[notify-${channel}:${input.kind}]`, res.detail);
     }
   }
   return { sent, skipped };
@@ -345,6 +380,45 @@ export async function resendOnboarding(customerId: string, serviceId: string): P
   await fireSms({
     customerId, kind: 'onboarding.resend',
     dedupKey, phone: cust.phone, body,
+  });
+}
+
+/**
+ * Operator-initiated free-text message to a single customer. Reuses the same
+ * fan-out as every transactional notification, so the send is per-channel
+ * deduped, status-tracked, AND written to customer_notifications_log — which
+ * means it appears immediately in that customer's "Comms" tab (the read side
+ * of the same feature). The dedup key is salted with the clock + a random
+ * suffix (like resendOnboarding) so each manual send always fires, even if the
+ * operator sends identical text twice in the same tick.
+ *
+ * `channels` lets the operator pick which channels to send on; it OVERRIDES the
+ * customer's notification preferences (a manual send is a deliberate operator
+ * action — e.g. a maintenance notice — so an explicitly chosen channel is used
+ * even if the customer opted out of it). Omitted → the customer's own opted-in
+ * channels. Returns per-channel sent/skipped counts derived from the real
+ * provider outcome (a channel with no address on file, an out-of-credit SMS, or
+ * a provider rejection all count as skipped/failed, not a false "sent").
+ */
+export async function sendManual(
+  customerId: string,
+  body: string,
+  channels?: Channel[],
+): Promise<{ sent: number; skipped: number }> {
+  const text = (body ?? '').trim();
+  if (!text) throw new Error('message body is required');
+  const customer = await getCustomerForSms(customerId);
+  if (!customer) throw new Error('customer not found');
+  const effective: CustomerRow = channels && channels.length > 0
+    ? { ...customer, notification_channels: channels }
+    : customer;
+  const dedupKey = `manual:${Date.now()}:${Math.round(Math.random() * 1e6)}`;
+  return fireNotification({
+    customerId,
+    customer: effective,
+    kind: 'manual',
+    dedupKey,
+    body: text,
   });
 }
 

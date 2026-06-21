@@ -308,6 +308,38 @@ export async function getCustomerPayments(customerId: string, limit = 50): Promi
   return r.rows.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 }
 
+export interface CustomerNotification {
+  id: string;
+  kind: string;
+  channel: string;
+  to_address: string;
+  body: string;
+  status: 'sent' | 'failed' | 'skipped';
+  error: string | null;
+  created_at: string;
+}
+
+/**
+ * Outbound comms history for a customer — every transactional SMS / email /
+ * WhatsApp we've fired at them, newest first. The customer_notifications_log
+ * table is written by domains/customers/notifications.ts but was never read
+ * back until now; this powers the "Comms" tab on the customer detail page and
+ * answers the most common support question ("did my SMS actually go out?").
+ */
+export async function listCustomerNotifications(customerId: string, limit = 100): Promise<CustomerNotification[]> {
+  const c = await query<{ id: string }>(`SELECT id FROM customers WHERE id = $1`, [customerId]);
+  if (!c.rows[0]) throw notFound('customer');
+  const r = await query<CustomerNotification>(
+    `SELECT id, kind, channel, to_address, body, status, error, created_at
+       FROM customer_notifications_log
+      WHERE customer_id = $1
+      ORDER BY created_at DESC
+      LIMIT $2`,
+    [customerId, limit]
+  );
+  return r.rows;
+}
+
 export interface ServiceSession {
   acctsessionid: string;
   acctstarttime: string | null;

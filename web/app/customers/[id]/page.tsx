@@ -91,6 +91,19 @@ interface Plan {
   speed_up_kbps: number | null;
 }
 
+interface CustomerNotification {
+  id: string;
+  kind: string;
+  channel: string;
+  to_address: string;
+  body: string;
+  status: 'sent' | 'failed' | 'skipped';
+  error: string | null;
+  created_at: string;
+}
+
+type Channel = 'sms' | 'email' | 'whatsapp';
+
 function formatBytes(s: string): string {
   const n = Number(s);
   if (!Number.isFinite(n) || n <= 0) return '0 B';
@@ -138,8 +151,10 @@ export default function CustomerDetail() {
   const [plans, setPlans] = useState<Plan[]>([]);
   const [activity, setActivity] = useState<AuditEntry[]>([]);
   const [wallet, setWallet] = useState<WalletState | null>(null);
+  const [notifications, setNotifications] = useState<CustomerNotification[]>([]);
   const [adjust, setAdjust] = useState<{ amount: string; kind: 'adjustment' | 'refund'; notes: string } | null>(null);
-  const [tab, setTab] = useState<'services' | 'payments' | 'sessions' | 'activity' | 'wallet'>('services');
+  const [message, setMessage] = useState<{ body: string; channels: Channel[] } | null>(null);
+  const [tab, setTab] = useState<'services' | 'payments' | 'sessions' | 'activity' | 'wallet' | 'comms'>('services');
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState({ full_name: '', phone: '', email: '', address: '', notes: '' });
   const [toast, setToast] = useState<{ ok: boolean; msg: string } | null>(null);
@@ -167,6 +182,9 @@ export default function CustomerDetail() {
     api<WalletState>(`/admin/customers/${customerId}/wallet`)
       .then(setWallet)
       .catch(() => {/* non-fatal — wallet may 404 if customer never had one */});
+    api<CustomerNotification[]>(`/customers/${customerId}/notifications`)
+      .then(setNotifications)
+      .catch(() => {/* non-fatal */});
   };
 
   const submitAdjust = async () => {
@@ -196,10 +214,50 @@ export default function CustomerDetail() {
     }
   };
 
+  const openMessage = () => {
+    const opted = (customer?.notification_channels ?? []) as Channel[];
+    setMessage({ body: '', channels: opted.length ? opted : ['sms'] });
+  };
+
+  const submitMessage = async () => {
+    if (!message || !message.body.trim()) return;
+    if (message.channels.length === 0) {
+      setToast({ ok: false, msg: 'Pick at least one channel to send on.' });
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = await api<{ sent: number; skipped: number }>(`/admin/customers/${customerId}/message`, {
+        method: 'POST',
+        body: JSON.stringify({ body: message.body.trim(), channels: message.channels }),
+      });
+      if (r.sent > 0) {
+        setToast({ ok: true, msg: `Message sent on ${r.sent} channel${r.sent === 1 ? '' : 's'}${r.skipped ? ` · ${r.skipped} skipped` : ''}` });
+      } else {
+        setToast({ ok: false, msg: `Not sent — ${r.skipped} channel${r.skipped === 1 ? '' : 's'} skipped (no address on file, out of SMS credit, or provider rejected it)` });
+      }
+      setMessage(null);
+      setTab('comms');
+      load();
+    } catch (e: any) {
+      setToast({ ok: false, msg: e.message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   useEffect(() => {
     load();
     api<Plan[]>('/plans').then((all) => setPlans(all.filter((p) => p.price_cents > 0))).catch(() => {});
   }, [customerId]);
+
+  // Esc closes the send-message modal.
+  useEffect(() => {
+    if (!message) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMessage(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [message !== null]);
 
   const loadSessions = (serviceId: string) => {
     if (sessions[serviceId]) return;
@@ -396,7 +454,7 @@ export default function CustomerDetail() {
       )}
 
       <div style={{ display: 'flex', gap: 8, marginTop: 24, borderBottom: '1px solid var(--border, #e2e8f0)' }}>
-        {(['services', 'payments', 'sessions', 'activity', 'wallet'] as const).map((t) => (
+        {(['services', 'payments', 'sessions', 'activity', 'wallet', 'comms'] as const).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -417,6 +475,7 @@ export default function CustomerDetail() {
             {t === 'sessions' && 'Sessions'}
             {t === 'activity' && `Activity (${activity.length})`}
             {t === 'wallet'   && `Wallet${wallet ? ` (KES ${(wallet.balance.balance_cents / 100).toFixed(0)})` : ''}`}
+            {t === 'comms'    && `Comms (${notifications.length})`}
           </button>
         ))}
       </div>
@@ -662,6 +721,56 @@ export default function CustomerDetail() {
         </div>
       )}
 
+      {tab === 'comms' && (
+        <div style={{ marginTop: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
+            <p className="sub" style={{ margin: 0 }}>
+              Every message we&rsquo;ve sent this customer. Channels:{' '}
+              {(customer.notification_channels ?? []).length
+                ? (customer.notification_channels ?? []).join(', ')
+                : <span style={{ color: 'var(--red, #b91c1c)' }}>opted out of all</span>}
+            </p>
+            <button onClick={openMessage} disabled={busy}>✉ Send message</button>
+          </div>
+          {notifications.length === 0 ? (
+            <p className="sub">No messages sent to this customer yet.</p>
+          ) : (
+            <table>
+              <thead>
+                <tr>
+                  <th>When</th>
+                  <th>Kind</th>
+                  <th>Channel</th>
+                  <th>To</th>
+                  <th>Status</th>
+                  <th>Message</th>
+                </tr>
+              </thead>
+              <tbody>
+                {notifications.map((n) => (
+                  <tr key={n.id}>
+                    <td style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{new Date(n.created_at).toLocaleString()}</td>
+                    <td style={{ fontSize: 11 }}><code>{n.kind}</code></td>
+                    <td style={{ fontSize: 11, textTransform: 'uppercase' }}>{n.channel}</td>
+                    <td style={{ fontSize: 11 }}>{n.to_address}</td>
+                    <td>
+                      <span className={`badge ${
+                        n.status === 'sent' ? 'active' :
+                        n.status === 'skipped' ? 'pending' : 'suspended'
+                      }`}>{n.status}</span>
+                      {n.error && (
+                        <div style={{ fontSize: 10, color: 'var(--red, #b91c1c)', marginTop: 2 }}>{n.error}</div>
+                      )}
+                    </td>
+                    <td style={{ fontSize: 12, maxWidth: 360, whiteSpace: 'pre-wrap' }}>{n.body}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
       {adjust && (
         <div style={{
           position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.4)',
@@ -698,6 +807,69 @@ export default function CustomerDetail() {
                 {busy ? 'Saving…' : 'Confirm adjustment'}
               </button>
               <button className="ghost" onClick={() => setAdjust(null)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {message && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.4)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100,
+        }} onClick={() => setMessage(null)}>
+          <div role="dialog" aria-modal="true" aria-labelledby="send-msg-title" style={{
+            background: 'var(--card)', borderRadius: 12, padding: 24, maxWidth: 460, width: '90%',
+          }} onClick={(e) => e.stopPropagation()}>
+            <h3 id="send-msg-title" style={{ marginTop: 0 }}>Send a message to {customer.full_name}</h3>
+            <p className="sub">
+              A one-off message sent now. It&rsquo;s logged in this customer&rsquo;s Comms tab and
+              billed like any other notification.
+            </p>
+
+            <label htmlFor="send-msg-body">Message</label>
+            <textarea id="send-msg-body" value={message.body} rows={4} autoFocus
+              onChange={(e) => setMessage({ ...message, body: e.target.value })}
+              maxLength={640}
+              placeholder="Hi — your area will have planned maintenance tonight 1–3am…"
+              style={{ width: '100%', fontFamily: 'inherit' }} />
+            <div className="sub" style={{ fontSize: 11, marginTop: 2 }}>
+              {message.body.length}/640 characters
+              {message.channels.includes('sms') && message.body.length > 0 &&
+                ` · ~${Math.ceil(message.body.length / 160)} SMS segment${Math.ceil(message.body.length / 160) === 1 ? '' : 's'}`}
+            </div>
+
+            <label style={{ marginTop: 12 }}>Send via</label>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {(['sms', 'email', 'whatsapp'] as const).map((ch) => {
+                const on = message.channels.includes(ch);
+                const hasAddr = ch === 'email' ? !!customer.email : !!customer.phone;
+                return (
+                  <button key={ch}
+                    role="checkbox" aria-checked={on}
+                    aria-label={`${ch}${hasAddr ? '' : ' — no address on file, will be skipped'}`}
+                    className={on ? '' : 'ghost'}
+                    onClick={() => setMessage({
+                      ...message,
+                      channels: on ? message.channels.filter((c) => c !== ch) : [...message.channels, ch],
+                    })}
+                    title={hasAddr ? '' : (ch === 'email' ? 'No email on file — will be skipped' : 'No phone on file — will be skipped')}
+                    style={{ fontSize: 11, padding: '4px 10px', textTransform: 'uppercase', opacity: hasAddr ? 1 : 0.5 }}>
+                    {ch}{on && !hasAddr ? ' ⚠' : ''}
+                  </button>
+                );
+              })}
+            </div>
+            {message.channels.some((ch) => ch === 'email' ? !customer.email : !customer.phone) && (
+              <div className="sub" style={{ fontSize: 11, color: 'var(--red, #b91c1c)', marginTop: 6 }}>
+                ⚠ A selected channel has no address on file and will be skipped.
+              </div>
+            )}
+
+            <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+              <button onClick={submitMessage} disabled={busy || !message.body.trim() || message.channels.length === 0}>
+                {busy ? 'Sending…' : 'Send message'}
+              </button>
+              <button className="ghost" onClick={() => setMessage(null)} disabled={busy}>Cancel</button>
             </div>
           </div>
         </div>

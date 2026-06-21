@@ -88,13 +88,24 @@ export async function notifyTemplate(
   console.log(`[notify:wa-template] -> ${to}: ${templateName}(${bodyParams.join(', ')})`);
 }
 
+/**
+ * Outcome of a notify() call so callers can record an HONEST status instead of
+ * assuming success. notify() still never throws — it reports the outcome here:
+ *   sent     — a provider accepted the message for delivery
+ *   failed   — a provider rejected it (bad number, API error, Meta 24h window…)
+ *   skipped  — nothing was dispatched: out of SMS credit, or the channel is in
+ *              simulation mode (no provider configured) and only logged
+ */
+export type NotifyStatus = 'sent' | 'failed' | 'skipped';
+export interface NotifyResult { status: NotifyStatus; detail?: string }
+
 export async function notify(
   channel: Channel,
   to: string,
   message: string
-): Promise<void> {
+): Promise<NotifyResult> {
   // Failures never throw — a notification must not break the business flow
-  // that triggered it.
+  // that triggered it; the outcome is returned instead.
   if (channel === 'sms') {
     // Resolve provider + creds from the DB-backed settings (admin can
     // change via /settings without a redeploy). Only fall back to the
@@ -108,7 +119,7 @@ export async function notify(
       // Per-tenant metering: charge the shared-sender cost up front (skip the
       // send if the tenant is out of credit), refund if dispatch then fails.
       const meter = await meterSms(message);
-      if (!meter.send) return;
+      if (!meter.send) return { status: 'skipped', detail: 'insufficient SMS balance' };
       try {
         const r = smsCfg.provider === 'bytwave'
           ? await sendBytwaveSms(to, message)
@@ -117,13 +128,14 @@ export async function notify(
         if (!r.ok && meter.charged > 0 && meter.tenantId) {
           await smsBilling.refund(meter.tenantId, meter.charged, 'send failed');
         }
+        return r.ok ? { status: 'sent', detail: r.detail } : { status: 'failed', detail: r.detail };
       } catch (err) {
         console.error(`[notify:sms->${smsCfg.provider}] failed for ${to}:`, err);
         if (meter.charged > 0 && meter.tenantId) {
           await smsBilling.refund(meter.tenantId, meter.charged, 'send error').catch(() => {});
         }
+        return { status: 'failed', detail: (err as Error).message };
       }
-      return;
     }
     // No key — fall through to the simulation log line below.
   }
@@ -131,20 +143,22 @@ export async function notify(
     try {
       const r = await sendWhatsApp(to, message);
       console.log(`[notify:whatsapp->meta] ${to}: ${r.ok ? r.detail : 'FAILED ' + r.detail}`);
+      return r.ok ? { status: 'sent', detail: r.detail } : { status: 'failed', detail: r.detail };
     } catch (err) {
       console.error(`[notify:whatsapp->meta] failed for ${to}:`, err);
+      return { status: 'failed', detail: (err as Error).message };
     }
-    return;
   }
   if (channel === 'email' && !config.email.simulated) {
     const { subject, body } = splitSubject(message);
     try {
       const r = await sendEmail(to, subject, body);
       console.log(`[notify:email->sendgrid] ${to}: ${r.ok ? r.detail : 'FAILED ' + r.detail}`);
+      return r.ok ? { status: 'sent', detail: r.detail } : { status: 'failed', detail: r.detail };
     } catch (err) {
       console.error(`[notify:email->sendgrid] failed for ${to}:`, err);
+      return { status: 'failed', detail: (err as Error).message };
     }
-    return;
   }
   if (channel === 'telegram' && !config.telegram.simulated) {
     // Admin alerts go to the first configured admin chat (or the given id).
@@ -153,13 +167,17 @@ export async function notify(
       if (chat) {
         const r = await sendTelegram(chat, message);
         console.log(`[notify:telegram->bot] ${chat}: ${r.ok ? r.detail : 'FAILED ' + r.detail}`);
+        return r.ok ? { status: 'sent', detail: r.detail } : { status: 'failed', detail: r.detail };
       }
+      return { status: 'skipped', detail: 'no telegram chat configured' };
     } catch (err) {
       console.error(`[notify:telegram->bot] failed:`, err);
+      return { status: 'failed', detail: (err as Error).message };
     }
-    return;
   }
+  // Simulation / no provider configured — logged only, nothing dispatched.
   console.log(`[notify:${channel}] -> ${to}: ${message}`);
+  return { status: 'skipped', detail: 'simulated (no provider configured)' };
 }
 
 export const notifications = {
