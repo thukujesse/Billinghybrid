@@ -30,6 +30,7 @@ export interface Tenant {
   contact_phone?: string | null;
   contact_email?: string | null;
   created_at?: string;
+  last_error?: string | null;
 }
 
 // Host→tenant cache. The registry changes only on signup, so a short TTL keeps
@@ -73,7 +74,7 @@ export function poolForTenant(t: Tenant): pg.Pool {
 
 export async function listTenants(): Promise<Tenant[]> {
   const r = await pool.query<Tenant>(
-    `SELECT id, slug, name, db_conn_string, status, contact_phone, contact_email, created_at
+    `SELECT id, slug, name, db_conn_string, status, contact_phone, contact_email, created_at, last_error
        FROM tenant ORDER BY created_at`
   );
   return r.rows;
@@ -106,7 +107,7 @@ export async function eachTenant(fn: () => Promise<void>, label = 'worker'): Pro
 
 export async function getTenantBySlug(slug: string): Promise<Tenant | null> {
   const r = await pool.query<Tenant>(
-    `SELECT id, slug, name, db_conn_string, status, contact_phone, contact_email, created_at
+    `SELECT id, slug, name, db_conn_string, status, contact_phone, contact_email, created_at, last_error
        FROM tenant WHERE slug = $1`,
     [slug]
   );
@@ -115,7 +116,7 @@ export async function getTenantBySlug(slug: string): Promise<Tenant | null> {
 
 export async function getTenantById(id: string): Promise<Tenant | null> {
   const r = await pool.query<Tenant>(
-    `SELECT id, slug, name, db_conn_string, status, contact_phone, contact_email, created_at
+    `SELECT id, slug, name, db_conn_string, status, contact_phone, contact_email, created_at, last_error
        FROM tenant WHERE id = $1`,
     [id]
   );
@@ -140,7 +141,7 @@ export async function createTenantRow(input: {
   const r = await pool.query<Tenant>(
     `INSERT INTO tenant (slug, name, db_conn_string, status, contact_phone, contact_email)
      VALUES ($1, $2, $3, $4, $5, $6)
-     RETURNING id, slug, name, db_conn_string, status, contact_phone, contact_email, created_at`,
+     RETURNING id, slug, name, db_conn_string, status, contact_phone, contact_email, created_at, last_error`,
     [input.slug, input.name, input.db_conn_string, input.status ?? 'provisioning',
      input.contact_phone ?? null, input.contact_email ?? null]
   );
@@ -149,6 +150,23 @@ export async function createTenantRow(input: {
 
 export async function setTenantStatus(id: string, status: TenantStatus): Promise<void> {
   await pool.query(`UPDATE tenant SET status = $2 WHERE id = $1`, [id, status]);
+  clearTenantCache();
+}
+
+/** Record (or clear, with null) the reason a provisioning attempt failed, so the
+ *  platform console can show the operator why and offer a retry. */
+export async function recordTenantError(id: string, message: string | null): Promise<void> {
+  await pool.query(`UPDATE tenant SET last_error = $2 WHERE id = $1`, [id, message]);
+}
+
+/** Mark a provisioning attempt as failed + record why — but ONLY if the tenant
+ *  is still 'provisioning', so a stale/slow path can never clobber a tenant that
+ *  a concurrent run already activated. */
+export async function markTenantFailed(id: string, message: string): Promise<void> {
+  await pool.query(
+    `UPDATE tenant SET status = 'failed', last_error = $2 WHERE id = $1 AND status = 'provisioning'`,
+    [id, message]
+  );
   clearTenantCache();
 }
 

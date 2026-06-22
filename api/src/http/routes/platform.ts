@@ -18,7 +18,7 @@ import * as smsBilling from '../../domains/platform/smsBilling.js';
 import * as collection from '../../domains/platform/collection.js';
 import { findDunningTargets } from '../../domains/platform/dunningWorker.js';
 import { impersonationToken } from '../../domains/auth/service.js';
-import { normalizeSlug } from '../../domains/tenants/provision.js';
+import { normalizeSlug, resumeProvision } from '../../domains/tenants/provision.js';
 
 /** Block anyone whose request didn't resolve to the platform tenant. */
 function platformOnly(_req: Request, _res: Response, next: NextFunction): void {
@@ -50,6 +50,7 @@ export function registerPlatformRoutes(api: Router): void {
         contact_phone: t.contact_phone ?? null,
         contact_email: t.contact_email ?? null,
         created_at: t.created_at,
+        last_error: t.last_error ?? null,
         accrual,
         sms_balance_cents,
       };
@@ -88,6 +89,19 @@ export function registerPlatformRoutes(api: Router): void {
   api.post('/platform/tenants/:id/resume', ...gate, ah(async (req, res) => {
     await tenants.setTenantStatus(req.params.id, 'active');
     res.json({ ok: true, status: 'active' });
+  }));
+
+  // Recovery: re-run provisioning for a failed/stuck tenant. Non-destructive —
+  // resumes from wherever the first attempt died (idempotent migrations). Admin
+  // creds are used ONLY when the workspace has no admin yet (the signup password
+  // was never persisted); otherwise they're ignored.
+  api.post('/platform/tenants/:id/retry', ...gate, ah(async (req, res) => {
+    const body = parse(z.object({
+      adminUsername: z.string().min(3).max(40).optional(),
+      adminPassword: z.string().min(6).max(200).optional(),
+    }), req.body ?? {});
+    const result = await resumeProvision(req.params.id, body.adminUsername, body.adminPassword);
+    res.json({ ok: true, status: 'active', host: result.host, loginUrl: result.loginUrl });
   }));
 
   // Impersonate: mint a short-lived admin token + the URL that logs the

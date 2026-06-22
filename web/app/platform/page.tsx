@@ -11,6 +11,7 @@ interface TenantRow {
   id: string; slug: string; name: string; status: string;
   isolated: boolean; contact_phone: string | null; contact_email: string | null;
   created_at: string; accrual: Accrual; sms_balance_cents: number;
+  last_error: string | null;
 }
 interface Summary {
   tenants: number; active: number; suspended: number; period: string;
@@ -101,6 +102,30 @@ export default function Platform() {
     finally { setBusy(null); }
   };
 
+  // Recover a failed/stuck provision. Admin creds are collected up front because
+  // they're needed only when the workspace never got an admin (the signup
+  // password isn't stored); the server ignores them if an admin already exists.
+  const retry = async (id: string, name: string) => {
+    const username = window.prompt(`Retry provisioning "${name}".\n\nAdmin username (used only if the workspace has no admin yet):`, 'admin');
+    if (username === null) return;
+    const password = window.prompt(`Admin password for "${name}" (min 6 chars; ignored if an admin already exists):`, '');
+    if (password === null) return;
+    if (password && password.length < 6) {
+      setToast({ ok: false, msg: 'Admin password must be at least 6 characters.' });
+      return;
+    }
+    setBusy(id);
+    try {
+      const r = await api<{ host: string }>(`/platform/tenants/${id}/retry`, {
+        method: 'POST',
+        body: JSON.stringify({ adminUsername: username || undefined, adminPassword: password || undefined }),
+      });
+      setToast({ ok: true, msg: `${name} provisioned → ${r.host}` });
+      await load();
+    } catch (e: any) { setToast({ ok: false, msg: e.message }); }
+    finally { setBusy(null); }
+  };
+
   if (forbidden) {
     return (
       <div className="container" style={{ maxWidth: 560 }}>
@@ -151,6 +176,11 @@ export default function Platform() {
                       {t.slug}.{BASE} ↗
                     </a>
                     {t.accrual.error && <span style={{ color: 'var(--err,#dc2626)', fontSize: 11 }}> · stats unavailable</span>}
+                    {t.last_error && (
+                      <div title={t.last_error} style={{ color: 'var(--err,#dc2626)', fontSize: 11, marginTop: 3, maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        ⚠ {t.last_error}
+                      </div>
+                    )}
                   </td>
                   <td style={td}><StatusBadge status={t.status} /></td>
                   <td style={td}>{t.accrual.fixed_active} <span className="sub">({money(t.accrual.fixed_charge_cents)})</span></td>
@@ -164,7 +194,15 @@ export default function Platform() {
                     )}
                   </td>
                   <td style={td}>
-                    {t.slug === 'default' ? <span className="sub">platform</span> : (
+                    {t.slug === 'default' ? <span className="sub">platform</span>
+                      : (t.status === 'failed' || t.status === 'provisioning') ? (
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                        <button className="sm" disabled={busy === t.id} onClick={() => retry(t.id, t.name)}>
+                          {busy === t.id ? '…' : 'Retry provisioning'}
+                        </button>
+                        <button className="ghost sm" disabled={busy === t.id} onClick={() => changeSub(t.id, t.slug)}>Subdomain</button>
+                      </div>
+                    ) : (
                       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                         <button className="ghost sm" disabled={busy === t.id} onClick={() => impersonate(t.id)}>Impersonate</button>
                         <button className="ghost sm" disabled={busy === t.id} onClick={() => collect(t.id, t.name)}>Collect fee</button>

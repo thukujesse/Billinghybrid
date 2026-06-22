@@ -72,6 +72,17 @@ export async function refund(tenantId: string, cents: number, meta?: string): Pr
   await credit(tenantId, cents, 'refund', meta);
 }
 
+/** True if this tenant already has a ledger entry with the given reason — used to
+ *  make one-time grants (e.g. the 'welcome' starter credit) idempotent across
+ *  provisioning retries. */
+export async function hasLedgerReason(tenantId: string, reason: string): Promise<boolean> {
+  const r = await pool.query<{ n: number }>(
+    `SELECT COUNT(*)::int AS n FROM tenant_sms_ledger WHERE tenant_id = $1 AND reason = $2`,
+    [tenantId, reason]
+  );
+  return (r.rows[0]?.n ?? 0) > 0;
+}
+
 export interface LedgerRow {
   id: string; delta_cents: number; balance_after_cents: number; reason: string; meta: string | null; created_at: string;
 }
