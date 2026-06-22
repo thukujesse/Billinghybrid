@@ -41,6 +41,10 @@ interface BulkResult {
   errors: Array<{ row_index: number; full_name: string; message: string }>;
 }
 
+type Channel = 'sms' | 'email';
+type Segment = 'all' | 'active' | 'suspended' | 'expiring' | 'expired' | 'noservice';
+const MAX_BULK_RECIPIENTS = 100;
+
 // Random base32-style password — operators can copy this and SMS to the
 // customer. Avoids easily-confused chars (0/O, 1/l/I).
 function genPassword(): string {
@@ -87,6 +91,11 @@ export default function Customers() {
   const [renewing, setRenewing] = useState<{ svc: ServiceSummary; planId: string; fromNow: boolean } | null>(null);
   const [changingPlan, setChangingPlan] = useState<{ svc: ServiceSummary; planId: string } | null>(null);
   const [search, setSearch] = useState('');
+  const [segment, setSegment] = useState<Segment>('all');
+  // Bulk-message composer. Snapshots the filtered recipients at open time so the
+  // 10s list auto-refresh can't shift the target set mid-compose.
+  const [bulkMsg, setBulkMsg] = useState<{ body: string; channels: Channel[]; recipients: Customer[]; idempotencyKey: string } | null>(null);
+  const [bulkSending, setBulkSending] = useState(false);
   // Bulk import modal state. CSV input is free-form (commas OR tabs OR newlines);
   // we parse it on submit and show per-row errors after.
   const [bulk, setBulk] = useState<{
@@ -109,19 +118,52 @@ export default function Customers() {
     return () => clearInterval(t);
   }, []);
 
+  // Esc closes the bulk-message composer.
+  useEffect(() => {
+    if (!bulkMsg) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !bulkSending) setBulkMsg(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [bulkMsg !== null, bulkSending]);
+
   const selectedPlan = plans.find((p) => p.id === form.plan_id);
+
+  // Does customer `c` fall in the chosen segment? Derived from their services so
+  // operators can target e.g. everyone expiring this week. Used both to filter
+  // the table and to pick the bulk-message recipient set.
+  const inSegment = (c: Customer): boolean => {
+    if (segment === 'all') return true;
+    if (segment === 'noservice') return c.services.length === 0;
+    const now = Date.now();
+    const week = now + 7 * 86400 * 1000;
+    return c.services.some((s) => {
+      const exp = s.expiry_date ? new Date(s.expiry_date).getTime() : null;
+      switch (segment) {
+        // Expiry-aware so 'active' and 'expired' partition cleanly: a service
+        // whose date has passed but the hourly expire-worker hasn't flipped yet
+        // counts as expired, not active. Non-expiring (static) services stay active.
+        case 'active': return s.status === 'active' && (exp === null || exp > now);
+        case 'suspended': return s.status === 'suspended';
+        case 'expiring': return s.status === 'active' && exp !== null && exp > now && exp <= week;
+        case 'expired': return s.status === 'expired' || (s.status === 'active' && exp !== null && exp <= now);
+        default: return false;
+      }
+    });
+  };
 
   // Case-insensitive substring match across the fields an operator might
   // type at the search box. Pure client-side — pagination would push this
   // to the server, but with the customer count of a small ISP this is fine.
   const searchLower = search.trim().toLowerCase();
-  const filteredList = !searchLower ? list : list.filter((c) => {
+  const matchesSearch = (c: Customer): boolean => {
+    if (!searchLower) return true;
     if (c.full_name.toLowerCase().includes(searchLower)) return true;
     if (c.account_number.toLowerCase().includes(searchLower)) return true;
     if (c.phone && c.phone.toLowerCase().includes(searchLower)) return true;
     if (c.services.some((s) => (s.username ?? '').toLowerCase().includes(searchLower))) return true;
     return false;
-  });
+  };
+  const filteredList = list.filter((c) => matchesSearch(c) && inSegment(c));
 
   const create = async () => {
     if (!form.full_name) return;
@@ -261,6 +303,43 @@ export default function Customers() {
     }
   };
 
+  const openBulkMsg = () => {
+    if (filteredList.length === 0) {
+      setToast({ ok: false, msg: 'No customers in the current filter to message.' });
+      return;
+    }
+    // One idempotency key per composed batch — reused on any retry so a
+    // timed-out/replayed send can't double-charge or double-text.
+    setBulkMsg({ body: '', channels: ['sms'], recipients: filteredList, idempotencyKey: crypto.randomUUID() });
+  };
+
+  const submitBulk = async () => {
+    if (!bulkMsg || !bulkMsg.body.trim() || bulkMsg.channels.length === 0) return;
+    const ids = bulkMsg.recipients.map((c) => c.id);
+    if (ids.length === 0) { setToast({ ok: false, msg: 'No recipients.' }); return; }
+    if (ids.length > MAX_BULK_RECIPIENTS) {
+      setToast({ ok: false, msg: `Too many recipients (${ids.length}). Narrow the filter to ${MAX_BULK_RECIPIENTS} or fewer.` });
+      return;
+    }
+    setBulkSending(true);
+    try {
+      const r = await api<{ recipients: number; reached: number; skipped: number; failed: number }>(
+        '/admin/customers/message/bulk',
+        { method: 'POST', body: JSON.stringify({ customerIds: ids, body: bulkMsg.body.trim(), channels: bulkMsg.channels, idempotencyKey: bulkMsg.idempotencyKey }) },
+      );
+      const extra = [r.skipped ? `${r.skipped} skipped` : '', r.failed ? `${r.failed} failed` : ''].filter(Boolean).join(' · ');
+      setToast({
+        ok: r.reached > 0,
+        msg: `Messaged ${r.reached}/${r.recipients} customer${r.recipients === 1 ? '' : 's'}${extra ? ` · ${extra}` : ''}`,
+      });
+      setBulkMsg(null);
+    } catch (e: any) {
+      setToast({ ok: false, msg: e.message });
+    } finally {
+      setBulkSending(false);
+    }
+  };
+
   const doRenew = async () => {
     if (!renewing) return;
     setBusy(renewing.svc.id);
@@ -356,13 +435,28 @@ export default function Customers() {
         </button>
       </div>
 
-      <div style={{ display: 'flex', gap: 10, alignItems: 'center', margin: '20px 0 8px 0' }}>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', margin: '20px 0 8px 0', flexWrap: 'wrap' }}>
         <input
           value={search}
           placeholder="Search by name, account, phone, username"
           onChange={(e) => setSearch(e.target.value)}
-          style={{ flex: 1 }}
+          style={{ flex: 1, minWidth: 200 }}
         />
+        <select value={segment} onChange={(e) => setSegment(e.target.value as Segment)} style={{ flex: '0 0 auto', width: 'auto' }}>
+          <option value="all">All customers</option>
+          <option value="active">Active</option>
+          <option value="suspended">Suspended</option>
+          <option value="expiring">Expiring ≤7d</option>
+          <option value="expired">Expired</option>
+          <option value="noservice">No service</option>
+        </select>
+        <button className="ghost" onClick={openBulkMsg}
+          disabled={filteredList.length === 0 || filteredList.length > MAX_BULK_RECIPIENTS}
+          title={filteredList.length > MAX_BULK_RECIPIENTS
+            ? `Too many recipients (${filteredList.length}) — narrow the filter to ${MAX_BULK_RECIPIENTS} or fewer`
+            : 'Message the customers currently shown'}>
+          ✉ Message {filteredList.length}
+        </button>
         <button className="ghost" onClick={() => setBulk((b) => ({ ...b, open: true, result: null }))}>
           Bulk import
         </button>
@@ -641,6 +735,87 @@ export default function Customers() {
           </div>
         </div>
       )}
+
+      {bulkMsg && (() => {
+        const recips = bulkMsg.recipients;
+        const withPhone = recips.filter((c) => c.phone).length;
+        const withEmail = recips.filter((c) => c.email).length;
+        const over = recips.length > MAX_BULK_RECIPIENTS;
+        const segs = bulkMsg.body.length ? Math.ceil(bulkMsg.body.length / 160) : 0;
+        const smsSegments = bulkMsg.channels.includes('sms') ? withPhone * segs : 0;
+        // A selected channel that no recipient has an address for is a no-op.
+        const deadChannel = bulkMsg.channels.some((ch) => (ch === 'email' ? withEmail : withPhone) === 0);
+        return (
+          <div style={{
+            position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.4)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100, padding: 16,
+          }} onClick={() => !bulkSending && setBulkMsg(null)}>
+            <div role="dialog" aria-modal="true" aria-labelledby="bulk-msg-title" style={{
+              background: 'var(--card)', borderRadius: 12, padding: 24, maxWidth: 520, width: '100%', maxHeight: '90vh', overflow: 'auto',
+            }} onClick={(e) => e.stopPropagation()}>
+              <h3 id="bulk-msg-title" style={{ marginTop: 0 }}>Message {recips.length} customer{recips.length === 1 ? '' : 's'}</h3>
+              <p className="sub" style={{ marginTop: 4 }}>
+                The customers currently shown ({segment === 'all' ? 'all' : segment}
+                {search.trim() ? `, matching "${search.trim()}"` : ''}).{' '}
+                {withPhone} with a phone · {withEmail} with an email. Each send is logged on the
+                customer and billed like any notification.
+              </p>
+
+              {over && (
+                <div className="toast err" style={{ margin: '8px 0' }}>
+                  Too many recipients ({recips.length}). Narrow the filter to {MAX_BULK_RECIPIENTS} or fewer.
+                </div>
+              )}
+
+              <label htmlFor="bulk-msg-body">Message</label>
+              <textarea id="bulk-msg-body" value={bulkMsg.body} rows={4} autoFocus
+                onChange={(e) => setBulkMsg({ ...bulkMsg, body: e.target.value })}
+                maxLength={640}
+                placeholder="Dear customer, planned maintenance tonight 1–3am may briefly affect your connection. — Your ISP"
+                style={{ width: '100%', fontFamily: 'inherit' }} />
+              <div className="sub" style={{ fontSize: 11, marginTop: 2 }}>
+                {bulkMsg.body.length}/640 characters
+                {bulkMsg.channels.includes('sms') && segs > 0 &&
+                  ` · ~${smsSegments} SMS segment${smsSegments === 1 ? '' : 's'} across ${withPhone} recipient${withPhone === 1 ? '' : 's'}`}
+              </div>
+
+              <label style={{ marginTop: 12 }}>Send via</label>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {(['sms', 'email'] as const).map((ch) => {
+                  const on = bulkMsg.channels.includes(ch);
+                  const reach = ch === 'email' ? withEmail : withPhone;
+                  return (
+                    <button key={ch}
+                      role="checkbox" aria-checked={on}
+                      aria-label={`${ch} — reaches ${reach} recipient${reach === 1 ? '' : 's'}`}
+                      className={on ? '' : 'ghost'}
+                      onClick={() => setBulkMsg({
+                        ...bulkMsg,
+                        channels: on ? bulkMsg.channels.filter((c) => c !== ch) : [...bulkMsg.channels, ch],
+                      })}
+                      style={{ fontSize: 11, padding: '4px 10px', textTransform: 'uppercase', opacity: reach === 0 ? 0.5 : 1 }}>
+                      {ch} ({reach})
+                    </button>
+                  );
+                })}
+              </div>
+              {deadChannel && (
+                <div className="sub" style={{ fontSize: 11, color: 'var(--red, #b91c1c)', marginTop: 6 }}>
+                  ⚠ A selected channel reaches 0 of these recipients and will be skipped for all of them.
+                </div>
+              )}
+
+              <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+                <button onClick={submitBulk}
+                  disabled={bulkSending || over || !bulkMsg.body.trim() || bulkMsg.channels.length === 0}>
+                  {bulkSending ? 'Sending…' : `Send to ${recips.length}`}
+                </button>
+                <button className="ghost" onClick={() => setBulkMsg(null)} disabled={bulkSending}>Cancel</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

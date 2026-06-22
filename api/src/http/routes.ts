@@ -211,6 +211,44 @@ api.post('/admin/customers/:id/message',
     res.json(result);
   }));
 
+// Bulk operator message to a SET of customers (the operator's filtered customer
+// list). Heavier + more cost-sensitive than a single send, so: lower rate limit,
+// a hard recipient cap (narrow the filter for bigger sends), and an audit row.
+// Each recipient is messaged via sendManual, so each gets its own Comms-tab row.
+const bulkMsgLimit = rateLimit({ name: 'bulk_msg', windowMs: 60_000, max: 5 });
+api.post('/admin/customers/message/bulk',
+  bulkMsgLimit,
+  requireAuth('admin', 'staff'),
+  ah(async (req, res) => {
+    // WhatsApp is intentionally NOT a bulk channel: it isn't metered against the
+    // tenant's prepaid balance and free-text fails outside Meta's 24h window.
+    // Recipient cap kept low (100) so a synchronous run stays well under any
+    // reverse-proxy timeout; idempotencyKey makes a retry safe (no double-send).
+    const b = parse(z.object({
+      customerIds: z.array(z.string().uuid()).min(1).max(100),
+      body: z.string().min(1).max(640),
+      channels: z.array(z.enum(['sms', 'email'])).min(1).optional(),
+      idempotencyKey: z.string().uuid().optional(),
+    }), req.body);
+    const result = await customerSms.sendBulk(b.customerIds, b.body, b.channels, b.idempotencyKey);
+    audit.logAuditSafe({
+      kind: 'customer.bulk_message',
+      entity_type: 'customer',
+      entity_id: 'bulk',
+      metadata: {
+        channels: b.channels ?? 'preferences',
+        length: b.body.length,
+        preview: b.body.slice(0, 80),
+        idempotency_key: b.idempotencyKey ?? null,
+        recipients: result.recipients,
+        reached: result.reached,
+        skipped: result.skipped,
+        failed: result.failed,
+      },
+    });
+    res.json(result);
+  }));
+
 // ----------------------------- Alerts --------------------------------
 // Operator-facing health alerts (DLQ, queue backlog, router offline).
 // Hourly worker fans out to Telegram automatically; these endpoints

@@ -404,6 +404,7 @@ export async function sendManual(
   customerId: string,
   body: string,
   channels?: Channel[],
+  dedupKey?: string,
 ): Promise<{ sent: number; skipped: number }> {
   const text = (body ?? '').trim();
   if (!text) throw new Error('message body is required');
@@ -412,14 +413,64 @@ export async function sendManual(
   const effective: CustomerRow = channels && channels.length > 0
     ? { ...customer, notification_channels: channels }
     : customer;
-  const dedupKey = `manual:${Date.now()}:${Math.round(Math.random() * 1e6)}`;
+  // A caller-supplied dedupKey (e.g. a bulk idempotency key) makes the send
+  // idempotent: a replayed batch collides on customer_notifications_log and
+  // skips already-messaged recipients. Otherwise salt it so each one-off manual
+  // send always fires fresh.
+  const key = dedupKey ?? `manual:${Date.now()}:${Math.round(Math.random() * 1e6)}`;
   return fireNotification({
     customerId,
     customer: effective,
     kind: 'manual',
-    dedupKey,
+    dedupKey: key,
     body: text,
   });
+}
+
+/**
+ * Bulk operator message: send `body` to each customer in `customerIds`, reusing
+ * sendManual() per recipient so every send is logged (Comms tab), metered, and
+ * carries the honest per-channel outcome. Runs with bounded concurrency to keep
+ * wall-clock reasonable without hammering the SMS provider. A recipient is
+ * "reached" when at least one of their channels was actually dispatched; else it
+ * is "skipped" (no contact address, out of SMS credit, or provider rejection).
+ * Per-recipient errors (e.g. a since-deleted customer) are isolated and counted,
+ * never aborting the batch.
+ *
+ * The CALLER (route) enforces the recipient cap + rate limit; this only fans
+ * out. Returns aggregate counts for an honest operator summary.
+ */
+export async function sendBulk(
+  customerIds: string[],
+  body: string,
+  channels?: Channel[],
+  idempotencyKey?: string,
+): Promise<{ recipients: number; reached: number; skipped: number; failed: number }> {
+  const text = (body ?? '').trim();
+  if (!text) throw new Error('message body is required');
+  const ids = [...new Set(customerIds)].filter(Boolean);
+  let reached = 0, skipped = 0, failed = 0;
+
+  const CONCURRENCY = 10;
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < ids.length) {
+      const id = ids[cursor++];
+      try {
+        // With an idempotency key, each recipient gets a DETERMINISTIC dedup key
+        // so a retried/timed-out batch re-run skips everyone already messaged in
+        // the first run (no double-charge, no double-text).
+        const dk = idempotencyKey ? `bulk:${idempotencyKey}:${id}` : undefined;
+        const r = await sendManual(id, text, channels, dk);
+        if (r.sent > 0) reached++; else skipped++;
+      } catch {
+        failed++; // e.g. customer not found — isolate and keep going
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, ids.length) }, worker));
+
+  return { recipients: ids.length, reached, skipped, failed };
 }
 
 /**
