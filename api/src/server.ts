@@ -1,7 +1,38 @@
 import { createApp } from './app.js';
 import { config } from './config.js';
 import { pool } from './db/pool.js';
+import { applyMigrations } from './db/runMigrations.js';
+import { migrateAllTenants } from './db/migrateTenants.js';
 import { pollVpsHandshakes } from './domains/routers/service.js';
+
+/**
+ * Bring every schema up to date on boot — the control DB AND each isolated
+ * tenant DB — so a deploy can never leave tenant DBs on an old schema (the
+ * tenant-migrate step was previously manual and easy to forget). A blocking
+ * advisory lock serializes this across replicas so concurrent boots don't race
+ * the same DDL; idempotency (schema_migrations) makes the waiter a fast no-op.
+ * Best-effort: a migration failure is logged loudly but never blocks startup
+ * (preserves availability — same as today, where migrations ran out-of-band).
+ */
+async function migrateOnBoot(): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query(`SELECT pg_advisory_lock(hashtext('jtm_boot_migrate'))`);
+    try {
+      const n = await applyMigrations(pool);
+      if (n) console.log(`[boot-migrate] control DB: applied ${n}`);
+      await migrateAllTenants((m) => process.stdout.write(`[boot-migrate] ${m}`));
+    } finally {
+      await client.query(`SELECT pg_advisory_unlock(hashtext('jtm_boot_migrate'))`).catch(() => {});
+    }
+  } catch (e) {
+    console.error('[boot-migrate] failed (continuing):', (e as Error).message);
+  } finally {
+    client.release();
+  }
+}
+
+await migrateOnBoot();
 import { startPaymentWorker } from './domains/paymentEvents/worker.js';
 import { startExpireWorker, expireWorkerEnabled, expireWorkerIntervalMs } from './domains/customers/expireWorker.js';
 import { startAlertWorker, alertWorkerEnabled, alertWorkerIntervalMs } from './domains/alerts/worker.js';
