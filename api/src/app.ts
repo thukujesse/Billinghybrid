@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import { config } from './config.js';
 import { api } from './http/routes.js';
 import { errorHandler } from './http/helpers.js';
 import { metricsMiddleware } from './http/middleware/metrics.js';
@@ -19,7 +20,25 @@ export async function createApp() {
   // and req.ip is the real client (drives per-IP rate limits) — without
   // trusting forwarded headers from any external source.
   app.set('trust proxy', 'loopback');
-  app.use(cors());
+  // CORS allowlist (was wide-open `cors()`). Allow requests with no Origin
+  // (same-origin browser calls, server-to-server, curl, payment callbacks) and
+  // any browser origin under the platform base domain — every tenant subdomain
+  // + the platform hosts — plus an optional CORS_ORIGINS env list. The specific
+  // origin is reflected (required alongside credentials); everything else gets
+  // no CORS headers, so a random site can't read authenticated API responses.
+  const corsBase = config.control.baseDomain.toLowerCase();
+  const corsExtra = (process.env.CORS_ORIGINS ?? '')
+    .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+  app.use(cors({
+    credentials: true,
+    origin(origin, cb) {
+      if (!origin) return cb(null, true);
+      let host = '';
+      try { host = new URL(origin).hostname.toLowerCase(); } catch { return cb(null, false); }
+      const ok = host === corsBase || host.endsWith(`.${corsBase}`) || corsExtra.includes(origin.toLowerCase());
+      cb(null, ok);
+    },
+  }));
   app.use(express.json({ limit: '12mb' })); // headroom for base64 KYC uploads
   // MikroTik /tool fetch posts form-encoded data — needed for /routers/identify.
   app.use(express.urlencoded({ extended: false }));
