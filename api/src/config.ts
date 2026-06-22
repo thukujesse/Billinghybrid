@@ -86,7 +86,17 @@ export const config = {
     // When false, the API runs open (demo mode) and requireAuth injects a
     // synthetic admin. Set AUTH_ENABLED=true to enforce JWT + RBAC.
     enabled: (process.env.AUTH_ENABLED ?? 'false') === 'true',
-    jwtSecret: process.env.JWT_SECRET ?? 'dev-insecure-secret-change-me',
+    jwtSecret: (() => {
+      const enabled = (process.env.AUTH_ENABLED ?? 'false') === 'true';
+      const secret = process.env.JWT_SECRET ?? '';
+      // Fail closed: enforced auth on the default/weak secret would let anyone
+      // forge an admin token for any tenant. Refuse to start. Demo mode (auth
+      // off) keeps the placeholder — it's never used to verify a real token.
+      if (enabled && (secret.length < 16 || secret === 'dev-insecure-secret-change-me')) {
+        throw new Error('AUTH_ENABLED=true requires a strong JWT_SECRET (16+ chars) — refusing to start with the default/empty secret.');
+      }
+      return secret || 'dev-insecure-secret-change-me';
+    })(),
     jwtTtlHours: num('JWT_TTL_HOURS', 12),
     otpTtlMinutes: num('OTP_TTL_MINUTES', 5),
     otpMaxAttempts: num('OTP_MAX_ATTEMPTS', 5),
@@ -135,8 +145,9 @@ export const config = {
     //   2) store per-tenant tokens in a tenants table
     //   3) blank the default below back to ''
     bytwave: {
-      apiKey: process.env.BYTWAVE_API_KEY
-        ?? '347|7QuqqfS6anwTyGNm32nt5McOCqcBqAjqjGqtnI6bfb239a36',
+      // No hardcoded default — the token must come from env/DB (a committed
+      // token is a leaked credential). Set BYTWAVE_API_KEY; rotate if exposed.
+      apiKey: process.env.BYTWAVE_API_KEY ?? '',
       // Bytewave Networks' HTTP-API base. The actual SMS-send path under
       // it varies by version of their docs — try /messages first, fall
       // back via /settings UI override if 404.

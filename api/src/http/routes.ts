@@ -301,17 +301,17 @@ api.post('/telegram/webhook/:secret', ah(async (req, res) => {
 }));
 
 // ----------------------------- Plugins ------------------------------
-api.get('/plugins', ah(async (_req, res) => res.json(listPlugins())));
+api.get('/plugins', requireAuth('admin', 'staff'), ah(async (_req, res) => res.json(listPlugins())));
 
 // ---------------------------- Dashboard -----------------------------
-api.get('/dashboard', ah(async (_req, res) => res.json(await reports.dashboard())));
-api.get('/dashboard/overview', ah(async (_req, res) => res.json(await reports.overviewDashboard())));
-api.get('/dashboard/nav-counts', ah(async (_req, res) => res.json(await reports.navCounts())));
-api.get('/dashboard/setup-status', ah(async (_req, res) => res.json(await reports.setupStatus())));
-api.get('/reports/revenue', ah(async (_req, res) => res.json(await reports.revenueByMonth())));
-api.get('/reports/top-plans', ah(async (_req, res) => res.json(await reports.topPlans())));
-api.get('/reports/churn', ah(async (_req, res) => res.json(await reports.churnAndMrr())));
-api.get('/reports/payments.csv', ah(async (_req, res) => {
+api.get('/dashboard', requireAuth('admin', 'staff'), ah(async (_req, res) => res.json(await reports.dashboard())));
+api.get('/dashboard/overview', requireAuth('admin', 'staff'), ah(async (_req, res) => res.json(await reports.overviewDashboard())));
+api.get('/dashboard/nav-counts', requireAuth('admin', 'staff'), ah(async (_req, res) => res.json(await reports.navCounts())));
+api.get('/dashboard/setup-status', requireAuth('admin', 'staff'), ah(async (_req, res) => res.json(await reports.setupStatus())));
+api.get('/reports/revenue', requireAuth('admin', 'staff'), ah(async (_req, res) => res.json(await reports.revenueByMonth())));
+api.get('/reports/top-plans', requireAuth('admin', 'staff'), ah(async (_req, res) => res.json(await reports.topPlans())));
+api.get('/reports/churn', requireAuth('admin', 'staff'), ah(async (_req, res) => res.json(await reports.churnAndMrr())));
+api.get('/reports/payments.csv', requireAuth('admin', 'staff'), ah(async (_req, res) => {
   const csv = await reports.paymentsCsv();
   res.setHeader('Content-Type', 'text/csv');
   res.setHeader('Content-Disposition', 'attachment; filename="payments.csv"');
@@ -429,15 +429,15 @@ api.post('/subscribers/:id/change-plan', ah(async (req, res) => {
 }));
 
 // ----------------------------- Billing ------------------------------
-api.get('/invoices', ah(async (_req, res) => res.json(await billing.listInvoices())));
-api.get('/invoices/:id', ah(async (req, res) => res.json(await billing.getInvoice(req.params.id))));
-api.get('/invoices/:id/pdf', ah(async (req, res) => {
+api.get('/invoices', requireAuth('admin', 'staff'), ah(async (_req, res) => res.json(await billing.listInvoices())));
+api.get('/invoices/:id', requireAuth('admin', 'staff'), ah(async (req, res) => res.json(await billing.getInvoice(req.params.id))));
+api.get('/invoices/:id/pdf', requireAuth('admin', 'staff'), ah(async (req, res) => {
   const { buffer, filename } = await getInvoicePdf(req.params.id);
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
   res.send(buffer);
 }));
-api.post('/invoices', ah(async (req, res) => {
+api.post('/invoices', requireAuth('admin', 'staff'), ah(async (req, res) => {
   const body = parse(z.object({
     subscriber_id: z.string().uuid(),
     subscription_id: z.string().uuid().optional(),
@@ -449,11 +449,11 @@ api.post('/invoices', ah(async (req, res) => {
   }), req.body);
   res.status(201).json(await billing.createInvoice(body.subscriber_id, body.lines, { subscriptionId: body.subscription_id }));
 }));
-api.post('/invoices/:id/charge', ah(async (req, res) => {
+api.post('/invoices/:id/charge', requireAuth('admin', 'staff'), ah(async (req, res) => {
   res.json(await billing.chargeFromWallet(req.params.id));
 }));
-api.post('/billing/run-cycle', ah(async (_req, res) => res.json(await billing.runBillingCycle())));
-api.post('/billing/run-dunning', ah(async (_req, res) => res.json(await billing.runDunning())));
+api.post('/billing/run-cycle', requireAuth('admin'), ah(async (_req, res) => res.json(await billing.runBillingCycle())));
+api.post('/billing/run-dunning', requireAuth('admin'), ah(async (_req, res) => res.json(await billing.runDunning())));
 
 // ----------------------------- Payments -----------------------------
 api.post('/payments/mpesa/stk', ah(async (req, res) => {
@@ -496,12 +496,12 @@ api.post('/payments/stripe/topup', ah(async (req, res) => {
 api.post('/payments/:ref/confirm', ah(async (req, res) => {
   res.json(await payments.confirmPayment(req.params.ref, req.body?.outcome ?? 'success', req.body ?? {}));
 }));
-api.get('/payments', ah(async (req, res) => {
+api.get('/payments', requireAuth('admin', 'staff'), ah(async (req, res) => {
   res.json(await payments.listPayments(req.query.subscriber_id as string | undefined));
 }));
 
 // -------------------------- Credit notes ----------------------------
-api.get('/credit-notes', ah(async (req, res) => {
+api.get('/credit-notes', requireAuth('admin', 'staff'), ah(async (req, res) => {
   res.json(await credits.listCreditNotes(req.query.subscriber_id as string | undefined));
 }));
 api.post('/credit-notes', requireAuth('admin', 'staff'), ah(async (req, res) => {
@@ -520,7 +520,7 @@ api.post('/credit-notes', requireAuth('admin', 'staff'), ah(async (req, res) => 
 }));
 
 // ----------------------------- Refunds ------------------------------
-api.get('/refunds', ah(async (req, res) => {
+api.get('/refunds', requireAuth('admin', 'staff'), ah(async (req, res) => {
   res.json(await refunds.listRefunds(req.query.payment_id as string | undefined));
 }));
 api.post('/refunds', requireAuth('admin'), ah(async (req, res) => {
@@ -539,14 +539,14 @@ api.post('/refunds', requireAuth('admin'), ah(async (req, res) => {
 }));
 
 // ----------------------------- Vouchers -----------------------------
-api.get('/vouchers', ah(async (req, res) => {
+api.get('/vouchers', requireAuth('admin', 'staff'), ah(async (req, res) => {
   res.json(await vouchers.listVouchers({
     batchId: req.query.batch_id as string | undefined,
     status: req.query.status as string | undefined,
   }));
 }));
-api.get('/voucher-batches', ah(async (_req, res) => res.json(await vouchers.listBatches())));
-api.post('/vouchers/batch', ah(async (req, res) => {
+api.get('/voucher-batches', requireAuth('admin', 'staff'), ah(async (_req, res) => res.json(await vouchers.listBatches())));
+api.post('/vouchers/batch', requireAuth('admin', 'staff'), ah(async (req, res) => {
   const body = parse(z.object({
     plan_id: z.string().uuid(),
     quantity: z.number().int().min(1).max(5000),
@@ -571,8 +571,8 @@ api.post('/vouchers/redeem', ah(async (req, res) => {
 }));
 
 // ----------------------------- Resellers ----------------------------
-api.get('/resellers', ah(async (_req, res) => res.json(await resellers.listResellers())));
-api.post('/resellers', ah(async (req, res) => {
+api.get('/resellers', requireAuth('admin', 'staff'), ah(async (_req, res) => res.json(await resellers.listResellers())));
+api.post('/resellers', requireAuth('admin'), ah(async (req, res) => {
   const body = parse(z.object({
     name: z.string().min(1),
     phone: z.string().optional(),
@@ -581,12 +581,12 @@ api.post('/resellers', ah(async (req, res) => {
   }), req.body);
   res.status(201).json(await resellers.createReseller(body));
 }));
-api.get('/resellers/:id/wallet', ah(async (req, res) => {
+api.get('/resellers/:id/wallet', requireAuth('admin', 'staff'), ah(async (req, res) => {
   const w = await wallet.getWallet('reseller', req.params.id);
   if (!w) return res.json({ balance_cents: 0, entries: [] });
   res.json({ ...w, entries: await wallet.listLedger(w.id) });
 }));
-api.post('/resellers/:id/topup', ah(async (req, res) => {
+api.post('/resellers/:id/topup', requireAuth('admin'), ah(async (req, res) => {
   const body = parse(z.object({ amount_cents: z.number().int().positive() }), req.body);
   const w = await wallet.getOrCreateWallet('reseller', req.params.id);
   res.json(await wallet.credit(w.id, body.amount_cents, 'Reseller top-up', { type: 'topup' }));
@@ -621,7 +621,7 @@ api.post('/kyc/:id/review', requireAuth('admin', 'staff'), ah(async (req, res) =
 }));
 
 // ----------------------------- Routers ------------------------------
-api.get('/routers', ah(async (_req, res) => res.json(await routers.listRouters())));
+api.get('/routers', requireAuth('admin', 'staff'), ah(async (_req, res) => res.json(await routers.listRouters())));
 // Per-router device detail (System Information + RADIUS exposes secrets → admin).
 api.get('/routers/:id', requireAuth('admin', 'staff'), ah(async (req, res) => res.json(await routers.getRouter(req.params.id))));
 api.get('/routers/:id/system', requireAuth('admin'), ah(async (req, res) => res.json(await routers.getRouterSystem(req.params.id))));
@@ -643,13 +643,13 @@ api.post('/routers', requireAuth('admin', 'staff'), ah(async (req, res) => {
   res.status(201).json(await routers.createRouter(body));
 }));
 // ---------------------- Customers + Services ----------------------
-api.get('/customers', ah(async (_req, res) => {
+api.get('/customers', requireAuth('admin', 'staff'), ah(async (_req, res) => {
   res.json(await customers.listCustomers());
 }));
-api.get('/customers/:id', ah(async (req, res) => {
+api.get('/customers/:id', requireAuth('admin', 'staff'), ah(async (req, res) => {
   res.json(await customers.getCustomer(req.params.id));
 }));
-api.post('/customers', ah(async (req, res) => {
+api.post('/customers', requireAuth('admin', 'staff'), ah(async (req, res) => {
   const body = parse(z.object({
     account_number: z.string().optional(),
     full_name: z.string().min(1),
@@ -660,7 +660,7 @@ api.post('/customers', ah(async (req, res) => {
   }), req.body);
   res.status(201).json(await customers.createCustomer(body));
 }));
-api.put('/customers/:id', ah(async (req, res) => {
+api.put('/customers/:id', requireAuth('admin', 'staff'), ah(async (req, res) => {
   const body = parse(z.object({
     full_name: z.string().min(1).max(120).optional(),
     phone: z.string().max(20).nullable().optional(),
@@ -683,7 +683,7 @@ api.put('/portal/notification-channels', requireAuth('customer'), ah(async (req,
   await customers.updateCustomer(req.user!.sub, { notification_channels: body.channels });
   res.json({ ok: true, channels: body.channels });
 }));
-api.get('/customers/:id/payments', ah(async (req, res) => {
+api.get('/customers/:id/payments', requireAuth('admin', 'staff'), ah(async (req, res) => {
   const limit = req.query.limit ? Math.min(Number(req.query.limit), 200) : 50;
   res.json(await customers.getCustomerPayments(req.params.id, limit));
 }));
@@ -747,11 +747,11 @@ api.get('/admin/audit.csv', requireAuth('admin', 'staff'), ah(async (req, res) =
   res.setHeader('Content-Disposition', 'attachment; filename="audit.csv"');
   res.send(lines.join('\n'));
 }));
-api.get('/services/:id/sessions', ah(async (req, res) => {
+api.get('/services/:id/sessions', requireAuth('admin', 'staff'), ah(async (req, res) => {
   const limit = req.query.limit ? Math.min(Number(req.query.limit), 100) : 20;
   res.json(await customers.getRecentSessions(req.params.id, limit));
 }));
-api.post('/customers/:id/services', ah(async (req, res) => {
+api.post('/customers/:id/services', requireAuth('admin', 'staff'), ah(async (req, res) => {
   const body = parse(z.object({
     service_type: z.enum(['pppoe', 'hotspot', 'static', 'ftth_gpon']),
     username: z.string().optional(),
@@ -766,7 +766,7 @@ api.post('/customers/:id/services', ah(async (req, res) => {
   }), req.body);
   res.status(201).json(await customers.createService({ ...body, customer_id: req.params.id }));
 }));
-api.patch('/services/:id/status', ah(async (req, res) => {
+api.patch('/services/:id/status', requireAuth('admin', 'staff'), ah(async (req, res) => {
   const body = parse(z.object({
     status: z.enum(['active', 'suspended', 'expired', 'cancelled']),
   }), req.body);
@@ -821,7 +821,7 @@ api.post('/admin/customers/bulk-import', requireAuth('admin', 'staff'), ah(async
     router_id: body.router_id,
   }));
 }));
-api.delete('/services/:id', ah(async (req, res) => {
+api.delete('/services/:id', requireAuth('admin', 'staff'), ah(async (req, res) => {
   await customers.deleteService(req.params.id);
   res.status(204).end();
 }));

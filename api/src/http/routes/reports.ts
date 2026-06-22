@@ -12,26 +12,26 @@ import { requireAuth } from '../middleware/auth.js';
 import * as reports from '../../domains/reports/service.js';
 
 export function registerReportsRoutes(api: Router): void {
-  api.get('/reports/revenue-combined', ah(async (req, res) => {
+  api.get('/reports/revenue-combined', requireAuth('admin', 'staff'), ah(async (req, res) => {
     const months = req.query.months ? Math.min(Number(req.query.months), 36) : 12;
     res.json(await reports.revenueByMonthCombined(months));
   }));
   // days caps at 36500 (~100y) so the UI can offer a "Lifetime" window.
   const windowDays = (q: unknown) => (q ? Math.min(Number(q), 36500) : 30);
   const venue = (q: unknown) => (typeof q === 'string' && q ? q : undefined);
-  api.get('/reports/revenue-by-plan', ah(async (req, res) => {
+  api.get('/reports/revenue-by-plan', requireAuth('admin', 'staff'), ah(async (req, res) => {
     res.json(await reports.revenueByPlan(windowDays(req.query.days), venue(req.query.router)));
   }));
-  api.get('/reports/revenue-by-router', ah(async (req, res) => {
+  api.get('/reports/revenue-by-router', requireAuth('admin', 'staff'), ah(async (req, res) => {
     res.json(await reports.revenueByRouter(windowDays(req.query.days)));
   }));
-  api.get('/reports/revenue-by-account', ah(async (req, res) => {
+  api.get('/reports/revenue-by-account', requireAuth('admin', 'staff'), ah(async (req, res) => {
     res.json(await reports.revenueByAccount(windowDays(req.query.days), venue(req.query.router)));
   }));
-  api.get('/reports/outstanding-renewals', ah(async (_req, res) => {
+  api.get('/reports/outstanding-renewals', requireAuth('admin', 'staff'), ah(async (_req, res) => {
     res.json(await reports.outstandingRenewals());
   }));
-  api.get('/reports/pppoe-mrr', ah(async (_req, res) => {
+  api.get('/reports/pppoe-mrr', requireAuth('admin', 'staff'), ah(async (_req, res) => {
     res.json(await reports.pppoeMrr());
   }));
   api.get('/reports/customers.csv', requireAuth('admin', 'staff'), ah(async (_req, res) => {

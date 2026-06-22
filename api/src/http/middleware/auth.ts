@@ -28,7 +28,14 @@ export function requireAuth(...roles: Role[]) {
     }
 
     const header = req.headers.authorization ?? '';
-    const token = header.startsWith('Bearer ') ? header.slice(7) : '';
+    let token = header.startsWith('Bearer ') ? header.slice(7) : '';
+    if (!token) {
+      // Fall back to the jtm_token cookie so server-rendered pages and
+      // <a>-href downloads (CSV/PDF — they can't set an Authorization header)
+      // authenticate too. setToken() mirrors the JWT into this cookie.
+      const m = (req.headers.cookie ?? '').match(/(?:^|;\s*)jtm_token=([^;]+)/);
+      if (m) token = decodeURIComponent(m[1]);
+    }
     const claims = token ? verifyJwt(token, config.auth.jwtSecret) : null;
     if (!claims) {
       res.status(401).json({ error: 'unauthorized', message: 'missing or invalid token' });

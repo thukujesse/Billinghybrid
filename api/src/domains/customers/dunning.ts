@@ -66,7 +66,7 @@ export interface DunningTarget {
 export async function dunningTargets(cfg: DunningConfig): Promise<DunningTarget[]> {
   const r = await query<DunningTarget>(
     `SELECT s.id AS service_id, s.plan_id, s.status, s.expiry_date,
-            c.phone, c.name AS customer_name, pl.name AS plan_name, pl.price_cents
+            c.phone, c.full_name AS customer_name, pl.name AS plan_name, pl.price_cents
        FROM services s
        JOIN customers c ON c.id = s.customer_id
        JOIN plans pl ON pl.id = s.plan_id
