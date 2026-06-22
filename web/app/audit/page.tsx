@@ -26,6 +26,15 @@ const KIND_COLORS: Record<string, { bg: string; fg: string }> = {
   'service.expire':        { bg: 'rgba(220,38,38,0.10)', fg: '#b91c1c' },
   'service.delete':        { bg: 'rgba(220,38,38,0.10)', fg: '#b91c1c' },
   'bulk.import':           { bg: 'rgba(124,58,237,0.10)', fg: '#6d28d9' },
+  'customer.message':      { bg: 'rgba(37,99,235,0.10)', fg: '#1d4ed8' },
+  'customer.bulk_message': { bg: 'rgba(124,58,237,0.10)', fg: '#6d28d9' },
+  'platform.tenant_suspend':  { bg: 'rgba(220,38,38,0.10)', fg: '#b91c1c' },
+  'platform.tenant_resume':   { bg: 'rgba(22,163,74,0.10)', fg: '#15803d' },
+  'platform.tenant_retry':    { bg: 'rgba(217,119,6,0.10)', fg: '#a16207' },
+  'platform.subdomain_change':{ bg: 'rgba(37,99,235,0.10)', fg: '#1d4ed8' },
+  'platform.impersonate':     { bg: 'rgba(124,58,237,0.10)', fg: '#6d28d9' },
+  'platform.sms_topup':       { bg: 'rgba(22,163,74,0.10)', fg: '#15803d' },
+  'platform.collect':         { bg: 'rgba(22,163,74,0.10)', fg: '#15803d' },
 };
 
 function fmtKind(k: string): { bg: string; fg: string } {
@@ -47,18 +56,28 @@ export default function AuditPage() {
     entity_type: '', actor_id: '', kind: '', since: '',
   });
   const [list, setList] = useState<AuditEntry[]>([]);
+  // Kinds known to the filter — seeded from the colour map and grown with any
+  // new kind that appears in the data, so the dropdown never falls behind.
+  const [allKinds, setAllKinds] = useState<string[]>(Object.keys(KIND_COLORS).sort());
   const [expanded, setExpanded] = useState<string | null>(null);
   const [toast, setToast] = useState<{ ok: boolean; msg: string } | null>(null);
 
-  const load = () => {
+  const queryString = (limit: number) => {
     const qs = new URLSearchParams();
     if (filters.entity_type) qs.set('entity_type', filters.entity_type);
     if (filters.actor_id)    qs.set('actor_id', filters.actor_id);
     if (filters.kind)        qs.set('kind', filters.kind);
     if (filters.since)       qs.set('since', filters.since);
-    qs.set('limit', '300');
-    api<AuditEntry[]>(`/admin/audit?${qs}`)
-      .then(setList)
+    qs.set('limit', String(limit));
+    return qs.toString();
+  };
+
+  const load = () => {
+    api<AuditEntry[]>(`/admin/audit?${queryString(300)}`)
+      .then((data) => {
+        setList(data);
+        setAllKinds((prev) => Array.from(new Set([...prev, ...data.map((e) => e.kind)])).sort());
+      })
       .catch((e) => setToast({ ok: false, msg: e.message }));
   };
 
@@ -88,6 +107,7 @@ export default function AuditPage() {
               <option value="">All</option>
               <option value="customer">Customer</option>
               <option value="service">Service</option>
+              <option value="tenant">Tenant</option>
               <option value="batch">Batch</option>
             </select>
           </div>
@@ -96,7 +116,7 @@ export default function AuditPage() {
             <select value={filters.kind}
               onChange={(e) => setFilters({ ...filters, kind: e.target.value })}>
               <option value="">All</option>
-              {Object.keys(KIND_COLORS).map((k) => (
+              {allKinds.map((k) => (
                 <option key={k} value={k}>{k}</option>
               ))}
             </select>
@@ -111,7 +131,9 @@ export default function AuditPage() {
             <input type="datetime-local" value={filters.since}
               onChange={(e) => setFilters({ ...filters, since: e.target.value })} />
           </div>
-          <div style={{ flex: '0 0 auto', alignSelf: 'flex-end' }}>
+          <div style={{ flex: '0 0 auto', alignSelf: 'flex-end', display: 'flex', gap: 6 }}>
+            <a className="btn ghost" href={`/api/admin/audit.csv?${queryString(5000)}`}
+               style={{ textDecoration: 'none' }}>Export CSV</a>
             <button className="ghost" onClick={reset}>Reset</button>
           </div>
         </div>

@@ -723,6 +723,30 @@ api.get('/admin/audit', requireAuth('admin', 'staff'), ah(async (req, res) => {
     limit,
   }));
 }));
+// CSV export of the audit feed (same filters as /admin/audit) for compliance /
+// offline review. before/after/metadata are serialized as JSON columns.
+api.get('/admin/audit.csv', requireAuth('admin', 'staff'), ah(async (req, res) => {
+  const rows = await audit.listAudit({
+    entity_type: typeof req.query.entity_type === 'string' ? req.query.entity_type : undefined,
+    entity_id:   typeof req.query.entity_id === 'string'   ? req.query.entity_id   : undefined,
+    actor_id:    typeof req.query.actor_id === 'string'    ? req.query.actor_id    : undefined,
+    kind:        typeof req.query.kind === 'string'        ? req.query.kind        : undefined,
+    since:       typeof req.query.since === 'string'       ? req.query.since       : undefined,
+    limit:       req.query.limit ? Math.min(Number(req.query.limit), 10000) : 5000,
+  });
+  const cell = (v: unknown) => {
+    const s = v === null || v === undefined ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const header = ['created_at', 'kind', 'entity_type', 'entity_id', 'actor_label', 'actor_role', 'metadata', 'before', 'after'];
+  const lines = [header.join(',')];
+  for (const r of rows as any[]) {
+    lines.push([r.created_at, r.kind, r.entity_type, r.entity_id, r.actor_label, r.actor_role, r.metadata, r.before, r.after].map(cell).join(','));
+  }
+  res.setHeader('Content-Type', 'text/csv');
+  res.setHeader('Content-Disposition', 'attachment; filename="audit.csv"');
+  res.send(lines.join('\n'));
+}));
 api.get('/services/:id/sessions', ah(async (req, res) => {
   const limit = req.query.limit ? Math.min(Number(req.query.limit), 100) : 20;
   res.json(await customers.getRecentSessions(req.params.id, limit));

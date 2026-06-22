@@ -19,6 +19,7 @@ import * as collection from '../../domains/platform/collection.js';
 import { findDunningTargets } from '../../domains/platform/dunningWorker.js';
 import { impersonationToken } from '../../domains/auth/service.js';
 import { normalizeSlug, resumeProvision } from '../../domains/tenants/provision.js';
+import * as audit from '../../domains/audit/service.js';
 
 /** Block anyone whose request didn't resolve to the platform tenant. */
 function platformOnly(_req: Request, _res: Response, next: NextFunction): void {
@@ -84,10 +85,12 @@ export function registerPlatformRoutes(api: Router): void {
   // Lifecycle: suspend / resume a tenant.
   api.post('/platform/tenants/:id/suspend', ...gate, ah(async (req, res) => {
     await tenants.setTenantStatus(req.params.id, 'suspended');
+    audit.logAuditSafe({ kind: 'platform.tenant_suspend', entity_type: 'tenant', entity_id: req.params.id });
     res.json({ ok: true, status: 'suspended' });
   }));
   api.post('/platform/tenants/:id/resume', ...gate, ah(async (req, res) => {
     await tenants.setTenantStatus(req.params.id, 'active');
+    audit.logAuditSafe({ kind: 'platform.tenant_resume', entity_type: 'tenant', entity_id: req.params.id });
     res.json({ ok: true, status: 'active' });
   }));
 
@@ -101,6 +104,7 @@ export function registerPlatformRoutes(api: Router): void {
       adminPassword: z.string().min(6).max(200).optional(),
     }), req.body ?? {});
     const result = await resumeProvision(req.params.id, body.adminUsername, body.adminPassword);
+    audit.logAuditSafe({ kind: 'platform.tenant_retry', entity_type: 'tenant', entity_id: req.params.id, metadata: { host: result.host } });
     res.json({ ok: true, status: 'active', host: result.host, loginUrl: result.loginUrl });
   }));
 
@@ -112,6 +116,7 @@ export function registerPlatformRoutes(api: Router): void {
     const operator = (req.user as any)?.username ?? 'operator';
     const token = impersonationToken(t.slug, operator);
     const host = `${t.slug}.${config.control.baseDomain}`;
+    audit.logAuditSafe({ kind: 'platform.impersonate', entity_type: 'tenant', entity_id: req.params.id, metadata: { tenant: t.slug } });
     res.json({ token, host, url: `https://${host}/login?imp=${encodeURIComponent(token)}` });
   }));
 
@@ -127,6 +132,7 @@ export function registerPlatformRoutes(api: Router): void {
       throw new AppError(409, 'conflict', `the subdomain "${newSlug}" is already taken`);
     }
     const { host } = await tenants.changeSubdomain(t, newSlug, config.control.baseDomain);
+    audit.logAuditSafe({ kind: 'platform.subdomain_change', entity_type: 'tenant', entity_id: req.params.id, metadata: { from: t.slug, to: newSlug, host } });
     res.json({ ok: true, slug: newSlug, host });
   }));
 
@@ -163,6 +169,7 @@ export function registerPlatformRoutes(api: Router): void {
     const t = await tenants.getTenantById(req.params.id);
     if (!t) throw new AppError(404, 'not_found', 'tenant not found');
     const balance = await smsBilling.credit(t.id, Math.round(body.kes * 100), 'topup');
+    audit.logAuditSafe({ kind: 'platform.sms_topup', entity_type: 'tenant', entity_id: req.params.id, metadata: { kes: body.kes } });
     res.json({ ok: true, balance_cents: balance });
   }));
 
@@ -170,7 +177,10 @@ export function registerPlatformRoutes(api: Router): void {
   // period's invoice (via the platform M-Pesa). Callback marks it paid + resumes.
   api.post('/platform/tenants/:id/collect', ...gate, ah(async (req, res) => {
     const body = parse(z.object({ period: z.string().regex(/^\d{4}-\d{2}$/).optional() }), req.body ?? {});
-    res.json(await collection.collect(req.params.id, body.period ?? currentPeriod()));
+    const period = body.period ?? currentPeriod();
+    const result = await collection.collect(req.params.id, period);
+    audit.logAuditSafe({ kind: 'platform.collect', entity_type: 'tenant', entity_id: req.params.id, metadata: { period } });
+    res.json(result);
   }));
 
   // Operator billing console: all invoices, collection history, money stats.
