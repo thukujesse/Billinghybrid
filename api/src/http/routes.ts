@@ -630,6 +630,27 @@ api.get('/routers/:id/metrics', requireAuth('admin', 'staff'), ah(async (req, re
   const hours = Math.min(168, Math.max(1, Number(req.query.hours) || 24));
   res.json(await routers.getRouterMetrics(req.params.id, hours));
 }));
+// Device Events timeline (lifecycle + online/offline).
+api.get('/routers/:id/events', requireAuth('admin', 'staff'), ah(async (req, res) => {
+  const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 100));
+  res.json(await routers.getRouterEvents(req.params.id, limit));
+}));
+// Payments collected through this router (hotspot purchases stamped router_id).
+api.get('/routers/:id/payments', requireAuth('admin', 'staff'), ah(async (req, res) => res.json(await routers.getRouterPayments(req.params.id))));
+// Live diagnostics (DB liveness + on-router SSH readings).
+api.get('/routers/:id/diagnose', requireAuth('admin', 'staff'), ah(async (req, res) => res.json(await routers.diagnoseRouter(req.params.id))));
+// Config backups — a full /export exposes the router config → admin only.
+api.get('/routers/:id/backups', requireAuth('admin'), ah(async (req, res) => res.json(await routers.getRouterBackups(req.params.id))));
+api.post('/routers/:id/backups', requireAuth('admin'), ah(async (req, res) => {
+  const note = typeof req.body?.note === 'string' ? req.body.note.slice(0, 200) : undefined;
+  const by = req.user?.username ? String(req.user.username) : String(req.user?.sub ?? 'admin');
+  res.json(await routers.createRouterBackup(req.params.id, note, by));
+}));
+api.get('/routers/:id/backups/:backupId', requireAuth('admin'), ah(async (req, res) => res.json(await routers.getRouterBackup(req.params.id, req.params.backupId))));
+api.delete('/routers/:id/backups/:backupId', requireAuth('admin'), ah(async (req, res) => {
+  await routers.deleteRouterBackup(req.params.id, req.params.backupId);
+  res.json({ ok: true });
+}));
 api.post('/routers', requireAuth('admin', 'staff'), ah(async (req, res) => {
   const body = parse(z.object({
     name: z.string().min(1),

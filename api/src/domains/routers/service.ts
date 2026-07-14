@@ -141,6 +141,257 @@ export async function getRouterMetrics(id: string, hours = 24): Promise<any[]> {
   return r.rows;
 }
 
+function humanBytes(n: number): string {
+  const v = Number(n) || 0;
+  if (v < 1024) return `${v} B`;
+  const u = ['KB', 'MB', 'GB', 'TB'];
+  let x = v / 1024, i = 0;
+  while (x >= 1024 && i < u.length - 1) { x /= 1024; i++; }
+  return `${x.toFixed(1)} ${u[i]}`;
+}
+
+// --------------------------- Device event log ----------------------------
+
+/** Append a router event. Best-effort: a logging failure must never break the
+ *  lifecycle action that triggered it, so errors are swallowed (logged only). */
+export async function logRouterEvent(
+  routerId: string, kind: string, detail?: string, actor?: string
+): Promise<void> {
+  try {
+    await query(
+      `INSERT INTO router_event (router_id, kind, detail, actor) VALUES ($1,$2,$3,$4)`,
+      [routerId, kind, detail ?? null, actor ?? null]
+    );
+  } catch (err) {
+    console.error('[router-event] log failed:', (err as Error).message);
+  }
+}
+
+/** Recent events for the Device Events tab (newest first). */
+export async function getRouterEvents(id: string, limit = 100): Promise<any[]> {
+  await getRouter(id); // 404 if unknown / wrong tenant
+  const r = await query<any>(
+    `SELECT id, kind, detail, actor, created_at FROM router_event
+      WHERE router_id=$1 ORDER BY created_at DESC LIMIT $2`,
+    [id, Math.min(Math.max(limit, 1), 500)]
+  );
+  return r.rows;
+}
+
+/**
+ * Detect WG online<->offline transitions and log one event per flip. Runs
+ * inside a tenant context (called by pollVpsHandshakes' per-tenant loop), so
+ * query() resolves to the right tenant DB. wg_online holds the last observed
+ * state; we only write an event (and update the flag) when it actually changes.
+ * First-ever evaluation (wg_online IS NULL) records only an "online" event —
+ * we don't want a burst of "offline" rows for never-connected routers.
+ */
+async function reconcileRouterLiveness(): Promise<void> {
+  const r = await query<any>(
+    `SELECT id, wg_online,
+            (last_handshake_at IS NOT NULL
+             AND last_handshake_at > now() - interval '3 minutes') AS connected
+       FROM routers`
+  );
+  for (const row of r.rows) {
+    const connected: boolean = row.connected === true;
+    if (row.wg_online === connected) continue;
+    const firstEval = row.wg_online === null;
+    await query(`UPDATE routers SET wg_online=$2 WHERE id=$1`, [row.id, connected]);
+    if (firstEval && !connected) continue;
+    await logRouterEvent(
+      row.id,
+      connected ? 'online' : 'offline',
+      connected ? 'WireGuard handshake resumed' : 'WireGuard handshake went stale (>3m)'
+    );
+  }
+}
+
+// --------------------------- Payments (per router) -----------------------
+
+/** Hotspot revenue collected through this router. hotspot_purchases are stamped
+ *  with router_id at portal time, so this is the accurate per-router money view.
+ *  Returns the recent purchase feed + rolling success totals for the cards. */
+export async function getRouterPayments(id: string): Promise<{
+  recent: any[];
+  summary: {
+    today_count: number; today_kes: number;
+    month_count: number; month_kes: number;
+    total_count: number; total_kes: number;
+  };
+}> {
+  await getRouter(id);
+  const recent = await query<any>(
+    `SELECT hp.id, hp.phone, hp.amount_kes, hp.receipt, hp.status,
+            hp.created_at, hp.completed_at, p.name AS plan_name
+       FROM hotspot_purchases hp
+       LEFT JOIN plans p ON p.id = hp.plan_id
+      WHERE hp.router_id = $1
+      ORDER BY hp.created_at DESC
+      LIMIT 100`,
+    [id]
+  );
+  const sum = await query<any>(
+    `SELECT
+       count(*) FILTER (WHERE completed_at >= date_trunc('day', now()))   AS today_count,
+       coalesce(sum(amount_kes) FILTER (WHERE completed_at >= date_trunc('day', now())),0)   AS today_kes,
+       count(*) FILTER (WHERE completed_at >= date_trunc('month', now())) AS month_count,
+       coalesce(sum(amount_kes) FILTER (WHERE completed_at >= date_trunc('month', now())),0) AS month_kes,
+       count(*) AS total_count,
+       coalesce(sum(amount_kes),0) AS total_kes
+     FROM hotspot_purchases
+     WHERE router_id = $1 AND status='success'`,
+    [id]
+  );
+  const s = sum.rows[0] ?? {};
+  return {
+    recent: recent.rows,
+    summary: {
+      today_count: Number(s.today_count) || 0, today_kes: Number(s.today_kes) || 0,
+      month_count: Number(s.month_count) || 0, month_kes: Number(s.month_kes) || 0,
+      total_count: Number(s.total_count) || 0, total_kes: Number(s.total_kes) || 0,
+    },
+  };
+}
+
+// --------------------------- Config backups ------------------------------
+
+/** Capture a text `/export` of the live router over the tunnel and store it.
+ *  hide-sensitive keeps passwords/secrets out of the stored config (they live
+ *  in the routers table already). */
+export async function createRouterBackup(
+  id: string, note?: string, createdBy?: string
+): Promise<{ id: string; size_bytes: number; created_at: string }> {
+  const result = await execOnRouter(id, '/export hide-sensitive');
+  const content = (result.stdout || '').trim();
+  if (result.returncode !== 0 || !content) {
+    throw badRequest(`export failed: ${result.stderr.trim() || 'empty output from /export'}`);
+  }
+  const size = Buffer.byteLength(content, 'utf8');
+  const r = await query<any>(
+    `INSERT INTO router_backup (router_id, content, size_bytes, note, created_by)
+     VALUES ($1,$2,$3,$4,$5) RETURNING id, size_bytes, created_at`,
+    [id, content, size, note ?? null, createdBy ?? null]
+  );
+  await logRouterEvent(id, 'backup', `Config export captured (${humanBytes(size)})`, createdBy);
+  return r.rows[0];
+}
+
+/** Backup metadata (no content) for the Backups list. */
+export async function getRouterBackups(id: string): Promise<any[]> {
+  await getRouter(id);
+  const r = await query<any>(
+    `SELECT id, kind, size_bytes, note, created_by, created_at
+       FROM router_backup WHERE router_id=$1 ORDER BY created_at DESC LIMIT 100`,
+    [id]
+  );
+  return r.rows;
+}
+
+/** A single backup incl. its full content — for view / download. */
+export async function getRouterBackup(id: string, backupId: string): Promise<any> {
+  const r = await query<any>(
+    `SELECT id, kind, content, size_bytes, note, created_by, created_at
+       FROM router_backup WHERE id=$1 AND router_id=$2`,
+    [backupId, id]
+  );
+  if (!r.rows[0]) throw notFound('backup');
+  return r.rows[0];
+}
+
+export async function deleteRouterBackup(id: string, backupId: string): Promise<void> {
+  await query(`DELETE FROM router_backup WHERE id=$1 AND router_id=$2`, [backupId, id]);
+}
+
+// --------------------------- Diagnosis -----------------------------------
+
+export interface DiagnosticCheck {
+  key: string;
+  label: string;
+  status: 'ok' | 'warn' | 'fail';
+  detail: string;
+}
+
+/** Live health checks for the Diagnosis tab. App-side liveness comes from the
+ *  DB (works even when the router is unreachable); the rest is read on-router
+ *  over SSH. If SSH is down we still return the DB checks + an SSH 'fail'. */
+export async function diagnoseRouter(id: string): Promise<{
+  reachable: boolean; board: string; checks: DiagnosticCheck[];
+}> {
+  const router = await getRouter(id);
+  const checks: DiagnosticCheck[] = [];
+
+  // 1. Tunnel liveness from the stored handshake — no SSH needed.
+  const hsMs = router.last_handshake_at ? new Date(router.last_handshake_at).getTime() : 0;
+  const ageSec = hsMs ? Math.round((Date.now() - hsMs) / 1000) : null;
+  if (ageSec === null) {
+    checks.push({ key: 'tunnel', label: 'WireGuard tunnel', status: 'fail', detail: 'No handshake ever recorded' });
+  } else if (ageSec <= 180) {
+    checks.push({ key: 'tunnel', label: 'WireGuard tunnel', status: 'ok', detail: `Last handshake ${ageSec}s ago` });
+  } else {
+    checks.push({ key: 'tunnel', label: 'WireGuard tunnel', status: 'warn', detail: `Last handshake ${ageSec}s ago (stale)` });
+  }
+
+  // 2. Live RADIUS sessions on this NAS (accounting flowing).
+  if (router.wg_tunnel_ip) {
+    const sess = await query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM radacct WHERE nasipaddress=$1 AND acctstoptime IS NULL`,
+      [router.wg_tunnel_ip]
+    );
+    checks.push({ key: 'sessions', label: 'Live RADIUS sessions', status: 'ok', detail: `${sess.rows[0]?.n ?? 0} online` });
+  }
+
+  // 3. On-router readings over SSH.
+  let reachable = false, board = '';
+  try {
+    const radIp = radiusServerIp();
+    const script = [
+      `:put ("IDENT:" . [/system identity get name])`,
+      `:put ("BOARD:" . [/system resource get board-name])`,
+      `:put ("VERSION:" . [/system resource get version])`,
+      `:put ("UPTIME:" . [/system resource get uptime])`,
+      `:put ("CPU:" . [/system resource get cpu-load])`,
+      `:put ("FREEMEM:" . [/system resource get free-memory])`,
+      `:put ("TOTMEM:" . [/system resource get total-memory])`,
+      `:put ("FREEHDD:" . [/system resource get free-hdd-space])`,
+      `:put ("TOTHDD:" . [/system resource get total-hdd-space])`,
+      `:put ("RADPING:" . [:tostr [/ping ${radIp} count=2]])`,
+    ].join('\n');
+    const res = await execOnRouter(id, script);
+    reachable = res.returncode === 0;
+    const out = res.stdout;
+    const get = (k: string) => new RegExp(`^${k}:(.*)$`, 'm').exec(out)?.[1].trim() ?? '';
+    board = get('BOARD');
+    if (reachable) {
+      checks.push({ key: 'ssh', label: 'SSH / management reachable', status: 'ok', detail: `${get('IDENT')} · ${board} · RouterOS ${get('VERSION')}` });
+      checks.push({ key: 'uptime', label: 'Uptime', status: 'ok', detail: get('UPTIME') || '—' });
+      const cpu = parseInt(get('CPU'), 10);
+      if (!Number.isNaN(cpu)) {
+        checks.push({ key: 'cpu', label: 'CPU load', status: cpu >= 90 ? 'fail' : cpu >= 70 ? 'warn' : 'ok', detail: `${cpu}%` });
+      }
+      const freeMem = Number(get('FREEMEM')), totMem = Number(get('TOTMEM'));
+      if (totMem > 0) {
+        const usedPct = Math.round(100 * (1 - freeMem / totMem));
+        checks.push({ key: 'memory', label: 'Memory', status: usedPct >= 90 ? 'fail' : usedPct >= 80 ? 'warn' : 'ok', detail: `${usedPct}% used · ${humanBytes(freeMem)} free` });
+      }
+      const freeHdd = Number(get('FREEHDD')), totHdd = Number(get('TOTHDD'));
+      if (totHdd > 0) {
+        const usedPct = Math.round(100 * (1 - freeHdd / totHdd));
+        checks.push({ key: 'disk', label: 'Storage', status: usedPct >= 95 ? 'fail' : usedPct >= 85 ? 'warn' : 'ok', detail: `${usedPct}% used · ${humanBytes(freeHdd)} free` });
+      }
+      const recv = parseInt(get('RADPING'), 10);
+      const okPing = !Number.isNaN(recv) && recv > 0;
+      checks.push({ key: 'radius', label: 'RADIUS server reachable', status: okPing ? 'ok' : 'fail', detail: okPing ? `ping ${radIp}: ${recv}/2 replies` : `no reply from ${radIp}` });
+    } else {
+      checks.push({ key: 'ssh', label: 'SSH / management reachable', status: 'fail', detail: (res.stderr || res.stdout).trim().slice(0, 200) || 'no response' });
+    }
+  } catch (err) {
+    checks.push({ key: 'ssh', label: 'SSH / management reachable', status: 'fail', detail: (err as Error).message });
+  }
+
+  return { reachable, board, checks };
+}
+
 /**
  * Poll wg-manager and update last_handshake_at for any peer that has a fresher
  * handshake than what's in the DB. Quiet on errors — heartbeat must not crash
@@ -174,6 +425,9 @@ export async function pollVpsHandshakes(): Promise<void> {
         [peer.publicKey, handshakeIso]
       );
     }
+    // Log online/offline transitions (evaluates ALL routers, incl. those whose
+    // handshake just went stale and so aren't in the fresh-peer list).
+    await reconcileRouterLiveness();
   };
 
   const { listTenants, poolForTenant } = await import('../tenants/service.js');
@@ -205,6 +459,7 @@ export async function createRouter(input: {
      VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
     [input.name, input.host, input.api_port ?? 8728, input.type ?? 'mikrotik', input.site ?? null, input.username ?? null, input.password ?? null]
   );
+  await logRouterEvent(r.rows[0].id, 'created', `Router "${input.name}" added (${input.host})`);
   return r.rows[0];
 }
 
@@ -345,6 +600,11 @@ export async function provisionRouter(input: {
     identifyUrl: `${baseUrl}/api/routers/identify`,
     provisionToken: token,
   });
+
+  await logRouterEvent(
+    router.id, 'provisioned',
+    `Zero-touch provisioning issued · tunnel ${tunnelIp}${vpsAutoAdded ? ' · VPS peer auto-added' : ''}`
+  );
 
   const result: ProvisionResult = {
     router,
@@ -754,6 +1014,11 @@ export async function configureServices(
   // Deliver via scp + /import (not inline SSH) — RouterOS mangles multi-line
   // scripts piped inline over SSH ("expected end of command, line 1").
   const result = await wgManager.importScript(router.wg_tunnel_ip, script, { sshPort });
+  await logRouterEvent(
+    routerId,
+    result.returncode === 0 ? 'configured' : 'error',
+    `Configure services: ${input.services.join(', ')}${result.returncode === 0 ? '' : ' — push failed'}`
+  );
   return {
     stdout: result.stdout,
     stderr: result.stderr,
@@ -1160,6 +1425,11 @@ export async function reprovisionRouter(routerId: string, baseUrl = config.publi
   } else {
     autoApplyOutput = 'wg-manager not configured';
   }
+
+  await logRouterEvent(
+    router.id, 'reprovisioned',
+    autoApplied ? 'Config re-pushed over SSH (auto-applied)' : 'Reprovision token re-issued (manual paste)'
+  );
 
   return { router, oneLiner, mikrotikScript, autoApplied, autoApplyOutput };
 }
