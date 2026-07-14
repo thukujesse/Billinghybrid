@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { api } from '@/lib/api';
 
-type Tab = 'system' | 'users' | 'reports' | 'events' | 'payments' | 'backups' | 'diagnosis';
+type Tab = 'system' | 'users' | 'reports' | 'events' | 'payments' | 'backups' | 'diagnosis' | 'import';
 const TABS: Array<{ id: Tab; label: string; icon: string }> = [
   { id: 'system', label: 'System Information', icon: '🖥' },
   { id: 'users', label: 'Internet Users', icon: '👥' },
@@ -11,8 +11,19 @@ const TABS: Array<{ id: Tab; label: string; icon: string }> = [
   { id: 'events', label: 'Device Events', icon: '🔔' },
   { id: 'payments', label: 'Payments', icon: '💳' },
   { id: 'diagnosis', label: 'Diagnosis', icon: '🩺' },
+  { id: 'import', label: 'Import clients', icon: '📥' },
   { id: 'backups', label: 'Backups', icon: '🗄' },
 ];
+
+interface MikClient {
+  username: string; password: string; profile: string; rateLimit: string;
+  remoteAddress: string; comment: string; online: boolean; imported: boolean;
+}
+interface ImportResult {
+  imported: Array<{ username: string }>;
+  skipped: Array<{ username: string; reason: string }>;
+  failed: Array<{ username: string; error: string }>;
+}
 
 interface RouterLite { id: string; name: string; status: string; vpn_status: string; host: string; site: string | null; collection_account_id: string | null }
 interface CollAccount { id: string; label: string; method: string; paybill: string; till: string; account_no: string; is_default: boolean }
@@ -103,6 +114,10 @@ export default function RouterDetail() {
   const [diag, setDiag] = useState<DiagResult | null>(null);
   const [diagRunning, setDiagRunning] = useState(false);
   const [backupBusy, setBackupBusy] = useState(false);
+  const [clients, setClients] = useState<MikClient[] | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [collAccts, setCollAccts] = useState<CollAccount[]>([]);
   const [savingColl, setSavingColl] = useState(false);
@@ -130,7 +145,29 @@ export default function RouterDetail() {
     if (tab === 'events' && !events) api<any[]>(`/routers/${id}/events`).then(setEvents).catch((e) => setErr(e.message));
     if (tab === 'payments' && !payments) api<PaymentsData>(`/routers/${id}/payments`).then(setPayments).catch((e) => setErr(e.message));
     if (tab === 'backups' && !backups) api<any[]>(`/routers/${id}/backups`).then(setBackups).catch((e) => setErr(e.message));
-  }, [id, tab, sys, users, metrics, events, payments, backups]);
+    if (tab === 'import' && !clients) loadClients();
+  }, [id, tab, sys, users, metrics, events, payments, backups, clients]);
+
+  const loadClients = async () => {
+    try {
+      const cs = await api<MikClient[]>(`/routers/${id}/clients`);
+      setClients(cs);
+      setSelected(new Set(cs.filter((c) => !c.imported).map((c) => c.username)));
+    } catch (e: any) { setErr(e.message); }
+  };
+  const toggleClient = (u: string) =>
+    setSelected((s) => { const n = new Set(s); n.has(u) ? n.delete(u) : n.add(u); return n; });
+  const importClients = async () => {
+    setImporting(true); setErr(null); setImportResult(null);
+    try {
+      const r = await api<ImportResult>(`/routers/${id}/clients/import`, {
+        method: 'POST', body: JSON.stringify({ usernames: Array.from(selected) }),
+      });
+      setImportResult(r);
+      await loadClients();
+    } catch (e: any) { setErr(e.message); }
+    finally { setImporting(false); }
+  };
 
   const runDiag = async () => {
     setDiagRunning(true); setErr(null);
@@ -402,6 +439,67 @@ export default function RouterDetail() {
           </div>
         </div>
       )}
+
+      {tab === 'import' && (() => {
+        const selectable = (clients ?? []).filter((c) => !c.imported);
+        const allSel = selectable.length > 0 && selectable.every((c) => selected.has(c.username));
+        const toggleAll = () => setSelected(allSel ? new Set() : new Set(selectable.map((c) => c.username)));
+        return (
+          <div style={{ display: 'grid', gap: 14 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+              <button className="primary" onClick={importClients} disabled={importing || selected.size === 0}>
+                {importing ? 'Importing…' : `Import ${selected.size} selected`}
+              </button>
+              <span className="sub">
+                Reads this router's existing PPPoE secrets and creates each as a JTM customer + service (RADIUS-ready).
+                Already-imported and disabled accounts are skipped, and <strong>no onboarding SMS is sent</strong>.
+              </span>
+            </div>
+            {importResult && (
+              <div className="card" style={{ fontSize: 13 }}>
+                <strong>Import complete:</strong> {importResult.imported.length} imported
+                {importResult.skipped.length ? `, ${importResult.skipped.length} skipped` : ''}
+                {importResult.failed.length ? `, ${importResult.failed.length} failed` : ''}.
+                {importResult.failed.length > 0 && (
+                  <ul style={{ margin: '6px 0 0', paddingLeft: 18, color: '#dc2626' }}>
+                    {importResult.failed.slice(0, 10).map((f, i) => <li key={i}>{f.username}: {f.error}</li>)}
+                  </ul>
+                )}
+              </div>
+            )}
+            <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                <thead><tr style={{ textAlign: 'left', color: 'var(--muted)' }}>
+                  <th style={{ padding: '10px 12px', width: 34 }}>
+                    <input type="checkbox" checked={allSel} onChange={toggleAll} disabled={!selectable.length} title="Select all" />
+                  </th>
+                  {['Username', 'Profile', 'Rate limit', 'Static IP', 'Note', 'Status'].map((h) => <th key={h} style={{ padding: '10px 12px' }}>{h}</th>)}
+                </tr></thead>
+                <tbody>
+                  {(clients ?? []).map((c) => (
+                    <tr key={c.username} style={{ borderTop: '1px solid var(--border)', opacity: c.imported ? 0.55 : 1 }}>
+                      <td style={{ padding: '10px 12px' }}>
+                        <input type="checkbox" disabled={c.imported} checked={selected.has(c.username)} onChange={() => toggleClient(c.username)} />
+                      </td>
+                      <td style={{ padding: '10px 12px', fontWeight: 600 }}>
+                        {c.username}
+                        {c.online && <span style={{ marginLeft: 8, fontSize: 11, color: '#16a34a', fontWeight: 600 }}>● online</span>}
+                      </td>
+                      <td style={{ padding: '10px 12px' }}>{c.profile || '—'}</td>
+                      <td style={{ padding: '10px 12px', fontFamily: 'monospace', fontSize: 12 }}>{c.rateLimit || '—'}</td>
+                      <td style={{ padding: '10px 12px', fontFamily: 'monospace', fontSize: 12 }}>{c.remoteAddress || '—'}</td>
+                      <td style={{ padding: '10px 12px', color: 'var(--muted)' }}>{c.comment || '—'}</td>
+                      <td style={{ padding: '10px 12px' }}>{c.imported ? <span style={{ color: '#16a34a' }}>✓ in JTM</span> : ''}</td>
+                    </tr>
+                  ))}
+                  {clients && !clients.length && <tr><td colSpan={7} style={{ padding: 16 }}><span className="sub">No PPPoE secrets found on this router.</span></td></tr>}
+                  {!clients && <tr><td colSpan={7} style={{ padding: 16 }}><span className="sub">Reading clients over the tunnel…</span></td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

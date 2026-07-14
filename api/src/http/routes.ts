@@ -35,6 +35,7 @@ import * as wallet from '../domains/wallet/service.js';
 import * as reports from '../domains/reports/service.js';
 import { getInvoicePdf } from '../domains/billing/invoicePdf.js';
 import * as routers from '../domains/routers/service.js';
+import * as routerImport from '../domains/routers/import.js';
 import * as kyc from '../domains/kyc/service.js';
 import * as purchases from '../domains/purchases/service.js';
 import * as planchanges from '../domains/planchanges/service.js';
@@ -650,6 +651,13 @@ api.get('/routers/:id/backups/:backupId', requireAuth('admin'), ah(async (req, r
 api.delete('/routers/:id/backups/:backupId', requireAuth('admin'), ah(async (req, res) => {
   await routers.deleteRouterBackup(req.params.id, req.params.backupId);
   res.json({ ok: true });
+}));
+// Auto-import: read the router's existing PPPoE clients, then create them as
+// JTM customers/services. Import creates records + RADIUS state → admin only.
+api.get('/routers/:id/clients', requireAuth('admin', 'staff'), ah(async (req, res) => res.json(await routerImport.readMikrotikClients(req.params.id))));
+api.post('/routers/:id/clients/import', requireAuth('admin'), ah(async (req, res) => {
+  const body = parse(z.object({ usernames: z.array(z.string()).optional() }), req.body);
+  res.json(await routerImport.importMikrotikClients(req.params.id, body));
 }));
 api.post('/routers', requireAuth('admin', 'staff'), ah(async (req, res) => {
   const body = parse(z.object({

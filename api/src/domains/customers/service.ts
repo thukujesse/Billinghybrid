@@ -397,6 +397,9 @@ export async function createService(input: {
   plan_id?: string;
   rate_limit?: string;
   expiry_date?: string;
+  /** Skip the PPPoE onboarding SMS — set when bulk-importing EXISTING clients
+   *  off a router (they already have their creds; don't blast/charge SMS). */
+  silent?: boolean;
 }): Promise<Service> {
   // Validate customer exists.
   await getCustomer(input.customer_id);
@@ -456,7 +459,7 @@ export async function createService(input: {
   // Onboarding SMS for PPPoE — sends credentials + portal link to the
   // customer's phone. Fire-and-forget: missing phone, missing creds,
   // or hotspot service all short-circuit silently inside sendOnboarding.
-  if (service.service_type === 'pppoe') {
+  if (service.service_type === 'pppoe' && !input.silent) {
     customerSms.sendOnboarding(input.customer_id, {
       id: service.id, username: service.username, password: service.password,
     }).catch((e) => console.error('[onboarding-sms]', (e as Error).message));
