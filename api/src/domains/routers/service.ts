@@ -48,6 +48,14 @@ export interface DetectedRouter {
     isWan: boolean;
     inBridge: string | null;
   }>;
+  /** Non-JTM services already running on the router — surfaced so the operator
+   *  can onboard a live/legacy router without unknowingly clobbering it. */
+  existing: {
+    pppoe: string[];   // service-names of existing pppoe-server servers
+    hotspot: string[]; // names of existing hotspot servers
+    dhcp: string[];    // names of existing dhcp-servers
+    radius: boolean;   // a RADIUS client is already configured
+  };
 }
 
 // Columns safe to send to API clients — excludes wg_private_key and the
@@ -921,6 +929,11 @@ export async function detectRouter(routerId: string): Promise<DetectedRouter> {
     `:foreach r in=[/ip route find dst-address="0.0.0.0/0"] do={ :put ("DEFROUTE:" . [/ip route get $r gateway]) }`,
     `:foreach i in=[/interface find] do={ :put ("IFACE:" . [/interface get $i name] . "|" . [/interface get $i type] . "|" . [/interface get $i running]) }`,
     `:foreach p in=[/interface bridge port find] do={ :put ("BRPORT:" . [/interface bridge port get $p interface] . "=" . [/interface bridge port get $p bridge]) }`,
+    // Pre-existing services — so the wizard can warn before overwriting a live router.
+    `:foreach s in=[/interface pppoe-server server find] do={ :put ("PPPOE:" . [/interface pppoe-server server get $s service-name]) }`,
+    `:foreach h in=[/ip hotspot find] do={ :put ("HOTSPOT:" . [/ip hotspot get $h name]) }`,
+    `:foreach d in=[/ip dhcp-server find] do={ :put ("DHCP:" . [/ip dhcp-server get $d name]) }`,
+    `:if ([:len [/radius find]] > 0) do={ :put "RADIUS:yes" }`,
   ].join('\n');
 
   const result = await wgManager.execOnRouter(router.wg_tunnel_ip, script, { sshPort });
@@ -958,7 +971,18 @@ export async function detectRouter(routerId: string): Promise<DetectedRouter> {
     .filter((i) => !SKIP.has(i.name))
     .filter((i) => i.type === 'ether' || i.type === 'wlan' || i.type === 'vlan');
 
-  return { board, version, hostname, defaultGateway, sshPort, interfaces };
+  // Existing (non-JTM) services. Filter out anything JTM created so a re-detect
+  // of an already-onboarded router doesn't flag its own services as "existing".
+  const notJtm = (s: string) => !!s && !s.toLowerCase().startsWith('jtm');
+  const collect = (re: RegExp) => [...new Set([...out.matchAll(re)].map((m) => m[1].trim()).filter(notJtm))];
+  const existing = {
+    pppoe: collect(/^PPPOE:(.*)$/gm),
+    hotspot: collect(/^HOTSPOT:(.*)$/gm),
+    dhcp: collect(/^DHCP:(.*)$/gm),
+    radius: /^RADIUS:yes$/m.test(out),
+  };
+
+  return { board, version, hostname, defaultGateway, sshPort, interfaces, existing };
 }
 
 export interface ConfigureServicesInput {
@@ -967,6 +991,10 @@ export interface ConfigureServicesInput {
    * Hotspot bind to the same bridge containing these ports. */
   ports: string[];
   hotspotNetwork?: string;
+  /** Proceed even when a selected port is already in a non-JTM bridge (i.e.
+   *  the operator has confirmed they want to move a live port). Default false
+   *  = refuse and report the conflict, so a legacy router isn't clobbered. */
+  force?: boolean;
 }
 
 /** Build + push (via SSH) the combined RouterOS config for the selected
@@ -986,6 +1014,24 @@ export async function configureServices(
   const router = await getRouter(routerId);
   if (!router.wg_tunnel_ip) throw badRequest('router has no tunnel IP');
   const sshPort = await resolveSshPort(router);
+
+  // Legacy-router safety: refuse to yank a port out of an existing (non-JTM)
+  // bridge unless the operator explicitly confirms. Moving a live LAN port into
+  // jtm-edge-bridge would drop whatever it currently serves.
+  if (!input.force) {
+    const JTM_BRIDGES = new Set(['jtm-edge-bridge', 'jtm-hs-bridge', 'jtm-ppp-bridge']);
+    const det = await detectRouter(routerId);
+    const conflicts = det.interfaces
+      .filter((i) => input.ports.includes(i.name) && i.inBridge && !JTM_BRIDGES.has(i.inBridge))
+      .map((i) => `${i.name} (in bridge "${i.inBridge}")`);
+    if (conflicts.length) {
+      throw badRequest(
+        `Refusing to move port(s) already in use: ${conflicts.join(', ')}. ` +
+        `Configuring here removes them from their current bridge and interrupts existing service. ` +
+        `Pick unused ports, or confirm to move them anyway.`
+      );
+    }
+  }
 
   const script = renderUnifiedConfig(
     router.name,

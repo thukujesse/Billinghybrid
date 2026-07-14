@@ -26,6 +26,12 @@ interface DetectedRouter {
     isWan: boolean;
     inBridge: string | null;
   }>;
+  existing?: {
+    pppoe: string[];
+    hotspot: string[];
+    dhcp: string[];
+    radius: boolean;
+  };
 }
 
 interface WizardState {
@@ -36,6 +42,8 @@ interface WizardState {
   services: Set<'pppoe' | 'hotspot'>;
   ports: Set<string>;
   hotspotNetwork: string;
+  /** Operator has confirmed moving a live port out of its existing bridge. */
+  moveConfirmed: boolean;
   result: { stdout: string; stderr: string; success: boolean; summary?: string[] } | null;
 }
 
@@ -110,7 +118,7 @@ export default function Routers() {
     setWizard({
       id, name, step: 'detect', detected: null,
       services: new Set(), ports: new Set(),
-      hotspotNetwork: '10.5.50.0/24', result: null,
+      hotspotNetwork: '10.5.50.0/24', moveConfirmed: false, result: null,
     });
     try {
       const d = await api<DetectedRouter>(`/routers/${id}/detect`);
@@ -165,6 +173,7 @@ export default function Routers() {
             services,
             ports: Array.from(wizard.ports),
             hotspotNetwork: services.includes('hotspot') ? wizard.hotspotNetwork : undefined,
+            force: wizard.moveConfirmed,
           }),
         }
       );
@@ -192,6 +201,7 @@ export default function Routers() {
       return { ...w, services: next };
     });
   };
+  const toggleMoveConfirm = () => setWizard((w) => w && { ...w, moveConfirmed: !w.moveConfirmed });
 
   const deleteRouter = async (id: string, name: string) => {
     if (!confirm(`Delete ${name}? Releases its tunnel IP and removes the WG peer + RADIUS nas row. The MikroTik itself isn't touched (it'll just lose its tunnel until reprovisioned).`)) return;
@@ -416,6 +426,7 @@ export default function Routers() {
           onToggleService={toggleService}
           onTogglePort={togglePort}
           onCidrChange={(v) => setWizard((w) => w && { ...w, hotspotNetwork: v })}
+          onToggleMoveConfirm={toggleMoveConfirm}
           onApply={applyConfig}
         />
       )}
@@ -423,15 +434,18 @@ export default function Routers() {
   );
 }
 
+const JTM_BRIDGES = new Set(['jtm-edge-bridge', 'jtm-hs-bridge', 'jtm-ppp-bridge']);
+
 function ConfigureWizard(props: {
   wizard: WizardState;
   onClose: () => void;
   onToggleService: (s: 'pppoe' | 'hotspot') => void;
   onTogglePort: (port: string) => void;
   onCidrChange: (v: string) => void;
+  onToggleMoveConfirm: () => void;
   onApply: () => void;
 }) {
-  const { wizard: w, onClose, onToggleService, onTogglePort, onCidrChange, onApply } = props;
+  const { wizard: w, onClose, onToggleService, onTogglePort, onCidrChange, onToggleMoveConfirm, onApply } = props;
   const overlay: React.CSSProperties = {
     position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
     display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50,
@@ -442,10 +456,21 @@ function ConfigureWizard(props: {
     maxHeight: '85vh', overflow: 'auto',
   };
   const usablePorts = (w.detected?.interfaces ?? []).filter((i) => !i.isWan);
+  // Bridge each selected port sits in that ISN'T JTM's = a live/legacy port
+  // that configuring would yank out of its current bridge.
+  const inUseBridge = (name: string) => {
+    const b = usablePorts.find((i) => i.name === name)?.inBridge;
+    return b && !JTM_BRIDGES.has(b) ? b : null;
+  };
+  const conflictPorts = Array.from(w.ports).filter((n) => inUseBridge(n));
+  const needsMoveConfirm = conflictPorts.length > 0;
+  const ex = w.detected?.existing;
+  const hasExisting = !!ex && (ex.pppoe.length > 0 || ex.hotspot.length > 0 || ex.dhcp.length > 0 || ex.radius);
   const canApply =
     w.services.size > 0 &&
     w.ports.size > 0 &&
-    (!w.services.has('hotspot') || /^\d+\.\d+\.\d+\.\d+\/\d+$/.test(w.hotspotNetwork));
+    (!w.services.has('hotspot') || /^\d+\.\d+\.\d+\.\d+\/\d+$/.test(w.hotspotNetwork)) &&
+    (!needsMoveConfirm || w.moveConfirmed);
 
   return (
     <div style={overlay} onClick={onClose}>
@@ -463,6 +488,21 @@ function ConfigureWizard(props: {
               hostname <code>{w.detected.hostname}</code> ·
               WAN: <code>{w.detected.defaultGateway || '—'}</code>
             </p>
+
+            {hasExisting && (
+              <div style={{ border: '1px solid #d97706', background: 'rgba(217,119,6,0.08)', borderRadius: 8, padding: '10px 14px', marginBottom: 16, fontSize: 13 }}>
+                <strong style={{ color: '#d97706' }}>⚠ This router already has a live configuration.</strong>
+                <ul style={{ margin: '6px 0 0', paddingLeft: 18, color: 'var(--text-2)' }}>
+                  {ex!.pppoe.length > 0 && <li>PPPoE server(s): <code>{ex!.pppoe.join(', ')}</code></li>}
+                  {ex!.hotspot.length > 0 && <li>Hotspot server(s): <code>{ex!.hotspot.join(', ')}</code></li>}
+                  {ex!.dhcp.length > 0 && <li>DHCP server(s): <code>{ex!.dhcp.join(', ')}</code></li>}
+                  {ex!.radius && <li>A RADIUS client is already configured</li>}
+                </ul>
+                <p style={{ margin: '6px 0 0', color: 'var(--muted)' }}>
+                  JTM adds its tunnel, RADIUS and services alongside these. Existing addressing is preserved — but any port already in another bridge (flagged below) is <strong>moved out of it</strong> if you select it.
+                </p>
+              </div>
+            )}
 
             <h3 style={{ fontSize: 14, marginBottom: 8 }}>Services</h3>
             <p className="sub" style={{ marginBottom: 8, fontSize: 12 }}>
@@ -495,15 +535,18 @@ function ConfigureWizard(props: {
               {usablePorts.length === 0 && <span className="sub">No usable ports detected.</span>}
               {usablePorts.map((p) => {
                 const selected = w.ports.has(p.name);
+                const busy = inUseBridge(p.name);
+                // Selecting a busy port that's about to be moved = amber danger.
+                const danger = selected && !!busy;
                 return (
                   <label
                     key={p.name}
                     style={{
                       display: 'flex', alignItems: 'center', gap: 6,
                       padding: '6px 10px', borderRadius: 6,
-                      // Selected = cyan; otherwise live ('up') ports glow green.
-                      background: selected ? 'rgba(56,189,248,0.15)' : p.running ? 'rgba(52,211,153,0.07)' : 'transparent',
-                      border: `1px solid ${selected ? 'var(--accent)' : p.running ? 'var(--green)' : 'var(--border)'}`,
+                      // Danger (moving a live port) = amber; selected = cyan; live ('up') ports glow green.
+                      background: danger ? 'rgba(217,119,6,0.15)' : selected ? 'rgba(56,189,248,0.15)' : p.running ? 'rgba(52,211,153,0.07)' : 'transparent',
+                      border: `1px solid ${danger ? '#d97706' : selected ? 'var(--accent)' : p.running ? 'var(--green)' : 'var(--border)'}`,
                       cursor: 'pointer',
                     }}
                   >
@@ -517,6 +560,11 @@ function ConfigureWizard(props: {
                       <span style={{ color: p.running ? 'var(--green)' : 'var(--muted)', fontWeight: 600, fontSize: 12 }}>
                         {p.running ? '● Up' : '○ Down'}
                       </span>
+                      {busy && (
+                        <span title={`Currently in bridge "${busy}" — selecting moves it out`} style={{ color: '#d97706', fontWeight: 600, fontSize: 11 }}>
+                          in {busy}
+                        </span>
+                      )}
                     </span>
                   </label>
                 );
@@ -532,6 +580,15 @@ function ConfigureWizard(props: {
                   placeholder="10.5.50.0/24"
                 />
               </>
+            )}
+
+            {needsMoveConfirm && (
+              <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginTop: 20, padding: '10px 14px', border: '1px solid #d97706', borderRadius: 8, background: 'rgba(217,119,6,0.08)', fontSize: 13, cursor: 'pointer' }}>
+                <input type="checkbox" checked={w.moveConfirmed} onChange={onToggleMoveConfirm} style={{ marginTop: 3 }} />
+                <span>
+                  I understand <code>{conflictPorts.join(', ')}</code> {conflictPorts.length > 1 ? 'are' : 'is'} currently in another bridge and will be <strong>moved into jtm-edge-bridge</strong>, interrupting whatever {conflictPorts.length > 1 ? 'they serve' : 'it serves'}.
+                </span>
+              </label>
             )}
 
             <div style={{ display: 'flex', gap: 8, marginTop: 24, justifyContent: 'flex-end' }}>

@@ -1720,6 +1720,7 @@ api.post('/routers/:id/configure', requireAuth('admin', 'staff'), ah(async (req,
     services: z.array(z.enum(['pppoe', 'hotspot'])).min(1),
     ports: z.array(z.string()).min(1),
     hotspotNetwork: z.string().optional(),
+    force: z.boolean().optional(),
   }), req.body);
   res.json(await routers.configureServices(req.params.id, body));
 }));
