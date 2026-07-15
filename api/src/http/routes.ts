@@ -656,7 +656,12 @@ api.delete('/routers/:id/backups/:backupId', requireAuth('admin'), ah(async (req
 // JTM customers/services. Import creates records + RADIUS state → admin only.
 api.get('/routers/:id/clients', requireAuth('admin', 'staff'), ah(async (req, res) => res.json(await routerImport.readMikrotikClients(req.params.id))));
 api.post('/routers/:id/clients/import', requireAuth('admin'), ah(async (req, res) => {
-  const body = parse(z.object({ usernames: z.array(z.string()).optional() }), req.body);
+  const body = parse(z.object({
+    pppoe: z.array(z.string()).optional(),
+    hotspot: z.array(z.string()).optional(),
+    staticLeases: z.array(z.string()).optional(),
+    planByProfile: z.record(z.string()).optional(),
+  }), req.body);
   res.json(await routerImport.importMikrotikClients(req.params.id, body));
 }));
 api.post('/routers', requireAuth('admin', 'staff'), ah(async (req, res) => {

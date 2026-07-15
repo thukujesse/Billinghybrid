@@ -15,15 +15,19 @@ const TABS: Array<{ id: Tab; label: string; icon: string }> = [
   { id: 'backups', label: 'Backups', icon: '🗄' },
 ];
 
-interface MikClient {
+interface PppoeClient {
   username: string; password: string; profile: string; rateLimit: string;
   remoteAddress: string; comment: string; online: boolean; imported: boolean;
 }
+interface HotspotUser { username: string; password: string; profile: string; comment: string; imported: boolean; }
+interface StaticLease { address: string; macAddress: string; hostName: string; comment: string; imported: boolean; }
+interface RouterClients { pppoe: PppoeClient[]; hotspot: HotspotUser[]; staticLeases: StaticLease[]; pppoeProfiles: string[]; }
 interface ImportResult {
-  imported: Array<{ username: string }>;
-  skipped: Array<{ username: string; reason: string }>;
-  failed: Array<{ username: string; error: string }>;
+  imported: Array<{ kind: string; ref: string }>;
+  skipped: Array<{ kind: string; ref: string; reason: string }>;
+  failed: Array<{ kind: string; ref: string; error: string }>;
 }
+interface PlanLite { id: string; name: string; speed_down_kbps: number | null; speed_up_kbps: number | null; }
 
 interface RouterLite { id: string; name: string; status: string; vpn_status: string; host: string; site: string | null; collection_account_id: string | null }
 interface CollAccount { id: string; label: string; method: string; paybill: string; till: string; account_no: string; is_default: boolean }
@@ -114,8 +118,12 @@ export default function RouterDetail() {
   const [diag, setDiag] = useState<DiagResult | null>(null);
   const [diagRunning, setDiagRunning] = useState(false);
   const [backupBusy, setBackupBusy] = useState(false);
-  const [clients, setClients] = useState<MikClient[] | null>(null);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [clients, setClients] = useState<RouterClients | null>(null);
+  const [plans, setPlans] = useState<PlanLite[]>([]);
+  const [selPppoe, setSelPppoe] = useState<Set<string>>(new Set());
+  const [selHotspot, setSelHotspot] = useState<Set<string>>(new Set());
+  const [selStatic, setSelStatic] = useState<Set<string>>(new Set());
+  const [planMap, setPlanMap] = useState<Record<string, string>>({});
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -150,18 +158,30 @@ export default function RouterDetail() {
 
   const loadClients = async () => {
     try {
-      const cs = await api<MikClient[]>(`/routers/${id}/clients`);
+      const [cs, pl] = await Promise.all([
+        api<RouterClients>(`/routers/${id}/clients`),
+        api<PlanLite[]>(`/plans`).catch(() => [] as PlanLite[]),
+      ]);
       setClients(cs);
-      setSelected(new Set(cs.filter((c) => !c.imported).map((c) => c.username)));
+      setPlans(pl);
+      setSelPppoe(new Set(cs.pppoe.filter((c) => !c.imported).map((c) => c.username)));
+      setSelHotspot(new Set(cs.hotspot.filter((c) => !c.imported).map((c) => c.username)));
+      setSelStatic(new Set(cs.staticLeases.filter((c) => !c.imported).map((c) => c.address)));
     } catch (e: any) { setErr(e.message); }
   };
-  const toggleClient = (u: string) =>
-    setSelected((s) => { const n = new Set(s); n.has(u) ? n.delete(u) : n.add(u); return n; });
+  const toggleFrom = (setter: React.Dispatch<React.SetStateAction<Set<string>>>, key: string) =>
+    setter((s) => { const n = new Set(s); n.has(key) ? n.delete(key) : n.add(key); return n; });
   const importClients = async () => {
     setImporting(true); setErr(null); setImportResult(null);
     try {
       const r = await api<ImportResult>(`/routers/${id}/clients/import`, {
-        method: 'POST', body: JSON.stringify({ usernames: Array.from(selected) }),
+        method: 'POST',
+        body: JSON.stringify({
+          pppoe: Array.from(selPppoe),
+          hotspot: Array.from(selHotspot),
+          staticLeases: Array.from(selStatic),
+          planByProfile: planMap,
+        }),
       });
       setImportResult(r);
       await loadClients();
@@ -441,20 +461,26 @@ export default function RouterDetail() {
       )}
 
       {tab === 'import' && (() => {
-        const selectable = (clients ?? []).filter((c) => !c.imported);
-        const allSel = selectable.length > 0 && selectable.every((c) => selected.has(c.username));
-        const toggleAll = () => setSelected(allSel ? new Set() : new Set(selectable.map((c) => c.username)));
+        const total = selPppoe.size + selHotspot.size + selStatic.size;
+        const pSel = (clients?.pppoe ?? []).filter((c) => !c.imported);
+        const pAll = pSel.length > 0 && pSel.every((c) => selPppoe.has(c.username));
+        const hSel = (clients?.hotspot ?? []).filter((c) => !c.imported);
+        const hAll = hSel.length > 0 && hSel.every((c) => selHotspot.has(c.username));
+        const sSel = (clients?.staticLeases ?? []).filter((c) => !c.imported);
+        const sAll = sSel.length > 0 && sSel.every((c) => selStatic.has(c.address));
+        const empty = clients && !clients.pppoe.length && !clients.hotspot.length && !clients.staticLeases.length;
         return (
-          <div style={{ display: 'grid', gap: 14 }}>
+          <div style={{ display: 'grid', gap: 18 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-              <button className="primary" onClick={importClients} disabled={importing || selected.size === 0}>
-                {importing ? 'Importing…' : `Import ${selected.size} selected`}
+              <button className="primary" onClick={importClients} disabled={importing || total === 0}>
+                {importing ? 'Importing…' : `Import ${total} selected`}
               </button>
               <span className="sub">
-                Reads this router's existing PPPoE secrets and creates each as a JTM customer + service (RADIUS-ready).
+                Reads this router's PPPoE secrets, hotspot users and static DHCP leases, and creates each as a JTM customer + service.
                 Already-imported and disabled accounts are skipped, and <strong>no onboarding SMS is sent</strong>.
               </span>
             </div>
+
             {importResult && (
               <div className="card" style={{ fontSize: 13 }}>
                 <strong>Import complete:</strong> {importResult.imported.length} imported
@@ -462,41 +488,111 @@ export default function RouterDetail() {
                 {importResult.failed.length ? `, ${importResult.failed.length} failed` : ''}.
                 {importResult.failed.length > 0 && (
                   <ul style={{ margin: '6px 0 0', paddingLeft: 18, color: '#dc2626' }}>
-                    {importResult.failed.slice(0, 10).map((f, i) => <li key={i}>{f.username}: {f.error}</li>)}
+                    {importResult.failed.slice(0, 10).map((f, i) => <li key={i}>{f.kind} {f.ref}: {f.error}</li>)}
                   </ul>
                 )}
               </div>
             )}
-            <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                <thead><tr style={{ textAlign: 'left', color: 'var(--muted)' }}>
-                  <th style={{ padding: '10px 12px', width: 34 }}>
-                    <input type="checkbox" checked={allSel} onChange={toggleAll} disabled={!selectable.length} title="Select all" />
-                  </th>
-                  {['Username', 'Profile', 'Rate limit', 'Static IP', 'Note', 'Status'].map((h) => <th key={h} style={{ padding: '10px 12px' }}>{h}</th>)}
-                </tr></thead>
-                <tbody>
-                  {(clients ?? []).map((c) => (
-                    <tr key={c.username} style={{ borderTop: '1px solid var(--border)', opacity: c.imported ? 0.55 : 1 }}>
-                      <td style={{ padding: '10px 12px' }}>
-                        <input type="checkbox" disabled={c.imported} checked={selected.has(c.username)} onChange={() => toggleClient(c.username)} />
-                      </td>
-                      <td style={{ padding: '10px 12px', fontWeight: 600 }}>
-                        {c.username}
-                        {c.online && <span style={{ marginLeft: 8, fontSize: 11, color: '#16a34a', fontWeight: 600 }}>● online</span>}
-                      </td>
-                      <td style={{ padding: '10px 12px' }}>{c.profile || '—'}</td>
-                      <td style={{ padding: '10px 12px', fontFamily: 'monospace', fontSize: 12 }}>{c.rateLimit || '—'}</td>
-                      <td style={{ padding: '10px 12px', fontFamily: 'monospace', fontSize: 12 }}>{c.remoteAddress || '—'}</td>
-                      <td style={{ padding: '10px 12px', color: 'var(--muted)' }}>{c.comment || '—'}</td>
-                      <td style={{ padding: '10px 12px' }}>{c.imported ? <span style={{ color: '#16a34a' }}>✓ in JTM</span> : ''}</td>
-                    </tr>
+
+            {!clients && <p className="sub">Reading clients over the tunnel…</p>}
+            {empty && <p className="sub">No PPPoE secrets, hotspot users or static leases found on this router.</p>}
+
+            {clients && clients.pppoeProfiles.length > 0 && (
+              <section className="card">
+                <h3 style={{ marginTop: 0, fontSize: 15 }}>Map PPPoE profiles → plans</h3>
+                <p className="sub" style={{ marginTop: 0 }}>Optional. A mapped profile imports with the plan's speed + expiry (billable); unmapped keeps the router's raw rate and no expiry.</p>
+                <div style={{ display: 'grid', gap: 8 }}>
+                  {clients.pppoeProfiles.map((pf) => (
+                    <div key={pf} style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                      <code style={{ minWidth: 160 }}>{pf}</code>
+                      <span>→</span>
+                      <select value={planMap[pf] ?? ''} onChange={(e) => setPlanMap((m) => ({ ...m, [pf]: e.target.value }))} style={{ minWidth: 240 }}>
+                        <option value="">Keep raw rate (no plan)</option>
+                        {plans.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                      </select>
+                    </div>
                   ))}
-                  {clients && !clients.length && <tr><td colSpan={7} style={{ padding: 16 }}><span className="sub">No PPPoE secrets found on this router.</span></td></tr>}
-                  {!clients && <tr><td colSpan={7} style={{ padding: 16 }}><span className="sub">Reading clients over the tunnel…</span></td></tr>}
-                </tbody>
-              </table>
-            </div>
+                </div>
+              </section>
+            )}
+
+            {clients && clients.pppoe.length > 0 && (
+              <div>
+                <h3 style={{ fontSize: 14, margin: '0 0 8px' }}>PPPoE secrets ({clients.pppoe.length})</h3>
+                <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                    <thead><tr style={{ textAlign: 'left', color: 'var(--muted)' }}>
+                      <th style={{ padding: '10px 12px', width: 34 }}><input type="checkbox" checked={pAll} disabled={!pSel.length} onChange={() => setSelPppoe(pAll ? new Set() : new Set(pSel.map((c) => c.username)))} /></th>
+                      {['Username', 'Profile', 'Rate limit', 'Static IP', 'Note', 'Status'].map((h) => <th key={h} style={{ padding: '10px 12px' }}>{h}</th>)}
+                    </tr></thead>
+                    <tbody>
+                      {clients.pppoe.map((c) => (
+                        <tr key={c.username} style={{ borderTop: '1px solid var(--border)', opacity: c.imported ? 0.55 : 1 }}>
+                          <td style={{ padding: '10px 12px' }}><input type="checkbox" disabled={c.imported} checked={selPppoe.has(c.username)} onChange={() => toggleFrom(setSelPppoe, c.username)} /></td>
+                          <td style={{ padding: '10px 12px', fontWeight: 600 }}>{c.username}{c.online && <span style={{ marginLeft: 8, fontSize: 11, color: '#16a34a', fontWeight: 600 }}>● online</span>}</td>
+                          <td style={{ padding: '10px 12px' }}>{c.profile || '—'}{c.profile && planMap[c.profile] ? <span style={{ marginLeft: 6, fontSize: 11, color: 'var(--accent)' }}>→ plan</span> : null}</td>
+                          <td style={{ padding: '10px 12px', fontFamily: 'monospace', fontSize: 12 }}>{c.rateLimit || '—'}</td>
+                          <td style={{ padding: '10px 12px', fontFamily: 'monospace', fontSize: 12 }}>{c.remoteAddress || '—'}</td>
+                          <td style={{ padding: '10px 12px', color: 'var(--muted)' }}>{c.comment || '—'}</td>
+                          <td style={{ padding: '10px 12px' }}>{c.imported ? <span style={{ color: '#16a34a' }}>✓ in JTM</span> : ''}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {clients && clients.hotspot.length > 0 && (
+              <div>
+                <h3 style={{ fontSize: 14, margin: '0 0 8px' }}>Hotspot users ({clients.hotspot.length})</h3>
+                <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                    <thead><tr style={{ textAlign: 'left', color: 'var(--muted)' }}>
+                      <th style={{ padding: '10px 12px', width: 34 }}><input type="checkbox" checked={hAll} disabled={!hSel.length} onChange={() => setSelHotspot(hAll ? new Set() : new Set(hSel.map((c) => c.username)))} /></th>
+                      {['Username', 'Profile', 'Note', 'Status'].map((h) => <th key={h} style={{ padding: '10px 12px' }}>{h}</th>)}
+                    </tr></thead>
+                    <tbody>
+                      {clients.hotspot.map((c) => (
+                        <tr key={c.username} style={{ borderTop: '1px solid var(--border)', opacity: c.imported ? 0.55 : 1 }}>
+                          <td style={{ padding: '10px 12px' }}><input type="checkbox" disabled={c.imported} checked={selHotspot.has(c.username)} onChange={() => toggleFrom(setSelHotspot, c.username)} /></td>
+                          <td style={{ padding: '10px 12px', fontWeight: 600 }}>{c.username}</td>
+                          <td style={{ padding: '10px 12px' }}>{c.profile || '—'}</td>
+                          <td style={{ padding: '10px 12px', color: 'var(--muted)' }}>{c.comment || '—'}</td>
+                          <td style={{ padding: '10px 12px' }}>{c.imported ? <span style={{ color: '#16a34a' }}>✓ in JTM</span> : ''}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {clients && clients.staticLeases.length > 0 && (
+              <div>
+                <h3 style={{ fontSize: 14, margin: '0 0 8px' }}>Static DHCP leases ({clients.staticLeases.length})</h3>
+                <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                    <thead><tr style={{ textAlign: 'left', color: 'var(--muted)' }}>
+                      <th style={{ padding: '10px 12px', width: 34 }}><input type="checkbox" checked={sAll} disabled={!sSel.length} onChange={() => setSelStatic(sAll ? new Set() : new Set(sSel.map((c) => c.address)))} /></th>
+                      {['IP address', 'MAC', 'Host', 'Note', 'Status'].map((h) => <th key={h} style={{ padding: '10px 12px' }}>{h}</th>)}
+                    </tr></thead>
+                    <tbody>
+                      {clients.staticLeases.map((l) => (
+                        <tr key={l.address} style={{ borderTop: '1px solid var(--border)', opacity: l.imported ? 0.55 : 1 }}>
+                          <td style={{ padding: '10px 12px' }}><input type="checkbox" disabled={l.imported} checked={selStatic.has(l.address)} onChange={() => toggleFrom(setSelStatic, l.address)} /></td>
+                          <td style={{ padding: '10px 12px', fontFamily: 'monospace', fontSize: 12, fontWeight: 600 }}>{l.address}</td>
+                          <td style={{ padding: '10px 12px', fontFamily: 'monospace', fontSize: 12 }}>{l.macAddress || '—'}</td>
+                          <td style={{ padding: '10px 12px' }}>{l.hostName || '—'}</td>
+                          <td style={{ padding: '10px 12px', color: 'var(--muted)' }}>{l.comment || '—'}</td>
+                          <td style={{ padding: '10px 12px' }}>{l.imported ? <span style={{ color: '#16a34a' }}>✓ in JTM</span> : ''}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
           </div>
         );
       })()}
